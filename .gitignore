@@ -14,3 +14,13 @@ __pycache__/
 
 # OS metadata
 .DS_Store
+
+# Hepson runtime data must never live in the repo (profiles contain live Instagram sessions)
+profiles/
+locks/
+.hepson/
+*.db
+*.db-wal
+*.db-shm
+dist/
+.tmp/

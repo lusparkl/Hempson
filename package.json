@@ -1,0 +1,51 @@
+{
+  "name": "hepson-instagram-connector",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "migrate": "tsx scripts/migrate.ts",
+    "bootstrap-key": "tsx scripts/bootstrap-key.ts",
+    "dev:api": "tsx watch apps/api/src/index.ts",
+    "start:api": "tsx apps/api/src/index.ts",
+    "dev:console": "pnpm --filter @hepson/dev-console dev",
+    "build": "pnpm --filter @hepson/dev-console build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "format": "prettier --write .",
+    "openapi": "tsx scripts/gen-openapi.ts",
+    "calibrate": "tsx scripts/calibrate-selectors.ts",
+    "smoke:live": "tsx scripts/live-smoke.ts",
+    "example": "tsx example-client.ts"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "drizzle-kit": "^0.31.11",
+    "prettier": "^3.9.10",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "@hepson/connector-core": "workspace:*",
+    "@hepson/database": "workspace:*",
+    "@hepson/instagram-browser": "workspace:*",
+    "@hepson/mock-adapter": "workspace:*",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.12.7",
+    "pino": "^10.4.0",
+    "playwright": "^1.64.1",
+    "zod": "^4.6.7"
+  }
+}
