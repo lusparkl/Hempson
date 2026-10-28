@@ -244,7 +244,7 @@ export class ConnectorService {
         lastMessageAt: oc.latestMessageAt,
         unread: oc.unread,
       });
-      const sig = JSON.stringify([oc.latestMessageAt, oc.unread, oc.title]);
+      const sig = JSON.stringify([oc.latestMessageAt, oc.unread, oc.title, oc.preview ?? null, oc.relativeTime ?? null]);
       const needRead = up.created || sigs.get(oc.providerConversationId) !== sig;
       if (up.changed && baselineDone)
         this.bus.emit(accountId, 'conversation.updated', { conversationId: up.row.id, title: up.row.title, unread: up.row.unread, latestMessageAt: up.row.lastMessageAt });
@@ -259,6 +259,9 @@ export class ConnectorService {
 
   private ingest(accountId: string, conv: ConversationRow, items: ObservedMessage[], emitReceived: boolean) {
     const fps = fingerprintAll(accountId, conv.providerId ?? conv.id, items);
+    // Lazily loaded history can reveal OLDER messages after newer ones were already stored. Anything observed
+    // before the latest already-known message is backfill: stored, but never announced as message.received.
+    const lastKnown = fps.map((fp) => !!this.store.findMessageByFingerprint(accountId, fp)).lastIndexOf(true);
     items.forEach((m, i) => {
       const fp = fps[i]!;
       if (this.store.findMessageByFingerprint(accountId, fp)) return;
@@ -287,7 +290,7 @@ export class ConnectorService {
         observedAt: new Date().toISOString(),
         deliveryStatus: m.direction === 'outgoing' ? 'sent' : 'observed',
       });
-      if (row && m.direction === 'incoming' && emitReceived) this.bus.emit(accountId, 'message.received', { message: toPublicMessage(row) });
+      if (row && m.direction === 'incoming' && emitReceived && i > lastKnown) this.bus.emit(accountId, 'message.received', { message: toPublicMessage(row) });
     });
   }
 

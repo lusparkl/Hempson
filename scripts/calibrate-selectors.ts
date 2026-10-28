@@ -18,7 +18,10 @@ import {
   messageRows,
   composer,
   sendButton,
-  threadIdFromHref,
+  openThreadRow,
+  settleMessages,
+  settleThreadList,
+  extractMessageRows,
 } from '@hepson/instagram-browser';
 import { loadConfig } from '../apps/api/src/config';
 
@@ -36,20 +39,27 @@ try {
   await page.waitForTimeout(4000);
   report.pageState = await classifyPage(page, cfg.instagramBaseUrl);
   report.inboxReady = await inboxReady(page);
-  report.ownHandleFound = (await readOwnHandle(page)) !== null;
+  const own = await readOwnHandle(page);
+  report.ownHandleFound = own !== null;
+  await settleThreadList(page);
   const rows = await extractConversationRows(page);
   report.conversationRows = rows.length;
-  report.rowsWithThreadId = rows.filter((r) => threadIdFromHref(r.href)).length;
   report.rowsWithTitle = rows.filter((r) => r.title).length;
-  report.rowsWithIsoTime = rows.filter((r) => r.datetime).length;
-  const first = rows.find((r) => threadIdFromHref(r.href));
-  if (first) {
-    await page.goto(`${cfg.instagramBaseUrl}${first.href}`, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(3000);
+  report.rowsWithPreview = rows.filter((r) => r.preview).length;
+  const id = rows.length ? await openThreadRow(page, 0) : null; // selecting a chat marks it read
+  report.firstRowThreadIdResolved = id !== null;
+  if (id) {
+    await composer(page)
+      .first()
+      .waitFor({ timeout: 10_000 })
+      .catch(() => undefined);
+    await settleMessages(page);
     report.threadTitleFound = (await readThreadTitle(page)) !== null;
     report.messageRows = await messageRows(page).count();
+    const msgs = await extractMessageRows(page, own);
+    report.messagesWithKnownDirection = msgs.filter((m) => m.align !== 'unknown').length;
     report.composerMatches = await composer(page).count(); // must be exactly 1
-    report.sendButtonMatches = await sendButton(page).count(); // 0 until text typed is possible; informative only
+    report.sendButtonMatches = await sendButton(page).count(); // 0 until text is typed; informative only
   }
   if (flags.includes('--snapshot')) {
     const dir = path.join(cfg.dataDir, 'calibration');

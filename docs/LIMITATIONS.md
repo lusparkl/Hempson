@@ -1,8 +1,17 @@
 # Limitations & risks
 
 ## Verified vs. not
-- Verified (automated): contract, tenant isolation, dedupe, idempotency, outbox states, event replay, and — in **real headless Chromium against a local fake Instagram** — profile reuse across restarts, login_required/checkpoint/identity-mismatch fail-closed, pause/forget semantics, lock handling, text/media parsing, send confirmation/uncertain.
-- **Not verified:** anything on real instagram.com. `selectors.ts` is `CALIBRATION_STATUS = 'uncalibrated'`. The fake is our own assumption of the DOM, so passing it does not imply the real UI matches. Headed mode differs from the headless flag only by display.
+- Verified (automated): contract, tenant isolation, dedupe, idempotency, outbox states, event replay, and — in real headless Chromium against a local fake Instagram (now mirroring the observed real DOM) — profile reuse, fail-closed states, pause/forget semantics, lock handling, parsing, send confirmation/uncertain.
+- Verified live (2026-10-28, one authorized account, English UI, primary inbox): login once, selector calibration (`CALIBRATION_STATUS = 'calibrated-en-2026-10'`), reading 1:1 text chats with correct direction and emoji, inbound exactly once, one outbound send confirmed `sent` without duplicates, pause/resume with a second (mock) store, scoped-key isolation, restart persistence (graceful and `kill -9`), `login_required` after logout.
+- **Not verified live:** media placeholders, group chats, non-English UI, a second real account, the `uncertain` send path, concurrent sends, checkpoint re-trigger, "Forget saved login", identity-mismatch with a real wrong account. Instagram can change markup at any time; re-run `pnpm calibrate`.
+
+## Real-UI behaviours that shape the design
+- The thread list has no hrefs. Thread ids are learned by selecting each row and reading `/direct/t/<id>/`, cached by title+preview. **Selecting a chat marks it read for the owner.**
+- Sender comes from the "React to message from <handle>" label; direction = sender equals the signed-in handle.
+- Message and list times are localized/relative text, never ISO, so `sentAt`/`latestMessageAt` are `null`. Change detection uses row preview + relative-time label.
+- History loads lazily. Messages revealed later that sit before an already-known one are stored but not announced as `message.received`.
+- Known gap: the same text sent twice by a customer inside one relative-time bucket (e.g. both "now") may not trigger a re-read until the label changes.
+- The reply text is typed into a Lexical editor; multi-line text is untested and fails closed (`UI_CHANGED`) if the editor does not read back identically.
 
 ## Instagram surfaces
 Supported (once calibrated): primary inbox, 1:1 text messages, visible DOM history only (no scrolling/older paging), image/video/audio as **placeholders** (no media download, no text invented). Unsupported: General and Requests folders (capability reported `false`), group chats not specifically handled, reactions, replies/quotes, shared posts/stories content, voice transcription, message deletion/unsend, read receipts, bulk/outreach (intentionally absent).

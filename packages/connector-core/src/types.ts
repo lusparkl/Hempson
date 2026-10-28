@@ -41,6 +41,9 @@ export type ObservedConversation = {
   participantHandles: string[];
   latestMessageAt: string | null;
   unread: boolean | null;
+  /** Optional change hints for providers without trustworthy timestamps (row preview text, relative-time label). */
+  preview?: string | null;
+  relativeTime?: string | null;
 };
 
 export type ObservedMessage = {

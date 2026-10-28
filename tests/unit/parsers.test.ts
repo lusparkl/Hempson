@@ -16,7 +16,9 @@ describe('parsers', () => {
       { href: '/direct/t/aaa/', title: ' Олена  Коваль ', preview: null, datetime: null, unread: null, handles: ['@Olena.Koval'] },
       { href: '/direct/t/aaa/', title: 'Олена Коваль', preview: null, datetime: null, unread: null, handles: [] },
     ]);
-    expect(r).toEqual([{ providerConversationId: 'aaa', title: 'Олена Коваль', participantHandles: ['olena.koval'], latestMessageAt: null, unread: null }]);
+    expect(r).toEqual([
+      { providerConversationId: 'aaa', title: 'Олена Коваль', participantHandles: ['olena.koval'], latestMessageAt: null, unread: null, preview: null, relativeTime: null },
+    ]);
     expect(() => parseConversations([{ href: '/x', title: 'x', preview: null, datetime: null, unread: null, handles: [] }])).toThrowError(/No conversation row/);
     expect(parseConversations([])).toEqual([]);
   });

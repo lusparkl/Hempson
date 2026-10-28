@@ -46,6 +46,8 @@ type Sess = {
   ctx: ConnectContext;
   closing: boolean;
   inboxLoadedAt: number;
+  /** row signature (title+preview+occurrence) -> thread id; the real list exposes no hrefs */
+  threadIds: Map<string, string>;
   watcher?: AbortController;
 };
 
@@ -69,7 +71,7 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
       attachmentsRead: 'placeholder',
       olderHistoryPaging: false,
       sendText: true,
-      verifiedAgainstRealProvider: false,
+      verifiedAgainstRealProvider: true,
     };
   }
   onStatusChange(l: StatusListener) {
@@ -110,6 +112,7 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
       ctx,
       closing: false,
       inboxLoadedAt: 0,
+      threadIds: new Map(),
     };
     this.sessions.set(accountId, s);
     this.statuses.set(accountId, 'connecting');
@@ -205,7 +208,7 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
     // The inbox SPA updates itself, so we don't reload every poll; but a periodic reload is the only
     // way to notice a revoked login / challenge that the stale DOM would hide.
     const stale = Date.now() - s.inboxLoadedAt >= (this.o.reloadInboxEveryMs ?? 5 * 60_000);
-    if (stale || !new URL(s.page.url()).pathname.startsWith('/direct/inbox')) {
+    if (stale || !new URL(s.page.url()).pathname.startsWith('/direct/')) {
       s.inboxLoadedAt = Date.now();
       await s.page.goto(`${this.o.baseUrl}/direct/inbox/`, { waitUntil: 'domcontentloaded' }).catch((e) => {
         throw new ConnectorError('TEMPORARY_FAILURE', `Navigation failed: ${(e as Error).message.split('\n')[0]}`);
@@ -219,7 +222,23 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
     const s = this.live(accountId);
     return s.mutex.run(async () => {
       await this.gotoInbox(s);
+      await sel.settleThreadList(s.page);
       const rows = await sel.extractConversationRows(s.page);
+      const seen = new Map<string, number>();
+      for (const [i, r] of rows.entries()) {
+        const base = `${r.title ?? ''}\u0000${r.preview ?? ''}`;
+        const n = seen.get(base) ?? 0;
+        seen.set(base, n + 1);
+        const sig = `${base}\u0000${n}`;
+        let id = s.threadIds.get(sig) ?? null;
+        if (!id) {
+          id = await sel.openThreadRow(s.page, i);
+          await this.guard(s, 'listConversations'); // the click may have landed on a login/challenge page
+          if (id) s.threadIds.set(sig, id);
+        }
+        if (id) r.href = `/direct/t/${id}/`;
+      }
+      if (s.threadIds.size > 500) s.threadIds.clear();
       const items = parseConversations(rows).slice(0, opts.limit ?? 50);
       return { items, nextCursor: null };
     });
@@ -232,6 +251,12 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
     await this.guard(s, op);
     const url = new URL(s.page.url());
     if (!url.pathname.includes(`/direct/t/${providerConversationId}`)) throw new ConnectorError('UI_CHANGED', 'Opened a different conversation than requested', { operation: op });
+    await sel
+      .composer(s.page)
+      .first()
+      .waitFor({ timeout: 10_000 })
+      .catch(() => undefined);
+    await sel.settleMessages(s.page);
     const title = await sel.readThreadTitle(s.page);
     if (expectedTitle !== undefined) {
       const { normalizeTitle } = await import('./parsers');
@@ -244,7 +269,7 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
     const s = this.live(accountId);
     return s.mutex.run(async () => {
       await this.openThread(s, providerConversationId);
-      const rows = await sel.extractMessageRows(s.page);
+      const rows = await sel.extractMessageRows(s.page, s.handle);
       const items = parseMessages(rows);
       const limit = opts.limit ?? 50;
       return { items: items.slice(-limit), nextCursor: null }; // only loaded DOM history; no scrolling
@@ -255,7 +280,7 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
     const s = this.live(accountId);
     return s.mutex.run(async () => {
       await this.openThread(s, providerConversationId, expected?.title, 'sendText');
-      return sendTextInPage(s.page, text, { confirmMs: this.o.sendConfirmMs });
+      return sendTextInPage(s.page, text, { confirmMs: this.o.sendConfirmMs, ownHandle: s.handle });
     });
   }
 

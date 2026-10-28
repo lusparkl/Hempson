@@ -1,6 +1,6 @@
 /**
  * SYNTHETIC stand-in for instagram.com, used ONLY by automated tests against real Chromium.
- * It is NOT Instagram: DOM shape follows our own assumed contract (see selectors.ts). It exists to
+ * It is NOT Instagram: DOM shape mirrors what was OBSERVED on the real inbox/thread in 2026-10 (see selectors.ts), but it is still our copy. It exists to
  * prove profile/cookie persistence, state classification, parsing, dedupe and send semantics.
  * Contains no real customer content.
  */
@@ -95,27 +95,40 @@ export class FakeInstagram {
     if (!user) return redirect('/accounts/login/');
     if (this.mode.checkpoint) return redirect('/challenge/');
 
-    const nav = `<nav><a href="/${user.handle}/" aria-label="Profile">Profile</a></nav>`;
-    if (u.pathname === '/direct/inbox/') {
-      const rows = [...user.threads.values()].map((t) => {
-        const last = t.messages.at(-1);
-        return `<a href="/direct/t/${t.id}/" aria-label="${esc(t.title)}" data-handles="${t.handle}" data-unread="${t.unread ? 'true' : 'false'}"><span data-role="title">${esc(t.title)}</span><span data-role="preview">${esc(last?.text ?? '')}</span>${last?.at ? `<time datetime="${last.at}">x</time>` : ''}</a>`;
-      });
-      return html(`${nav}<main><h2>Chats</h2>${rows.join('')}</main>`);
-    }
+    const nav = `<nav><a href="/${user.handle}/" role="link"><img alt="${user.handle}'s profile picture" width="24" height="24" src="${PX}"></a></nav>`;
+    // Shape mirrors the REAL inbox observed 2026-10: rows are div[role=button] (no href), title/preview/time in span[dir=auto].
+    const list = (current: string | null) =>
+      `<div role="navigation" aria-label="Thread list"><div><h2>${esc(user.handle)}</h2></div>` +
+      [...user.threads.values()]
+        .map((t) => {
+          const last = t.messages.at(-1);
+          const preview = last ? (last.from === 'me' ? 'You: ' : '') + (last.text ?? 'Sent an attachment') : '';
+          return `<div role="button" tabindex="0" aria-pressed="${t.id === current}" onclick="location.href='/direct/t/${t.id}/'"><img alt="user-profile-picture" width="56" height="56" src="${PX}"><span dir="auto">${esc(t.title)}</span><span dir="auto">${esc(preview)}</span><span dir="auto"><abbr aria-label="${t.messages.length} minutes ago">${t.messages.length}m</abbr></span></div>`;
+        })
+        .join('') +
+      `</div>`;
+    if (u.pathname === '/direct/inbox/') return html(`${nav}<main>${list(null)}<h2>Your messages</h2></main>`);
     const tm = /^\/direct\/t\/([^/]+)\/$/.exec(u.pathname);
     if (tm) {
       const t = user.threads.get(tm[1]!);
       if (!t) return html('<main><h1>Not found</h1></main>', 404);
-      const rows = t.messages
-        .map(
-          (m) =>
-            `<div role="row" data-message-id="${m.id}" data-sender="${m.from === 'me' ? 'me' : esc(t.title)}" style="display:flex;justify-content:${m.from === 'me' ? 'flex-end' : 'flex-start'}"><div data-role="bubble" style="max-width:50%">${m.image ? '<img data-media src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="20" height="20" alt="photo">' : ''}${m.text !== null ? `<span data-role="text">${esc(m.text)}</span>` : ''}${m.at ? `<time datetime="${m.at}">t</time>` : ''}</div></div>`,
-        )
+      const body = (m: FakeMsg) =>
+        m.image
+          ? `<img width="200" height="200" src="${PX}" alt="photo">`
+          : `<span dir="auto"><div dir="auto">${esc(m.text ?? '').replace(/✅/g, `<img height="16" width="16" alt="✅" src="${PX}">`)}</div></span>`;
+      const msgs = t.messages
+        .map((m) => {
+          const who = m.from === 'me' ? user.handle : t.handle;
+          return `<div role="group" tabindex="-1" style="display:flex;justify-content:${m.from === 'me' ? 'flex-end' : 'flex-start'}"><div role="article" tabindex="0">${body(m)}</div><div role="group" aria-label="Message actions"><div role="button" aria-label="React to message from ${who}"></div><div role="button" aria-label="Reply to message from ${who}"></div></div></div>`;
+        })
         .join('');
-      const composer = this.mode.sendMode === 'no-composer' ? '' : `<textarea aria-label="Message" id="c"></textarea><button type="button" id="s">Send</button>`;
-      return html(`${nav}<main><h1 ${this.mode.renameHeading ? 'hidden' : ''}>${this.mode.renameHeading ? '' : esc(t.title)}</h1><div role="grid" style="width:600px">${rows}</div>${composer}</main>
-<script>document.getElementById('s')?.addEventListener('click',async()=>{const c=document.getElementById('c');const text=c.value;if(!text)return;await fetch('/__send',{method:'POST',body:JSON.stringify({thread:${JSON.stringify(t.id)},text})});c.value='';setTimeout(()=>location.reload(),150);});</script>`);
+      // Lexical-like composer: unnamed contenteditable textbox; "Send" button exists only while it holds text.
+      const composer =
+        this.mode.sendMode === 'no-composer'
+          ? ''
+          : `<div data-pagelet="IGDComposerForCannes"><div contenteditable="true" role="textbox" tabindex="0" id="c"><p><br></p></div><div id="sw"></div></div>`;
+      return html(`${nav}<main>${list(t.id)}<a href="/${t.handle}/" aria-label="Open the profile page of ${t.handle}"><h2>${this.mode.renameHeading ? '' : esc(t.title)}</h2></a>${msgs}${composer}</main>
+<script>const c=document.getElementById('c'),sw=document.getElementById('sw');c?.addEventListener('input',()=>{const has=c.innerText.trim().length>0;if(has&&!sw.firstChild){const b=document.createElement('div');b.setAttribute('role','button');b.setAttribute('aria-label','Send');b.tabIndex=0;b.style.cssText='width:20px;height:20px;background:#08f';b.onclick=async()=>{const text=c.innerText.trim();if(!text)return;await fetch('/__send',{method:'POST',body:JSON.stringify({thread:${JSON.stringify(t.id)},text})});c.innerHTML='<p><br></p>';sw.innerHTML='';setTimeout(()=>location.reload(),150);};sw.appendChild(b);}else if(!has)sw.innerHTML='';});</script>`);
     }
     if (u.pathname.startsWith('/' + user.handle)) return html(`${nav}<main><h1>${user.handle}</h1></main>`);
     return html('<main>Home</main>' + nav);
@@ -125,6 +138,7 @@ function redirect2(res: http.ServerResponse, to: string, headers: Record<string,
   res.writeHead(302, { location: to, ...headers });
   res.end();
 }
+const PX = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
 export const seedThreads = (): FakeThread[] => [

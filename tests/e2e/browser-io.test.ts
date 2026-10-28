@@ -43,11 +43,11 @@ describe('browser reading (fake Instagram DOM)', () => {
     const { b, A } = await connected();
     const c = await convByTitle(b, A, 'Олена Коваль');
     expect(c.providerConversationId).toBe('abc111');
-    expect(c.participantHandles).toEqual(['olena.koval']);
+    expect(c.participantHandles).toEqual([]); // the real list exposes no handles
     const m = await msgs(b, A, c.id);
     expect(m.map((x: any) => x.direction)).toEqual(['incoming', 'outgoing', 'incoming']);
     expect(m[0].text).toBe('Доброго дня! Є сукня M?');
-    expect(m[0].sentAt).toBe('2026-10-20T09:00:00.000Z');
+    expect(m[0].sentAt).toBeNull(); // real UI shows only localized separators, never ISO
     expect(m[2].text).toBeNull();
     expect(m[2].sentAt).toBeNull();
     expect(m[2].attachments).toEqual([{ kind: 'image', metadata: { note: 'unsupported_media_placeholder' } }]);
@@ -65,6 +65,17 @@ describe('browser reading (fake Instagram DOM)', () => {
     fake.injectIncoming('shop_a', 'def222', 'А є розмір 42?'); // same text again => a genuinely new message
     await b.svc.syncOnce(A);
     expect((await eventTypes(b, A)).filter((t) => t === 'message.received').length).toBe(2);
+  });
+  it('older history revealed after baseline is stored but NOT announced as message.received', async () => {
+    const t = fake.users.get('shop_a')!.threads.get('abc111')!;
+    const full = [...t.messages];
+    t.messages = full.slice(1); // the SPA has only loaded the newest messages so far
+    const { b, A } = await connected();
+    t.messages = full; // lazy loading reveals the older incoming "Доброго дня! Є сукня M?"
+    await b.svc.syncOnce(A);
+    const c = await convByTitle(b, A, 'Олена Коваль');
+    expect((await msgs(b, A, c.id)).map((x: any) => x.text)).toContain('Доброго дня! Є сукня M?');
+    expect((await eventTypes(b, A)).filter((x) => x === 'message.received')).toHaveLength(0);
   });
   it('title mismatch refuses to act (never silently wrong chat)', async () => {
     const { b, A } = await connected();
@@ -159,7 +170,10 @@ describe('selector failure / UI change', () => {
     const { b, A } = await connected();
     const page = (b.adapter as any).sessions.get(A).page;
     await page.route('**/direct/inbox/**', (r: any) =>
-      r.fulfill({ contentType: 'text/html', body: '<nav><a href="/shop_a/" aria-label="Profile">p</a></nav><main><a href="/direct/t/zzz/"></a></main>' }),
+      r.fulfill({
+        contentType: 'text/html',
+        body: '<nav><a href="/shop_a/"><img alt="shop_a\'s profile picture"></a></nav><main><div role="navigation"><div role="button"><img alt="user-profile-picture"></div></div></main>',
+      }),
     );
     (b.svc as any).sigs.clear();
     await expect(b.svc.syncOnce(A)).rejects.toMatchObject({ code: 'UI_CHANGED' });
@@ -176,7 +190,10 @@ describe('selector failure / UI change', () => {
     const { b, A } = await connected();
     const page = (b.adapter as any).sessions.get(A).page;
     await page.route('**/direct/t/def222/**', (r: any) =>
-      r.fulfill({ contentType: 'text/html', body: '<main><h1>Андрій Мельник</h1><div role="grid"><div role="row"><span data-role="text">hello</span></div></div></main>' }),
+      r.fulfill({
+        contentType: 'text/html',
+        body: '<main><h2>Андрій Мельник</h2><div role="group"><div role="article">hello</div></div><div contenteditable="true" role="textbox"></div></main>',
+      }),
     );
     (b.svc as any).sigs.clear();
     await expect(b.svc.syncOnce(A)).rejects.toMatchObject({ code: 'UI_CHANGED' });

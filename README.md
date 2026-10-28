@@ -2,7 +2,7 @@
 
 Local-first connector exposing Instagram Direct conversations of **shop-owned, owner-authorized** accounts through a stable, authenticated HTTP API (`/v1`, REST + SSE). The first provider is an **experimental browser (Playwright) adapter**; a mock provider runs the identical contract and UI with no Instagram access. A future Meta official-API adapter plugs into the same interface ([docs/FUTURE_META_ADAPTER.md](docs/FUTURE_META_ADAPTER.md)).
 
-> **Status:** mock mode, persistence/lifecycle, parsing, dedupe and send semantics are tested (see [Test results](#test-results)). **Nothing has been verified against real instagram.com**; selectors are uncalibrated. See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and [docs/MANUAL_INSTAGRAM_TEST.md](docs/MANUAL_INSTAGRAM_TEST.md).
+> **Status:** mock mode, persistence/lifecycle, parsing, dedupe and send semantics are tested (see [Test results](#test-results)). Read, inbound, one outbound send and session persistence were verified live on one authorized account (English UI); see the results log in [docs/MANUAL_INSTAGRAM_TEST.md](docs/MANUAL_INSTAGRAM_TEST.md). Media, groups, other locales and the forget flow are untested. See [docs/LIMITATIONS.md](docs/LIMITATIONS.md) and [docs/MANUAL_INSTAGRAM_TEST.md](docs/MANUAL_INSTAGRAM_TEST.md).
 
 ## Install (clean checkout)
 
@@ -42,7 +42,7 @@ Run `pnpm calibrate <accountUUID>` first and follow [docs/MANUAL_INSTAGRAM_TEST.
 | `pnpm start:api` / `dev:api` | run API (127.0.0.1:8787) |
 | `pnpm dev:console` / `build` | dev console / production build |
 | `pnpm test` | 38 unit+integration tests (mock) |
-| `pnpm test:browser` | 20 real-Chromium tests against a **local fake Instagram** |
+| `pnpm test:browser` | 21 real-Chromium tests against a **local fake Instagram** |
 | `pnpm typecheck`, `pnpm format` | tsc strict / prettier |
 | `pnpm openapi` | write `docs/openapi.json` (also served at `/v1/openapi.json`) |
 | `pnpm calibrate <id> [--snapshot]` | live selector check (real, authorized account) |

@@ -1,6 +1,6 @@
-# Manual live test (real Instagram) — NOT YET PERFORMED
+# Manual live test (real Instagram) — performed 2026-10-28, see results log
 
-Everything here must be run by a human with a **shop-owned account** and the owner's **express authorization**, plus a **second authorized test account** to send DMs. Nothing in this repo has been run against real instagram.com. Record each step as `pass`, `fail`, `blocked` or `not tested`.
+Everything here must be run by a human with a **shop-owned account** and the owner's **express authorization**, plus a **second authorized test account** to send DMs. The first live run is logged at the bottom (2026-10-28). Record each step as `pass`, `fail`, `blocked` or `not tested`.
 
 ## 0. Prerequisites
 Display available (headed Chromium), `pnpm install`, `pnpm exec playwright install chromium`, `pnpm migrate`, admin key, API running. Prefer a throw-away/test shop account first. Disk encryption on. Expect Instagram may challenge a new browser: the owner completes it manually; never work around it.
@@ -35,14 +35,14 @@ Log out of Instagram in A's window → `login_required` within one reload interv
 ## Fragility notes
 Instagram changes markup and localization without notice; selectors may break any time (`UI_CHANGED`). Locale affects accessible names (`Profile`/`Профіль` handled; others are not). Automated access may violate Instagram's terms and may trigger challenges or restrictions — see LIMITATIONS.md.
 
-## Results log (fill in)
-| Step | Result | Date / notes |
+## Results log (2026-10-28, account `mechstyx` + second account, English UI, API driven by Claude Code)
+| Step | Result | Notes |
 |---|---|---|
-| 1 login once | not tested | |
-| 2 calibration | not tested | |
-| 3 read | not tested | |
-| 4 inbound once | not tested | |
-| 5 outbound once | not tested | |
-| 6 restart persistence | not tested | |
-| 7 isolation / forget | not tested | |
-| 8 logout / checkpoint | not tested | |
+| 1 login once | pass | Instagram checkpoint appeared once; owner completed it manually; status `checkpoint_required` was reported correctly |
+| 2 calibration | pass | `pnpm calibrate`: handle, 5 rows, thread ids, 6/6 directions, 1 composer. Fixes: profile link name, button rows without hrefs, `article`/`group` messages, contenteditable composer |
+| 3 read | pass | titles, text, emoji and in/out direction match the real chats; timestamps `null` by design |
+| 4 inbound once | pass | exactly one `message.received` across 3+ polls |
+| 5 outbound once | pass | outbox `sent`, one `message.sent`, one outgoing message after two syncs; visual confirmation in the recipient app still to be reported by the owner |
+| 6 restart persistence | pass | graceful restart and `kill -9`: reconnect with no login, stale lock handled, no Chromium left after graceful stop. Full machine reboot not tested |
+| 7 isolation / forget | partial | pause/resume + mock store B + scoped key 403: pass. **Forget not run** (owner chose to keep the login). Second real account not available |
+| 8 logout / checkpoint | pass | logout -> `login_required`, worker stopped, profile kept. Checkpoint not re-triggerable on demand |

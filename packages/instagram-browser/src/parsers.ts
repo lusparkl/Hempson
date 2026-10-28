@@ -2,7 +2,15 @@ import type { ObservedConversation, ObservedMessage } from '@hepson/connector-co
 import { ConnectorError } from '@hepson/connector-core';
 
 /** Raw rows are what selectors.ts pulls from the DOM; parsers turn them into normalized domain data. Pure + unit-tested. */
-export type RawConversationRow = { href: string; title: string | null; preview: string | null; datetime: string | null; unread: boolean | null; handles: string[] };
+export type RawConversationRow = {
+  href: string;
+  title: string | null;
+  preview: string | null;
+  datetime: string | null;
+  relativeTime?: string | null;
+  unread: boolean | null;
+  handles: string[];
+};
 export type RawMessageRow = {
   id: string | null;
   text: string | null;
@@ -46,6 +54,8 @@ export function parseConversations(rows: RawConversationRow[]): ObservedConversa
       participantHandles: r.handles.map(normalizeHandle).filter(Boolean),
       latestMessageAt: parseTimestamp(r.datetime),
       unread: r.unread,
+      preview: r.preview,
+      relativeTime: r.relativeTime ?? null,
     });
   }
   if (rows.length > 0 && out.length === 0) throw new ConnectorError('UI_CHANGED', `No conversation row could be parsed (${skipped} skipped)`, { operation: 'listConversations' });
