@@ -3,7 +3,14 @@ import type { EventType } from '@hepson/connector-core';
 import type { EventRow, Store } from '@hepson/database';
 
 export type PublicEvent = { id: string; accountId: string; sequence: number; type: EventType; occurredAt: string; payload: Record<string, unknown> };
-export const toPublicEvent = (r: EventRow): PublicEvent => ({ id: r.id, accountId: r.accountId, sequence: r.sequence, type: r.type as EventType, occurredAt: r.occurredAt, payload: r.payload });
+export const toPublicEvent = (r: EventRow): PublicEvent => ({
+  id: r.id,
+  accountId: r.accountId,
+  sequence: r.sequence,
+  type: r.type as EventType,
+  occurredAt: r.occurredAt,
+  payload: r.payload,
+});
 
 /** Persist first, then publish. In-memory subscribers may miss events; replay via DB covers it. */
 export class EventBus {

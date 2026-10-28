@@ -1,4 +1,3 @@
-
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // NOTE: no column here may ever hold cookies, tokens, passwords, 2FA secrets or profile bytes.
@@ -41,7 +40,9 @@ export const conversations = sqliteTable(
   'conversations',
   {
     id: text('id').primaryKey(),
-    accountId: text('account_id').notNull().references(() => storeAccounts.id),
+    accountId: text('account_id')
+      .notNull()
+      .references(() => storeAccounts.id),
     providerId: text('provider_id'),
     participants: text('participants', { mode: 'json' }).$type<string[]>().notNull(),
     title: text('title').notNull(),
@@ -49,18 +50,19 @@ export const conversations = sqliteTable(
     lastMessageAt: text('last_message_at'),
     unread: integer('unread', { mode: 'boolean' }),
   },
-  (t) => [
-    uniqueIndex('conv_account_provider_uq').on(t.accountId, t.providerId),
-    index('conv_account_last_idx').on(t.accountId, t.lastMessageAt),
-  ],
+  (t) => [uniqueIndex('conv_account_provider_uq').on(t.accountId, t.providerId), index('conv_account_last_idx').on(t.accountId, t.lastMessageAt)],
 );
 
 export const messages = sqliteTable(
   'messages',
   {
     id: text('id').primaryKey(),
-    accountId: text('account_id').notNull().references(() => storeAccounts.id),
-    conversationId: text('conversation_id').notNull().references(() => conversations.id),
+    accountId: text('account_id')
+      .notNull()
+      .references(() => storeAccounts.id),
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => conversations.id),
     providerId: text('provider_id'),
     fingerprint: text('fingerprint').notNull(),
     direction: text('direction', { enum: ['incoming', 'outgoing'] }).notNull(),
@@ -72,18 +74,19 @@ export const messages = sqliteTable(
     seq: integer('seq').notNull(),
     deliveryStatus: text('delivery_status').notNull(),
   },
-  (t) => [
-    uniqueIndex('msg_account_fp_uq').on(t.accountId, t.fingerprint),
-    index('msg_conv_idx').on(t.accountId, t.conversationId, t.seq),
-  ],
+  (t) => [uniqueIndex('msg_account_fp_uq').on(t.accountId, t.fingerprint), index('msg_conv_idx').on(t.accountId, t.conversationId, t.seq)],
 );
 
 export const outbox = sqliteTable(
   'outbox',
   {
     id: text('id').primaryKey(),
-    accountId: text('account_id').notNull().references(() => storeAccounts.id),
-    conversationId: text('conversation_id').notNull().references(() => conversations.id),
+    accountId: text('account_id')
+      .notNull()
+      .references(() => storeAccounts.id),
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => conversations.id),
     idempotencyKey: text('idempotency_key').notNull(),
     body: text('body').notNull(),
     bodyHash: text('body_hash').notNull(),
@@ -101,7 +104,9 @@ export const events = sqliteTable(
   'events',
   {
     id: text('id').primaryKey(),
-    accountId: text('account_id').notNull().references(() => storeAccounts.id),
+    accountId: text('account_id')
+      .notNull()
+      .references(() => storeAccounts.id),
     type: text('type').notNull(),
     payload: text('payload', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
     occurredAt: text('occurred_at').notNull(),
@@ -111,11 +116,12 @@ export const events = sqliteTable(
 );
 
 export const connectorState = sqliteTable('connector_state', {
-  accountId: text('account_id').primaryKey().references(() => storeAccounts.id),
+  accountId: text('account_id')
+    .primaryKey()
+    .references(() => storeAccounts.id),
   lastSyncAt: text('last_sync_at'),
   lastError: text('last_error'),
   syncCursor: text('sync_cursor'),
   /** 1 once the first full sync completed; later new messages are "new", earlier ones are backfill. */
   baselineDone: integer('baseline_done', { mode: 'boolean' }).notNull().default(false),
 });
-

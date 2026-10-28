@@ -1,12 +1,4 @@
-export const CONNECTOR_STATUSES = [
-  'disconnected',
-  'login_required',
-  'connecting',
-  'connected',
-  'degraded',
-  'checkpoint_required',
-  'failed',
-] as const;
+export const CONNECTOR_STATUSES = ['disconnected', 'login_required', 'connecting', 'connected', 'degraded', 'checkpoint_required', 'failed'] as const;
 export type ConnectorStatus = (typeof CONNECTOR_STATUSES)[number];
 
 export type MessageDirection = 'incoming' | 'outgoing';
@@ -123,13 +115,7 @@ export interface MessagingAdapter {
    * Must NOT retry internally when the outcome is unclear: return status 'uncertain'.
    * `expected.title` lets the adapter refuse to type into the wrong thread.
    */
-  sendText(
-    accountId: string,
-    providerConversationId: string,
-    text: string,
-    idempotencyKey: string,
-    expected?: { title: string },
-  ): Promise<SendOutcome>;
+  sendText(accountId: string, providerConversationId: string, text: string, idempotencyKey: string, expected?: { title: string }): Promise<SendOutcome>;
   sessionInfo(accountId: string): SessionInfo;
   /** Stop worker; keeps saved login. */
   disconnect(accountId: string): Promise<void>;

@@ -10,7 +10,13 @@ export const CreateAccountBody = z.object({
   connectorType: z.enum(['mock', 'instagram-browser']).default('mock'),
   /** Required (true) for real accounts: records the shop owner's express authorization. */
   consentConfirmed: z.boolean(),
-  expectedInstagramHandle: z.string().trim().min(1).max(60).regex(/^[A-Za-z0-9._]+$/).optional(),
+  expectedInstagramHandle: z
+    .string()
+    .trim()
+    .min(1)
+    .max(60)
+    .regex(/^[A-Za-z0-9._]+$/)
+    .optional(),
 });
 export const SettingsBody = z.object({ outboundEnabled: z.boolean() });
 export const SendBody = z.object({
@@ -25,5 +31,10 @@ export const EventsQuery = z.object({ afterSequence: z.coerce.number().int().min
 export const CreateKeyBody = z.object({ name: z.string().trim().min(1).max(60) });
 export const DevInjectBody = z.object({ providerConversationId: z.string(), text: z.string().nullable(), imageOnly: z.boolean().optional() });
 export const DevStatusBody = z.object({ status: z.enum(['connected', 'login_required', 'checkpoint_required']) });
-export const DevPlanBody = z.object({ outcomes: z.array(z.enum(['sent', 'failed', 'uncertain', 'throw_ui_changed'])).min(1).max(10) });
+export const DevPlanBody = z.object({
+  outcomes: z
+    .array(z.enum(['sent', 'failed', 'uncertain', 'throw_ui_changed']))
+    .min(1)
+    .max(10),
+});
 export const Empty = z.object({}).passthrough();

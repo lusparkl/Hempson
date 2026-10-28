@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { call, makeApp, mockAccount, type TestApp } from '../helpers';
 
 let a: TestApp;
-afterEach(async () => { await a?.close(); a?.cleanup(); });
+afterEach(async () => {
+  await a?.close();
+  a?.cleanup();
+});
 
 async function firstConv(accountId: string) {
   await a.svc.syncOnce(accountId);
@@ -51,7 +54,10 @@ describe('mock end-to-end', () => {
       while (!until(seen)) {
         const { value } = await reader.read();
         buf += dec.decode(value);
-        for (const m of buf.matchAll(/^id: (\d+)$/gm)) { const n = Number(m[1]); if (!seen.includes(n)) seen.push(n); }
+        for (const m of buf.matchAll(/^id: (\d+)$/gm)) {
+          const n = Number(m[1]);
+          if (!seen.includes(n)) seen.push(n);
+        }
       }
     };
     await pump((s) => s.length >= 1);

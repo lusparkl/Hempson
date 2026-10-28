@@ -34,10 +34,19 @@ export function parseConversations(rows: RawConversationRow[]): ObservedConversa
   for (const r of rows) {
     const id = threadIdFromHref(r.href);
     const title = r.title?.replace(/\s+/g, ' ').trim();
-    if (!id || !title) { skipped++; continue; }
+    if (!id || !title) {
+      skipped++;
+      continue;
+    }
     if (seen.has(id)) continue; // duplicate anchors for same thread
     seen.add(id);
-    out.push({ providerConversationId: id, title, participantHandles: r.handles.map(normalizeHandle).filter(Boolean), latestMessageAt: parseTimestamp(r.datetime), unread: r.unread });
+    out.push({
+      providerConversationId: id,
+      title,
+      participantHandles: r.handles.map(normalizeHandle).filter(Boolean),
+      latestMessageAt: parseTimestamp(r.datetime),
+      unread: r.unread,
+    });
   }
   if (rows.length > 0 && out.length === 0) throw new ConnectorError('UI_CHANGED', `No conversation row could be parsed (${skipped} skipped)`, { operation: 'listConversations' });
   return out;

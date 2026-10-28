@@ -9,16 +9,27 @@ import { REDACT_PATHS } from '../../apps/api/src/server';
 import { call, makeApp, mockAccount, type TestApp } from '../helpers';
 
 const apps: TestApp[] = [];
-const mk = async (...a: Parameters<typeof makeApp>) => { const x = await makeApp(...a); apps.push(x); return x; };
-afterEach(async () => { for (const a of apps.splice(0)) { await a.close(); a.cleanup(); } });
+const mk = async (...a: Parameters<typeof makeApp>) => {
+  const x = await makeApp(...a);
+  apps.push(x);
+  return x;
+};
+afterEach(async () => {
+  for (const a of apps.splice(0)) {
+    await a.close();
+    a.cleanup();
+  }
+});
 
 const conv = async (a: TestApp, id: string, provider = 'mock-thread-olena') => {
   await a.svc.syncOnce(id);
   const r = await call(a, a.admin, 'GET', `/v1/accounts/${id}/conversations`);
   return r.body.items.find((c: any) => c.providerConversationId === provider);
 };
-const events = async (a: TestApp, id: string, type?: string) => (await call(a, a.admin, 'GET', `/v1/accounts/${id}/events?limit=500`)).body.items.filter((e: any) => !type || e.type === type);
-const send = (a: TestApp, id: string, cid: string, text: string, key: string, extra: object = {}) => call(a, a.admin, 'POST', `/v1/accounts/${id}/conversations/${cid}/messages`, { text, idempotencyKey: key, ...extra });
+const events = async (a: TestApp, id: string, type?: string) =>
+  (await call(a, a.admin, 'GET', `/v1/accounts/${id}/events?limit=500`)).body.items.filter((e: any) => !type || e.type === type);
+const send = (a: TestApp, id: string, cid: string, text: string, key: string, extra: object = {}) =>
+  call(a, a.admin, 'POST', `/v1/accounts/${id}/conversations/${cid}/messages`, { text, idempotencyKey: key, ...extra });
 
 describe('auth & tenant isolation', () => {
   it('requires a key; scoped key cannot touch another account', async () => {
@@ -29,7 +40,13 @@ describe('auth & tenant isolation', () => {
     expect((await call(a, 'hep_bogus', 'GET', `/v1/accounts/${A}/status`)).status).toBe(401);
     const keyA = (await call(a, a.admin, 'POST', `/v1/accounts/${A}/api-keys`, { name: 'a' })).body.key;
     expect((await call(a, keyA, 'GET', `/v1/accounts/${A}/status`)).status).toBe(200);
-    for (const [m, u] of [['GET', `/v1/accounts/${B}/status`], ['GET', `/v1/accounts/${B}/conversations`], ['GET', `/v1/accounts/${B}/events`], ['GET', `/v1/accounts/${B}/export`], ['POST', `/v1/accounts/${B}/session/pause`]] as const) {
+    for (const [m, u] of [
+      ['GET', `/v1/accounts/${B}/status`],
+      ['GET', `/v1/accounts/${B}/conversations`],
+      ['GET', `/v1/accounts/${B}/events`],
+      ['GET', `/v1/accounts/${B}/export`],
+      ['POST', `/v1/accounts/${B}/session/pause`],
+    ] as const) {
       const r = await call(a, keyA, m, u);
       expect(r.status, u).toBe(403);
       expect(r.body.error.code).toBe('FORBIDDEN');
@@ -107,7 +124,8 @@ describe('new-message events', () => {
     const before = (await events(a, A, 'message.received')).length;
     const dir = a.dir;
     await a.close();
-    const b = await makeApp({ dir }); apps.push(b);
+    const b = await makeApp({ dir });
+    apps.push(b);
     await b.svc.startSession(A, { interactive: false });
     await b.svc.syncOnce(A);
     await b.svc.syncOnce(A);
@@ -121,7 +139,8 @@ describe('new-message events', () => {
     await a.svc.syncOnce(A);
     const dir = a.dir;
     await a.close();
-    const b = await makeApp({ dir }); apps.push(b);
+    const b = await makeApp({ dir });
+    apps.push(b);
     await b.svc.startSession(A, { interactive: false });
     b.mock.devInjectIncoming(A, 'mock-thread-iryna', 'new after restart');
     await b.svc.syncOnce(A);
@@ -248,7 +267,10 @@ describe('events', () => {
     const a = await mk();
     const A = await mockAccount(a);
     await a.svc.syncOnce(A);
-    for (let i = 0; i < 3; i++) { a.mock.devInjectIncoming(A, 'mock-thread-iryna', `msg ${i}`); await a.svc.syncOnce(A); }
+    for (let i = 0; i < 3; i++) {
+      a.mock.devInjectIncoming(A, 'mock-thread-iryna', `msg ${i}`);
+      await a.svc.syncOnce(A);
+    }
     const all = (await call(a, a.admin, 'GET', `/v1/accounts/${A}/events`)).body.items;
     expect(all.map((e: any) => e.sequence)).toEqual(all.map((_: any, i: number) => i + 1));
     const tail = (await call(a, a.admin, 'GET', `/v1/accounts/${A}/events?afterSequence=${all[1].sequence}`)).body;
@@ -270,7 +292,10 @@ describe('persistence & privacy', () => {
     const { runMigrations } = await import('@hepson/database');
     runMigrations(a.handle);
     runMigrations(a.handle);
-    const tables = a.handle.raw.prepare("select name from sqlite_master where type='table'").all().map((r: any) => r.name);
+    const tables = a.handle.raw
+      .prepare("select name from sqlite_master where type='table'")
+      .all()
+      .map((r: any) => r.name);
     for (const t of ['store_accounts', 'api_keys', 'conversations', 'messages', 'outbox', 'events', 'connector_state']) expect(tables).toContain(t);
     const bad = /cookie|password|passwd|secret|totp|2fa|session_?id|access_?token|profile_?bytes|storage_?state/i;
     for (const t of Object.values(schema)) {
@@ -289,7 +314,10 @@ describe('persistence & privacy', () => {
     await conv(a, A);
     const exp = JSON.stringify((await call(a, a.admin, 'GET', `/v1/accounts/${A}/export`)).body);
     const status = JSON.stringify((await call(a, a.admin, 'GET', `/v1/accounts/${A}/status`)).body);
-    for (const s of [exp, status]) { expect(s).not.toContain(a.dir); expect(s).not.toMatch(/profiles|cookie/i); }
+    for (const s of [exp, status]) {
+      expect(s).not.toContain(a.dir);
+      expect(s).not.toMatch(/profiles|cookie/i);
+    }
     for (const u of [`/profiles/${A}/Default/Cookies`, `/v1/profiles/${A}`, '/hepson.db', '/static/../hepson.db']) expect((await call(a, a.admin, 'GET', u)).status).toBe(404);
   });
   it('default data dir is outside the repo and repo ignores profile-like paths', () => {
@@ -313,13 +341,24 @@ describe('persistence & privacy', () => {
   });
   it('log redaction removes auth headers, cookies, message text', () => {
     let out = '';
-    const l = pino({ redact: { paths: REDACT_PATHS, censor: '[redacted]' } }, { write: (s: string) => { out += s; } } as any);
+    const l = pino({ redact: { paths: REDACT_PATHS, censor: '[redacted]' } }, {
+      write: (s: string) => {
+        out += s;
+      },
+    } as any);
     l.info({ req: { headers: { authorization: 'Bearer hep_SECRET', cookie: 'sessionid=abc' } }, msg2: 1, data: { text: 'private customer text', cookie: 'sessionid=zzz' } }, 'x');
     expect(out).not.toMatch(/hep_SECRET|sessionid|private customer/);
   });
   it('OpenAPI is served and covers the minimum routes', async () => {
     const a = await mk();
     const spec = (await call(a, null, 'GET', '/v1/openapi.json')).body;
-    for (const p of ['/v1/accounts', '/v1/accounts/{accountId}/status', '/v1/accounts/{accountId}/session/profile', '/v1/accounts/{accountId}/conversations/{conversationId}/messages', '/v1/accounts/{accountId}/events/stream']) expect(spec.paths[p], p).toBeTruthy();
+    for (const p of [
+      '/v1/accounts',
+      '/v1/accounts/{accountId}/status',
+      '/v1/accounts/{accountId}/session/profile',
+      '/v1/accounts/{accountId}/conversations/{conversationId}/messages',
+      '/v1/accounts/{accountId}/events/stream',
+    ])
+      expect(spec.paths[p], p).toBeTruthy();
   });
 });

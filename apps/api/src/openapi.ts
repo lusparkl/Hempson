@@ -27,7 +27,16 @@ export function buildOpenApi(defs: AnyDef[]) {
     (paths[url] ??= {})[d.method.toLowerCase()] = op;
   }
   paths['/v1/accounts/{accountId}/events/stream'] = {
-    get: { summary: 'Server-sent events; supports afterSequence / Last-Event-ID replay', tags: ['events'], security: [{ bearer: [] }], parameters: [{ name: 'accountId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }, { name: 'afterSequence', in: 'query', schema: { type: 'integer' } }], responses: { '200': { description: 'text/event-stream' } } },
+    get: {
+      summary: 'Server-sent events; supports afterSequence / Last-Event-ID replay',
+      tags: ['events'],
+      security: [{ bearer: [] }],
+      parameters: [
+        { name: 'accountId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        { name: 'afterSequence', in: 'query', schema: { type: 'integer' } },
+      ],
+      responses: { '200': { description: 'text/event-stream' } },
+    },
   };
   return {
     openapi: '3.1.0',
@@ -35,7 +44,19 @@ export function buildOpenApi(defs: AnyDef[]) {
     servers: [{ url: 'http://127.0.0.1:8787' }],
     components: {
       securitySchemes: { bearer: { type: 'http', scheme: 'bearer' } },
-      schemas: { Error: { type: 'object', required: ['error'], properties: { error: { type: 'object', required: ['code', 'message', 'retryable'], properties: { code: { type: 'string' }, message: { type: 'string' }, retryable: { type: 'boolean' } } } } } },
+      schemas: {
+        Error: {
+          type: 'object',
+          required: ['error'],
+          properties: {
+            error: {
+              type: 'object',
+              required: ['code', 'message', 'retryable'],
+              properties: { code: { type: 'string' }, message: { type: 'string' }, retryable: { type: 'boolean' } },
+            },
+          },
+        },
+      },
     },
     paths,
   };

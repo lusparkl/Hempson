@@ -16,7 +16,7 @@ import {
 type MockThread = { conv: ObservedConversation; messages: ObservedMessage[] };
 type MockAccount = { status: ConnectorStatus; threads: Map<string, MockThread>; sentLog: Array<{ key: string; providerConversationId: string; text: string }> };
 
-const SEED: Array<{ id: string; title: string; handle: string; msgs: Array<[ 'incoming' | 'outgoing', string | null, string, ObservedMessage['attachments']? ]> }> = [
+const SEED: Array<{ id: string; title: string; handle: string; msgs: Array<['incoming' | 'outgoing', string | null, string, ObservedMessage['attachments']?]> }> = [
   {
     id: 'mock-thread-olena',
     title: 'Олена Коваль',
@@ -89,7 +89,10 @@ export class MockAdapter implements MessagingAdapter {
           sentAt,
           ordinal,
         }));
-        threads.set(s.id, { conv: { providerConversationId: s.id, title: s.title, participantHandles: [s.handle], latestMessageAt: messages.at(-1)!.sentAt, unread: false }, messages });
+        threads.set(s.id, {
+          conv: { providerConversationId: s.id, title: s.title, participantHandles: [s.handle], latestMessageAt: messages.at(-1)!.sentAt, unread: false },
+          messages,
+        });
       }
       a = { status: 'disconnected', threads, sentLog: [] };
       this.accounts.set(accountId, a);
@@ -137,7 +140,15 @@ export class MockAdapter implements MessagingAdapter {
     if (plan === 'uncertain') return { status: 'uncertain' };
     const a = this.acc(accountId);
     a.sentLog.push({ key, providerConversationId: id, text });
-    const m: ObservedMessage = { providerMessageId: `mock-out-${randomUUID()}`, direction: 'outgoing', senderDisplayName: 'shop', text, attachments: [], sentAt: new Date().toISOString(), ordinal: t.messages.length };
+    const m: ObservedMessage = {
+      providerMessageId: `mock-out-${randomUUID()}`,
+      direction: 'outgoing',
+      senderDisplayName: 'shop',
+      text,
+      attachments: [],
+      sentAt: new Date().toISOString(),
+      ordinal: t.messages.length,
+    };
     t.messages.push(m);
     t.conv.latestMessageAt = m.sentAt;
     return { status: 'sent', providerMessageId: m.providerMessageId };
@@ -160,7 +171,15 @@ export class MockAdapter implements MessagingAdapter {
   devInjectIncoming(accountId: string, providerConversationId: string, text: string | null, opts: { attachments?: ObservedMessage['attachments']; sentAt?: string } = {}) {
     const t = this.acc(accountId).threads.get(providerConversationId);
     if (!t) throw new ConnectorError('NOT_FOUND', 'Mock thread not found');
-    const m: ObservedMessage = { providerMessageId: `mock-in-${randomUUID()}`, direction: 'incoming', senderDisplayName: t.conv.title, text, attachments: opts.attachments ?? [], sentAt: opts.sentAt ?? new Date().toISOString(), ordinal: t.messages.length };
+    const m: ObservedMessage = {
+      providerMessageId: `mock-in-${randomUUID()}`,
+      direction: 'incoming',
+      senderDisplayName: t.conv.title,
+      text,
+      attachments: opts.attachments ?? [],
+      sentAt: opts.sentAt ?? new Date().toISOString(),
+      ordinal: t.messages.length,
+    };
     t.messages.push(m);
     t.conv.latestMessageAt = m.sentAt;
     t.conv.unread = true;

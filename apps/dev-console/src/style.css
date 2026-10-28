@@ -1,19 +1,117 @@
-:root { font-family: system-ui, sans-serif; color: #1c1c1e; background: #f4f4f6; }
-body { margin: 0; }
-header { background: #1c1c1e; color: #fff; padding: 8px 16px; display: flex; gap: 12px; align-items: center; }
-header input { flex: 1; max-width: 420px; }
-main { display: grid; grid-template-columns: 260px 1fr 340px; gap: 12px; padding: 12px; align-items: start; }
-section { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px; overflow: auto; max-height: 85vh; }
-h3 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #555; }
-button { cursor: pointer; margin: 2px 4px 2px 0; }
-.danger { color: #b00020; }
-.tag { font-size: 11px; padding: 1px 6px; border-radius: 10px; margin-left: 6px; }
-.mock { background: #fff3c4; } .real { background: #cdeccd; }
-.row { padding: 6px; border-bottom: 1px solid #eee; cursor: pointer; } .row.sel { background: #e8f0ff; }
-.msg { margin: 4px 0; padding: 6px 8px; border-radius: 8px; max-width: 80%; white-space: pre-wrap; }
-.in { background: #eee; } .out { background: #d6e8ff; margin-left: auto; }
-.status-connected { color: #0a7d2c; } .status-login_required, .status-checkpoint_required, .status-failed { color: #b00020; } .status-degraded { color: #b26a00; }
-.banner { padding: 6px 8px; border-radius: 4px; background: #e6f4ea; margin: 6px 0; }
-.warn { background: #fdecea; }
-code, pre { font-size: 12px; } pre { margin: 0; white-space: pre-wrap; word-break: break-all; }
-.ev { border-bottom: 1px solid #eee; padding: 3px 0; font-size: 12px; }
+:root {
+  font-family: system-ui, sans-serif;
+  color: #1c1c1e;
+  background: #f4f4f6;
+}
+body {
+  margin: 0;
+}
+header {
+  background: #1c1c1e;
+  color: #fff;
+  padding: 8px 16px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+header input {
+  flex: 1;
+  max-width: 420px;
+}
+main {
+  display: grid;
+  grid-template-columns: 260px 1fr 340px;
+  gap: 12px;
+  padding: 12px;
+  align-items: start;
+}
+section {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 10px;
+  overflow: auto;
+  max-height: 85vh;
+}
+h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #555;
+}
+button {
+  cursor: pointer;
+  margin: 2px 4px 2px 0;
+}
+.danger {
+  color: #b00020;
+}
+.tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 6px;
+}
+.mock {
+  background: #fff3c4;
+}
+.real {
+  background: #cdeccd;
+}
+.row {
+  padding: 6px;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+}
+.row.sel {
+  background: #e8f0ff;
+}
+.msg {
+  margin: 4px 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  max-width: 80%;
+  white-space: pre-wrap;
+}
+.in {
+  background: #eee;
+}
+.out {
+  background: #d6e8ff;
+  margin-left: auto;
+}
+.status-connected {
+  color: #0a7d2c;
+}
+.status-login_required,
+.status-checkpoint_required,
+.status-failed {
+  color: #b00020;
+}
+.status-degraded {
+  color: #b26a00;
+}
+.banner {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #e6f4ea;
+  margin: 6px 0;
+}
+.warn {
+  background: #fdecea;
+}
+code,
+pre {
+  font-size: 12px;
+}
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ev {
+  border-bottom: 1px solid #eee;
+  padding: 3px 0;
+  font-size: 12px;
+}

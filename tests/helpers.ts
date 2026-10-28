@@ -17,7 +17,13 @@ export async function call(a: { app: App['app'] }, key: string | null, method: '
   const res = await a.app.inject({ method, url, headers: key ? authH(key) : {}, payload: payload as never });
   return { status: res.statusCode, body: res.body ? safeJson(res.body) : null, headers: res.headers };
 }
-const safeJson = (s: string) => { try { return JSON.parse(s); } catch { return s; } };
+const safeJson = (s: string) => {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s;
+  }
+};
 
 export async function mockAccount(a: TestApp, label = 'mock-shop', start = true) {
   const r = await call(a, a.admin, 'POST', '/v1/accounts', { label, connectorType: 'mock', consentConfirmed: false });

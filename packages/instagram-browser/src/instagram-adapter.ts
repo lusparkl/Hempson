@@ -22,7 +22,16 @@ import { sendTextInPage } from './sender';
 import { Mutex } from './mutex';
 import { establishSession, watchForOwnerLogin } from './login';
 
-export type BrowserAdapterOptions = { dataDir: string; baseUrl: string; headless: boolean; loginWaitMs: number; maxConcurrent: number; reconnectDelayMs?: number };
+export type BrowserAdapterOptions = {
+  dataDir: string;
+  baseUrl: string;
+  headless: boolean;
+  loginWaitMs: number;
+  maxConcurrent: number;
+  reconnectDelayMs?: number;
+  sendConfirmMs?: number;
+  reloadInboxEveryMs?: number;
+};
 
 type Sess = {
   accountId: string;
@@ -36,6 +45,7 @@ type Sess = {
   expectedHandle: string | null;
   ctx: ConnectContext;
   closing: boolean;
+  inboxLoadedAt: number;
   watcher?: AbortController;
 };
 
@@ -88,7 +98,19 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
     const dir = profileDir(this.o.dataDir, accountId);
     const hadProfile = hasProfile(dir);
     const opened = await this.mgr.launch(accountId, () => this.onCrash(accountId));
-    const s: Sess = { accountId, ...opened, status: 'connecting', restored: false, handle: null, awaitingOwner: false, mutex: new Mutex(), expectedHandle: ctx.expectedHandle, ctx, closing: false };
+    const s: Sess = {
+      accountId,
+      ...opened,
+      status: 'connecting',
+      restored: false,
+      handle: null,
+      awaitingOwner: false,
+      mutex: new Mutex(),
+      expectedHandle: ctx.expectedHandle,
+      ctx,
+      closing: false,
+      inboxLoadedAt: 0,
+    };
     this.sessions.set(accountId, s);
     this.statuses.set(accountId, 'connecting');
     const outcome = await establishSession(s.page, this.deps(s), { expectedHandle: ctx.expectedHandle }).catch(async (e) => {
@@ -113,23 +135,25 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
         s.awaitingOwner = true;
         this.emit(accountId, outcome.state, { code: outcome.state === 'login_required' ? 'LOGIN_REQUIRED' : 'CHECKPOINT_REQUIRED' });
         s.watcher = new AbortController();
-        void watchForOwnerLogin(s.page, this.deps(s), { expectedHandle: ctx.expectedHandle, signal: s.watcher.signal }).then(async (r) => {
-          s.awaitingOwner = false;
-          if (s.closing) return;
-          if (r.state === 'connected') {
-            s.handle = r.handle;
-            s.restored = false; // owner logged in during this session
-            ctx.onHandleObserved?.(r.handle);
-            this.emit(accountId, 'connected');
-          } else if (r.state === 'aborted') {
-            return;
-          } else {
-            await this.closeSession(accountId, { keepStatus: true });
-            if (r.state === 'identity_mismatch') this.emit(accountId, 'failed', { code: 'IDENTITY_MISMATCH' });
-            else if (r.state === 'checkpoint_required') this.emit(accountId, 'checkpoint_required', { code: 'CHECKPOINT_REQUIRED' });
-            else this.emit(accountId, 'login_required', { code: 'LOGIN_REQUIRED' });
-          }
-        }).catch(() => undefined);
+        void watchForOwnerLogin(s.page, this.deps(s), { expectedHandle: ctx.expectedHandle, signal: s.watcher.signal })
+          .then(async (r) => {
+            s.awaitingOwner = false;
+            if (s.closing) return;
+            if (r.state === 'connected') {
+              s.handle = r.handle;
+              s.restored = false; // owner logged in during this session
+              ctx.onHandleObserved?.(r.handle);
+              this.emit(accountId, 'connected');
+            } else if (r.state === 'aborted') {
+              return;
+            } else {
+              await this.closeSession(accountId, { keepStatus: true });
+              if (r.state === 'identity_mismatch') this.emit(accountId, 'failed', { code: 'IDENTITY_MISMATCH' });
+              else if (r.state === 'checkpoint_required') this.emit(accountId, 'checkpoint_required', { code: 'CHECKPOINT_REQUIRED' });
+              else this.emit(accountId, 'login_required', { code: 'LOGIN_REQUIRED' });
+            }
+          })
+          .catch(() => undefined);
         return outcome.state;
     }
   }
@@ -178,8 +202,14 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
   }
 
   private async gotoInbox(s: Sess) {
-    if (!new URL(s.page.url()).pathname.startsWith('/direct/inbox')) {
-      await s.page.goto(`${this.o.baseUrl}/direct/inbox/`, { waitUntil: 'domcontentloaded' }).catch((e) => { throw new ConnectorError('TEMPORARY_FAILURE', `Navigation failed: ${(e as Error).message.split('\n')[0]}`); });
+    // The inbox SPA updates itself, so we don't reload every poll; but a periodic reload is the only
+    // way to notice a revoked login / challenge that the stale DOM would hide.
+    const stale = Date.now() - s.inboxLoadedAt >= (this.o.reloadInboxEveryMs ?? 5 * 60_000);
+    if (stale || !new URL(s.page.url()).pathname.startsWith('/direct/inbox')) {
+      s.inboxLoadedAt = Date.now();
+      await s.page.goto(`${this.o.baseUrl}/direct/inbox/`, { waitUntil: 'domcontentloaded' }).catch((e) => {
+        throw new ConnectorError('TEMPORARY_FAILURE', `Navigation failed: ${(e as Error).message.split('\n')[0]}`);
+      });
     }
     await this.guard(s, 'inbox');
     if (!(await sel.inboxReady(s.page))) throw new ConnectorError('UI_CHANGED', 'Inbox region not found', { operation: 'listConversations' });
@@ -196,14 +226,17 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
   }
 
   private async openThread(s: Sess, providerConversationId: string, expectedTitle?: string, op = 'listMessages') {
-    await s.page.goto(`${this.o.baseUrl}/direct/t/${encodeURIComponent(providerConversationId)}/`, { waitUntil: 'domcontentloaded' }).catch((e) => { throw new ConnectorError('TEMPORARY_FAILURE', `Navigation failed: ${(e as Error).message.split('\n')[0]}`); });
+    await s.page.goto(`${this.o.baseUrl}/direct/t/${encodeURIComponent(providerConversationId)}/`, { waitUntil: 'domcontentloaded' }).catch((e) => {
+      throw new ConnectorError('TEMPORARY_FAILURE', `Navigation failed: ${(e as Error).message.split('\n')[0]}`);
+    });
     await this.guard(s, op);
     const url = new URL(s.page.url());
     if (!url.pathname.includes(`/direct/t/${providerConversationId}`)) throw new ConnectorError('UI_CHANGED', 'Opened a different conversation than requested', { operation: op });
     const title = await sel.readThreadTitle(s.page);
     if (expectedTitle !== undefined) {
       const { normalizeTitle } = await import('./parsers');
-      if (!title || normalizeTitle(title) !== normalizeTitle(expectedTitle)) throw new ConnectorError('UI_CHANGED', 'Conversation title does not match the expected chat; refusing to continue', { operation: op });
+      if (!title || normalizeTitle(title) !== normalizeTitle(expectedTitle))
+        throw new ConnectorError('UI_CHANGED', 'Conversation title does not match the expected chat; refusing to continue', { operation: op });
     }
   }
 
@@ -222,7 +255,7 @@ export class BrowserInstagramAdapter implements MessagingAdapter {
     const s = this.live(accountId);
     return s.mutex.run(async () => {
       await this.openThread(s, providerConversationId, expected?.title, 'sendText');
-      return sendTextInPage(s.page, text);
+      return sendTextInPage(s.page, text, { confirmMs: this.o.sendConfirmMs });
     });
   }
 

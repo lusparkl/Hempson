@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { fingerprintAll, messageFingerprint, type ObservedMessage } from '@hepson/connector-core';
 
-const m = (text: string, over: Partial<ObservedMessage> = {}): ObservedMessage => ({ direction: 'incoming', senderDisplayName: 'A', text, attachments: [], sentAt: null, ordinal: 0, ...over });
+const m = (text: string, over: Partial<ObservedMessage> = {}): ObservedMessage => ({
+  direction: 'incoming',
+  senderDisplayName: 'A',
+  text,
+  attachments: [],
+  sentAt: null,
+  ordinal: 0,
+  ...over,
+});
 
 describe('fingerprints', () => {
   it('is stable for same snapshot and independent of position shifts', () => {

@@ -19,7 +19,8 @@ export class BrowserManager {
     return this.open.size;
   }
   async launch(accountId: string, onUnexpectedClose: () => void): Promise<OpenedBrowser> {
-    if (this.open.size >= this.o.maxConcurrent && !this.open.has(accountId)) throw new ConnectorError('TEMPORARY_FAILURE', `Browser limit reached (${this.o.maxConcurrent}); pause another account first`);
+    if (this.open.size >= this.o.maxConcurrent && !this.open.has(accountId))
+      throw new ConnectorError('TEMPORARY_FAILURE', `Browser limit reached (${this.o.maxConcurrent}); pause another account first`);
     const dir = profileDir(this.o.dataDir, accountId);
     this.lock.acquire(accountId);
     try {
@@ -27,7 +28,9 @@ export class BrowserManager {
       const context = await chromium.launchPersistentContext(dir, { headless: this.o.headless, viewport: this.o.headless ? { width: 1280, height: 900 } : null });
       this.open.add(accountId);
       let intentional = false;
-      (context as BrowserContext & { __intentional?: () => void }).__intentional = () => { intentional = true; };
+      (context as BrowserContext & { __intentional?: () => void }).__intentional = () => {
+        intentional = true;
+      };
       context.on('close', () => {
         this.open.delete(accountId);
         this.lock.release(accountId);

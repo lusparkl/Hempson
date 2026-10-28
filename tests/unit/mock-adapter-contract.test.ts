@@ -13,7 +13,9 @@ export async function adapterContract(make: () => MessagingAdapter) {
   expect(await ad.connect(A, ctx)).toBe('connected');
   const convs = await ad.listConversations(A, { limit: 2 });
   expect(convs.items.length).toBe(2);
-  const c = convs.items.find((x) => x.providerConversationId === 'mock-thread-olena') ?? (await ad.listConversations(A)).items.find((x) => x.providerConversationId === 'mock-thread-olena')!;
+  const c =
+    convs.items.find((x) => x.providerConversationId === 'mock-thread-olena') ??
+    (await ad.listConversations(A)).items.find((x) => x.providerConversationId === 'mock-thread-olena')!;
   expect(c.providerConversationId).toBeTruthy();
   const page = await ad.listMessages(A, c.providerConversationId, { limit: 1 });
   expect(page.items).toHaveLength(1);

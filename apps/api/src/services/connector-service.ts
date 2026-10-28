@@ -1,12 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  ConnectorError,
-  fingerprintAll,
-  type ConnectorStatus,
-  type EventType,
-  type MessagingAdapter,
-  type ObservedMessage,
-} from '@hepson/connector-core';
+import { ConnectorError, fingerprintAll, type ConnectorStatus, type EventType, type MessagingAdapter, type ObservedMessage } from '@hepson/connector-core';
 import type { AccountRow, ConversationRow, MessageRow, OutboxRow, Store } from '@hepson/database';
 import type { Config } from '../config';
 import type { EventBus } from './event-bus';
@@ -138,7 +131,8 @@ export class ConnectorService {
     const accs = this.store.listAccounts().filter((a) => a.enabled && !a.paused && (a.connectorType === 'mock' || a.lastAuthValidatedAt));
     const real = accs.filter((a) => a.connectorType !== 'mock');
     const mock = accs.filter((a) => a.connectorType === 'mock');
-    for (const a of mock) await this.startSession(a.id, { interactive: false }).catch((e) => this.log.warn({ accountId: a.id, code: (e as ConnectorError).code }, 'autostart failed'));
+    for (const a of mock)
+      await this.startSession(a.id, { interactive: false }).catch((e) => this.log.warn({ accountId: a.id, code: (e as ConnectorError).code }, 'autostart failed'));
     // real browsers: bounded concurrency
     const queue = [...real];
     const workers = Array.from({ length: Math.max(1, this.cfg.maxConcurrentBrowsers) }, async () => {
@@ -252,7 +246,8 @@ export class ConnectorService {
       });
       const sig = JSON.stringify([oc.latestMessageAt, oc.unread, oc.title]);
       const needRead = up.created || sigs.get(oc.providerConversationId) !== sig;
-      if (up.changed && baselineDone) this.bus.emit(accountId, 'conversation.updated', { conversationId: up.row.id, title: up.row.title, unread: up.row.unread, latestMessageAt: up.row.lastMessageAt });
+      if (up.changed && baselineDone)
+        this.bus.emit(accountId, 'conversation.updated', { conversationId: up.row.id, title: up.row.title, unread: up.row.unread, latestMessageAt: up.row.lastMessageAt });
       if (!needRead) continue;
       const msgs = await adapter.listMessages(accountId, oc.providerConversationId, { limit: 50 });
       this.ingest(accountId, up.row, msgs.items, emitReceived);
@@ -272,7 +267,8 @@ export class ConnectorService {
         if (mine) {
           this.store.setMessageFingerprint(accountId, mine.id, fp, m.providerMessageId ?? null);
           const ob = this.store.findUncertainOutbox(accountId, conv.id, m.text!);
-          if (ob && this.store.transitionOutbox(accountId, ob.id, ['uncertain'], 'sent')) this.bus.emit(accountId, 'message.sent', { outboxId: ob.id, conversationId: conv.id, messageId: mine.id, resolvedFromUncertain: true });
+          if (ob && this.store.transitionOutbox(accountId, ob.id, ['uncertain'], 'sent'))
+            this.bus.emit(accountId, 'message.sent', { outboxId: ob.id, conversationId: conv.id, messageId: mine.id, resolvedFromUncertain: true });
           return;
         }
         // Uncertain outbox whose local message was never written: resolve now.
@@ -311,7 +307,13 @@ export class ConnectorService {
   }
 
   // ---------- sending ----------
-  async requestSend(accountId: string, conversationId: string, text: string, idempotencyKey: string, dryRun: boolean): Promise<{ outbox: OutboxRow | null; replay: boolean; dryRun: boolean }> {
+  async requestSend(
+    accountId: string,
+    conversationId: string,
+    text: string,
+    idempotencyKey: string,
+    dryRun: boolean,
+  ): Promise<{ outbox: OutboxRow | null; replay: boolean; dryRun: boolean }> {
     const acc = this.mustAccount(accountId);
     const body = text.trim();
     if (!body) throw new ConnectorError('VALIDATION_ERROR', 'Message text must not be blank');
@@ -325,7 +327,11 @@ export class ConnectorService {
       return { outbox: prior, replay: true, dryRun: false };
     }
     if (!acc.outboundEnabled) throw new ConnectorError('OUTBOUND_DISABLED', 'Outbound sending is disabled for this account (outboundEnabled=false)');
-    if (acc.status !== 'connected') throw new ConnectorError(acc.status === 'login_required' ? 'LOGIN_REQUIRED' : acc.status === 'checkpoint_required' ? 'CHECKPOINT_REQUIRED' : 'ACCOUNT_NOT_CONNECTED', `Account is ${acc.status}`);
+    if (acc.status !== 'connected')
+      throw new ConnectorError(
+        acc.status === 'login_required' ? 'LOGIN_REQUIRED' : acc.status === 'checkpoint_required' ? 'CHECKPOINT_REQUIRED' : 'ACCOUNT_NOT_CONNECTED',
+        `Account is ${acc.status}`,
+      );
     if (dryRun) return { outbox: null, replay: false, dryRun: true };
 
     const { row: ob } = this.store.createOutbox(accountId, { conversationId: conv.id, idempotencyKey, body, bodyHash, dryRun: false });
@@ -362,7 +368,8 @@ export class ConnectorService {
         // Adapter contract: throws only BEFORE any irreversible UI action => safe to mark failed.
         status = 'failed';
         errorCode = e.code;
-        if (e.code === 'LOGIN_REQUIRED' || e.code === 'CHECKPOINT_REQUIRED') this.onAdapterStatus(accountId, e.code === 'LOGIN_REQUIRED' ? 'login_required' : 'checkpoint_required', { code: e.code });
+        if (e.code === 'LOGIN_REQUIRED' || e.code === 'CHECKPOINT_REQUIRED')
+          this.onAdapterStatus(accountId, e.code === 'LOGIN_REQUIRED' ? 'login_required' : 'checkpoint_required', { code: e.code });
       } else {
         status = 'uncertain'; // unknown failure: could have clicked send. Never retry.
         errorCode = 'SEND_OUTCOME_UNCERTAIN';
@@ -387,8 +394,16 @@ export class ConnectorService {
       // Local record of an uncertain send so a later sync can reconcile it instead of duplicating.
       if (status === 'uncertain') {
         this.store.insertMessageIfNew(accountId, {
-          conversationId: conv.id, providerId: null, fingerprint: `out:${outboxId}`, direction: 'outgoing', senderDisplayName: null, text: ob.body, attachments: [],
-          sentAt: null, observedAt: new Date().toISOString(), deliveryStatus: 'uncertain',
+          conversationId: conv.id,
+          providerId: null,
+          fingerprint: `out:${outboxId}`,
+          direction: 'outgoing',
+          senderDisplayName: null,
+          text: ob.body,
+          attachments: [],
+          sentAt: null,
+          observedAt: new Date().toISOString(),
+          deliveryStatus: 'uncertain',
         });
       }
       this.bus.emit(accountId, 'connector.error', { code: errorCode ?? 'TEMPORARY_FAILURE', operation: 'sendText', outboxId, outcome: status });

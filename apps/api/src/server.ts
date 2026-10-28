@@ -14,7 +14,20 @@ import { ProfileAdmin } from './services/profile-admin';
 
 export type App = { app: FastifyInstance; svc: ConnectorService; store: Store; mock: MockAdapter; handle: DbHandle; cfg: Config; close(): Promise<void> };
 
-export const REDACT_PATHS = ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]', '*.password', '*.cookie', '*.cookies', '*.token', '*.accessToken', '*.apiKey', '*.key', '*.text', '*.body'];
+export const REDACT_PATHS = [
+  'req.headers.authorization',
+  'req.headers.cookie',
+  'res.headers["set-cookie"]',
+  '*.password',
+  '*.cookie',
+  '*.cookies',
+  '*.token',
+  '*.accessToken',
+  '*.apiKey',
+  '*.key',
+  '*.text',
+  '*.body',
+];
 
 export async function buildApp(overrides: Partial<Config> & { adapters?: Partial<AdapterRegistry>; logger?: boolean } = {}): Promise<App> {
   const cfg: Config = { ...loadConfig(), ...overrides };
@@ -71,12 +84,19 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   app.get('/v1/openapi.json', async () => spec);
 
   svc.recoverInterruptedSends();
-  const timer = setInterval(() => { for (const a of store.listAccounts()) store.purgeOlderThan(a.id, cfg.retentionDays); }, 6 * 3600_000);
+  const timer = setInterval(() => {
+    for (const a of store.listAccounts()) store.purgeOlderThan(a.id, cfg.retentionDays);
+  }, 6 * 3600_000);
   timer.unref();
 
   let closed = false;
   return {
-    app, svc, store, mock, handle, cfg,
+    app,
+    svc,
+    store,
+    mock,
+    handle,
+    cfg,
     async close() {
       if (closed) return;
       closed = true;

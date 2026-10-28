@@ -1,0 +1,9 @@
+AGENTS.md
+CLAUDE.md
+README.md
+docs/AI_HANDOFF.template.md
+pnpm-lock.yaml
+packages/database/src/migrations
+dist
+node_modules
+docs/openapi.json

@@ -4,10 +4,7 @@ import { normalizeHandle } from './parsers';
 import { classifyPage, inboxReady, readOwnHandle } from './selectors';
 
 export type SessionDeps = { baseUrl: string; loginWaitMs: number; setStatus: (s: ConnectorStatus, d?: { code?: string; message?: string }) => void };
-export type EstablishOutcome =
-  | { state: 'connected'; handle: string }
-  | { state: 'login_required' }
-  | { state: 'checkpoint_required' };
+export type EstablishOutcome = { state: 'connected'; handle: string } | { state: 'login_required' } | { state: 'checkpoint_required' };
 
 /** Throws LOGIN_REQUIRED / CHECKPOINT_REQUIRED when the current page is not a normal logged-in page. */
 export async function checkPageForChallenge(page: Page, baseUrl: string): Promise<void> {
@@ -20,7 +17,8 @@ export async function checkPageForChallenge(page: Page, baseUrl: string): Promis
 export function assertIdentity(observed: string | null, expected: string | null): string {
   if (!observed) throw new ConnectorError('UI_CHANGED', 'Cannot confirm which Instagram account is signed in; refusing to attach conversations', { operation: 'identity' });
   const o = normalizeHandle(observed);
-  if (expected && normalizeHandle(expected) !== o) throw new ConnectorError('IDENTITY_MISMATCH', 'Signed-in Instagram account differs from the one expected for this store; human review required');
+  if (expected && normalizeHandle(expected) !== o)
+    throw new ConnectorError('IDENTITY_MISMATCH', 'Signed-in Instagram account differs from the one expected for this store; human review required');
   return o;
 }
 
@@ -61,8 +59,14 @@ export async function watchForOwnerLogin(page: Page, d: SessionDeps, o: { expect
     if (page.isClosed()) return { state: 'login_required' } as WatchResult;
     try {
       const st = await classifyPage(page, d.baseUrl);
-      if (st === 'checkpoint') { d.setStatus('checkpoint_required', { code: 'CHECKPOINT_REQUIRED' }); continue; }
-      if (st === 'login') { d.setStatus('login_required', { code: 'LOGIN_REQUIRED' }); continue; }
+      if (st === 'checkpoint') {
+        d.setStatus('checkpoint_required', { code: 'CHECKPOINT_REQUIRED' });
+        continue;
+      }
+      if (st === 'login') {
+        d.setStatus('login_required', { code: 'LOGIN_REQUIRED' });
+        continue;
+      }
       if (Date.now() - lastTry < 4000) continue;
       lastTry = Date.now();
       if (!new URL(page.url()).pathname.startsWith('/direct/inbox')) await page.goto(`${d.baseUrl}/direct/inbox/`, { waitUntil: 'domcontentloaded' });

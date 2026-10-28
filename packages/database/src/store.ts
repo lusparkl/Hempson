@@ -51,7 +51,11 @@ export class Store {
     return this.db.select().from(t.storeAccounts).where(eq(t.storeAccounts.id, id)).get();
   }
   updateAccount(id: string, patch: Partial<Omit<AccountRow, 'id' | 'createdAt'>>): void {
-    this.db.update(t.storeAccounts).set({ ...patch, updatedAt: now() }).where(eq(t.storeAccounts.id, id)).run();
+    this.db
+      .update(t.storeAccounts)
+      .set({ ...patch, updatedAt: now() })
+      .where(eq(t.storeAccounts.id, id))
+      .run();
   }
 
   // ---- api keys ----
@@ -105,7 +109,10 @@ export class Store {
         existing.lastMessageAt !== lastMessageAt ||
         existing.unread !== o.unread;
       const row = { ...existing, title: o.title, participants: o.participants, lastMessageAt, unread: o.unread, lastObservedAt: now() };
-      tx.update(t.conversations).set(row).where(and(eq(t.conversations.id, existing.id), eq(t.conversations.accountId, accountId))).run();
+      tx.update(t.conversations)
+        .set(row)
+        .where(and(eq(t.conversations.id, existing.id), eq(t.conversations.accountId, accountId)))
+        .run();
       return { row, created: false, changed };
     });
   }
@@ -142,26 +149,47 @@ export class Store {
   /** Insert if fingerprint unseen for this account. Returns the row when inserted, else null. */
   insertMessageIfNew(accountId: string, m: Omit<MessageRow, 'id' | 'seq' | 'accountId'>): MessageRow | null {
     return this.db.transaction((tx) => {
-      const seq = (tx.select({ m: sql<number>`coalesce(max(${t.messages.seq}), 0)` }).from(t.messages).where(eq(t.messages.accountId, accountId)).get()?.m ?? 0) + 1;
+      const seq =
+        (tx
+          .select({ m: sql<number>`coalesce(max(${t.messages.seq}), 0)` })
+          .from(t.messages)
+          .where(eq(t.messages.accountId, accountId))
+          .get()?.m ?? 0) + 1;
       const row: MessageRow = { ...m, id: randomUUID(), accountId, seq };
       const res = tx.insert(t.messages).values(row).onConflictDoNothing().run();
       return res.changes === 1 ? row : null;
     });
   }
   findMessageByFingerprint(accountId: string, fp: string): MessageRow | undefined {
-    return this.db.select().from(t.messages).where(and(eq(t.messages.accountId, accountId), eq(t.messages.fingerprint, fp))).get();
+    return this.db
+      .select()
+      .from(t.messages)
+      .where(and(eq(t.messages.accountId, accountId), eq(t.messages.fingerprint, fp)))
+      .get();
   }
   /** Local outgoing message (fingerprint `out:*`) awaiting reconciliation with the provider-observed copy. */
   findAdoptableOutgoing(accountId: string, conversationId: string, text: string): MessageRow | undefined {
     return this.db
       .select()
       .from(t.messages)
-      .where(and(eq(t.messages.accountId, accountId), eq(t.messages.conversationId, conversationId), eq(t.messages.direction, 'outgoing'), eq(t.messages.text, text), sql`${t.messages.fingerprint} like 'out:%'`))
+      .where(
+        and(
+          eq(t.messages.accountId, accountId),
+          eq(t.messages.conversationId, conversationId),
+          eq(t.messages.direction, 'outgoing'),
+          eq(t.messages.text, text),
+          sql`${t.messages.fingerprint} like 'out:%'`,
+        ),
+      )
       .orderBy(asc(t.messages.seq))
       .get();
   }
   setMessageFingerprint(accountId: string, id: string, fingerprint: string, providerId: string | null): void {
-    this.db.update(t.messages).set({ fingerprint, providerId, deliveryStatus: 'sent' }).where(and(eq(t.messages.accountId, accountId), eq(t.messages.id, id))).run();
+    this.db
+      .update(t.messages)
+      .set({ fingerprint, providerId, deliveryStatus: 'sent' })
+      .where(and(eq(t.messages.accountId, accountId), eq(t.messages.id, id)))
+      .run();
   }
   findUncertainOutbox(accountId: string, conversationId: string, body: string): OutboxRow | undefined {
     return this.db
@@ -172,13 +200,23 @@ export class Store {
       .get();
   }
   updateMessage(accountId: string, id: string, patch: Partial<Pick<MessageRow, 'deliveryStatus' | 'providerId' | 'sentAt'>>): void {
-    this.db.update(t.messages).set(patch).where(and(eq(t.messages.accountId, accountId), eq(t.messages.id, id))).run();
+    this.db
+      .update(t.messages)
+      .set(patch)
+      .where(and(eq(t.messages.accountId, accountId), eq(t.messages.id, id)))
+      .run();
   }
   /** Older-first page output; cursor = seq of the oldest returned message (pass back to go older). */
   listMessages(accountId: string, conversationId: string, limit: number, cursor?: string): { items: MessageRow[]; nextCursor: string | null } {
     const conds = [eq(t.messages.accountId, accountId), eq(t.messages.conversationId, conversationId)];
     if (cursor) conds.push(lt(t.messages.seq, Number(cursor)));
-    const rows = this.db.select().from(t.messages).where(and(...conds)).orderBy(desc(t.messages.seq)).limit(limit + 1).all();
+    const rows = this.db
+      .select()
+      .from(t.messages)
+      .where(and(...conds))
+      .orderBy(desc(t.messages.seq))
+      .limit(limit + 1)
+      .all();
     const page = rows.slice(0, limit);
     const oldest = page[page.length - 1];
     return { items: page.reverse(), nextCursor: rows.length > limit && oldest ? String(oldest.seq) : null };
@@ -191,7 +229,11 @@ export class Store {
   /** Atomic create-or-return by (accountId, idempotencyKey). */
   createOutbox(accountId: string, o: { conversationId: string; idempotencyKey: string; body: string; bodyHash: string; dryRun: boolean }): { row: OutboxRow; created: boolean } {
     return this.db.transaction((tx) => {
-      const existing = tx.select().from(t.outbox).where(and(eq(t.outbox.accountId, accountId), eq(t.outbox.idempotencyKey, o.idempotencyKey))).get();
+      const existing = tx
+        .select()
+        .from(t.outbox)
+        .where(and(eq(t.outbox.accountId, accountId), eq(t.outbox.idempotencyKey, o.idempotencyKey)))
+        .get();
       if (existing) return { row: existing, created: false };
       const row: OutboxRow = {
         id: randomUUID(),
@@ -212,15 +254,29 @@ export class Store {
     });
   }
   findOutboxByKey(accountId: string, key: string): OutboxRow | undefined {
-    return this.db.select().from(t.outbox).where(and(eq(t.outbox.accountId, accountId), eq(t.outbox.idempotencyKey, key))).get();
+    return this.db
+      .select()
+      .from(t.outbox)
+      .where(and(eq(t.outbox.accountId, accountId), eq(t.outbox.idempotencyKey, key)))
+      .get();
   }
   getOutbox(accountId: string, id: string): OutboxRow | undefined {
-    return this.db.select().from(t.outbox).where(and(eq(t.outbox.accountId, accountId), eq(t.outbox.id, id))).get();
+    return this.db
+      .select()
+      .from(t.outbox)
+      .where(and(eq(t.outbox.accountId, accountId), eq(t.outbox.id, id)))
+      .get();
   }
   listOutbox(accountId: string, statuses?: OutboxRow['status'][]): OutboxRow[] {
     const conds = [eq(t.outbox.accountId, accountId)];
     if (statuses) conds.push(inArray(t.outbox.status, statuses));
-    return this.db.select().from(t.outbox).where(and(...conds)).orderBy(desc(t.outbox.createdAt)).limit(100).all();
+    return this.db
+      .select()
+      .from(t.outbox)
+      .where(and(...conds))
+      .orderBy(desc(t.outbox.createdAt))
+      .limit(100)
+      .all();
   }
   /** Compare-and-set transition; returns false if current status was not `from`. */
   transitionOutbox(accountId: string, id: string, from: OutboxRow['status'][], to: OutboxRow['status'], errorCode: string | null = null): boolean {
@@ -232,13 +288,22 @@ export class Store {
     return r.changes === 1;
   }
   markOutboxReviewed(accountId: string, id: string): void {
-    this.db.update(t.outbox).set({ reviewedAt: now(), updatedAt: now() }).where(and(eq(t.outbox.accountId, accountId), eq(t.outbox.id, id))).run();
+    this.db
+      .update(t.outbox)
+      .set({ reviewedAt: now(), updatedAt: now() })
+      .where(and(eq(t.outbox.accountId, accountId), eq(t.outbox.id, id)))
+      .run();
   }
 
   // ---- events ----
   appendEvent(accountId: string, type: string, payload: Record<string, unknown>): EventRow {
     return this.db.transaction((tx) => {
-      const seq = (tx.select({ m: sql<number>`coalesce(max(${t.events.sequence}), 0)` }).from(t.events).where(eq(t.events.accountId, accountId)).get()?.m ?? 0) + 1;
+      const seq =
+        (tx
+          .select({ m: sql<number>`coalesce(max(${t.events.sequence}), 0)` })
+          .from(t.events)
+          .where(eq(t.events.accountId, accountId))
+          .get()?.m ?? 0) + 1;
       const row: EventRow = { id: randomUUID(), accountId, type, payload, occurredAt: now(), sequence: seq };
       tx.insert(t.events).values(row).run();
       return row;
@@ -254,7 +319,13 @@ export class Store {
       .all();
   }
   lastEventSequence(accountId: string): number {
-    return this.db.select({ m: sql<number>`coalesce(max(${t.events.sequence}), 0)` }).from(t.events).where(eq(t.events.accountId, accountId)).get()?.m ?? 0;
+    return (
+      this.db
+        .select({ m: sql<number>`coalesce(max(${t.events.sequence}), 0)` })
+        .from(t.events)
+        .where(eq(t.events.accountId, accountId))
+        .get()?.m ?? 0
+    );
   }
 
   // ---- connector state ----
@@ -262,14 +333,24 @@ export class Store {
     return this.db.select().from(t.connectorState).where(eq(t.connectorState.accountId, accountId)).get();
   }
   patchState(accountId: string, patch: Partial<Omit<typeof t.connectorState.$inferInsert, 'accountId'>>): void {
-    this.db.insert(t.connectorState).values({ accountId, ...patch }).onConflictDoUpdate({ target: t.connectorState.accountId, set: patch }).run();
+    this.db
+      .insert(t.connectorState)
+      .values({ accountId, ...patch })
+      .onConflictDoUpdate({ target: t.connectorState.accountId, set: patch })
+      .run();
   }
 
   // ---- retention / export / delete ----
   purgeOlderThan(accountId: string, days: number): { messages: number; events: number } {
     const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
-    const m = this.db.delete(t.messages).where(and(eq(t.messages.accountId, accountId), lt(t.messages.observedAt, cutoff))).run().changes;
-    const e = this.db.delete(t.events).where(and(eq(t.events.accountId, accountId), lt(t.events.occurredAt, cutoff))).run().changes;
+    const m = this.db
+      .delete(t.messages)
+      .where(and(eq(t.messages.accountId, accountId), lt(t.messages.observedAt, cutoff)))
+      .run().changes;
+    const e = this.db
+      .delete(t.events)
+      .where(and(eq(t.events.accountId, accountId), lt(t.events.occurredAt, cutoff)))
+      .run().changes;
     return { messages: m, events: e };
   }
   /** Safe export: conversations + messages + outbox only. Never auth/profile material. */
