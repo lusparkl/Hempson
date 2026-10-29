@@ -1,0 +1,140 @@
+# Roadmap
+
+Status: TODO / IN PROGRESS / DONE / BLOCKED. Only mark DONE when code and tests exist.
+
+**Direction changed on 2026-10-29 (D22).** Features 0-12 below are history and stay as built. Everything forward-looking is the P-series in "Pivot roadmap" further down; the old "next features" lists in `docs/OVERVIEW.md` and `docs/AI_HANDOFF.md` are superseded by it. The P-series order is binding: one narrowly scoped feature per session.
+
+| # | Feature | Status | Depends on |
+|---|---------|--------|-----------|
+| 0 | Phase 1 Instagram connector (browser, mock, API, console) | DONE (live-verified on one account; see `docs/AI_HANDOFF.md`) | - |
+| 1 | Shop persistence foundation | DONE | - |
+| 2 | Authentication and shop memberships (owner/manager, cross-shop denial) | DONE | 1 |
+| 3 | Catalog backend: products, variants, stock >= 0, SKU unique per shop, search | DONE | 1, 2 |
+| 4 | Customers, conversations, messages (tenant-owned, channel + external id dedupe) | DONE | 1 |
+| 5 | Instagram adapter integration behind normalized channel interface (link `store_accounts` to shop) | DONE (mock + fake-IG tested; real Instagram not re-verified) | 4 |
+| 6 | OpenAI sales agent with tools, test doubles, no hallucinated price/stock | DONE (scripted-model and stubbed-fetch tests; one live OpenAI smoke with the mock adapter, 2026-10-29) | 3, 4 |
+| 7 | Order drafting with explicit seller approval state | DONE (same test limits as 6) | 3, 4, 6 |
+| 8 | Human takeover and Telegram notifications | DONE (stubbed Telegram only; no live bot call) | 2, 4 |
+| 9 | AI activity statistics (store-scoped) | DONE | 4, 6 |
+| 10 | Website chat channel (API + minimal widget; origin validation, abuse protection) | DONE (real Chromium vs local origins; no production deployment checks) | 4 |
+| 11 | Owner dashboard skeleton (minimal markup) | DONE (builds; one real-browser smoke run; no automated UI tests) | 2+ |
+| 12 | Product import (CSV) and operational hardening | DONE (CSV only; Excel and URL feeds deliberately not built, see D21) | 3 |
+
+## Feature 1 acceptance (met)
+`shops` table + migration `0001_shops`; `ShopRepository` create/get/getBySlug/list/update with zod validation; slug uniqueness; tests in `tests/unit/shops.test.ts`; no HTTP exposure.
+
+## Feature 2 acceptance (met)
+`users`, `memberships`, `user_sessions` tables (migration `0002_auth`); scrypt password hashing; opaque `hsu_` bearer sessions (hash stored); register/login/logout/me; shop create/list/get/update; member list/add/role/remove; last-owner protection; cross-shop denial (404) and manager-vs-owner (403) tested in `tests/integration/auth-shops.test.ts`.
+
+## Feature 3 acceptance (met)
+`products`, `product_variants` (migration `0003_catalog`), `CatalogRepository`, routes under `/v1/shops/:shopId/products`; integer minor-unit prices; stock CHECK >= 0 plus atomic delta; SKU unique per shop; Cyrillic-safe search; isolation tests in `tests/unit/catalog.test.ts` and `tests/integration/catalog-api.test.ts`. Not done: CSV/Excel import (Feature 12), product/variant hard delete (deactivate instead), media hosting.
+
+## Feature 4 acceptance (met)
+`customers`, `shop_conversations`, `shop_messages` (migration `0004_conversations`), all with `shop_id`; unique (shop, channel, external id) for customers and conversations, unique (conversation, external message id) for messages; direction, sender type (`customer|ai|human|system`), `sender_user_id`, delivery status; `ConversationRepository` (`packages/database/src/conversations.ts`) with shop-scoped queries; read-only member routes under `/v1/shops/:shopId/{customers,conversations}`. Tests: `tests/unit/conversations.test.ts`, `tests/integration/conversations-api.test.ts`. No Instagram wiring (Feature 5), no AI, no write routes.
+
+## Feature 5 acceptance (met)
+`store_accounts.shop_id` (migration `0005_account_shop_link`); `ChannelBridge` (`apps/api/src/services/channel-bridge.ts`) mirrors Phase 1 conversations/messages of linked accounts into `customers`/`shop_conversations`/`shop_messages` (new messages, sends, uncertain-send resolution, link-time and boot backfill); admin-only `PUT|DELETE /v1/accounts/:accountId/shop`; member `GET /v1/shops/:shopId/channels`. Phase 1 behavior and API unchanged apart from `shopId` in the account view. Tests: `tests/integration/channels.test.ts`. Not done: AI/agent consumption of mirrored messages (F6), sending from shop-side `pending` rows (F6/F8), dashboard onboarding of Instagram accounts, `instagram-official` adapter.
+
+## Feature 6 acceptance (met)
+`shop_ai_settings`, `ai_runs`, `escalations` (migration `0006_ai_agent_orders`); `AgentRepository`; `apps/api/src/agent/` (`llm.ts` provider-neutral interface + `OpenAiClient` over `fetch`, `tools.ts`, `guard.ts`, `prompt.ts`, `sales-agent.ts`); `SalesAgent` subscribes to `message.received` (new inbound only, never backfill), one run per trigger message (unique), per-conversation serial, reply dropped when a newer customer message exists, sent once through `ConnectorService.requestSend` with key `ai:<messageId>`, shop-side `pending` `ai` row adopted by the bridge when the connector reports the message (D13). Tools: `search_products`, `get_variant`, `quote_order`, `create_order_draft`, `escalate`. Reply guard blocks prices/stock figures no tool returned (one repair, then escalate, nothing sent). Routes: `GET|PUT /v1/shops/:shopId/ai` (owner writes; off by default), `GET .../ai/runs`, `GET .../escalations`, `POST .../escalations/:id/resolve`. Tests: `tests/integration/sales-agent.test.ts`, `tests/unit/{guard,openai-client}.test.ts`, double in `tests/fixtures/scripted-llm.ts`. Not done: Telegram notification of escalations, pause/takeover state beyond "open escalation" (F8), policies/FAQ tool, media/image understanding, per-shop model choice, rate/cost limits, live OpenAI run.
+
+## Feature 7 acceptance (met)
+`order_drafts`, `order_draft_items` (migration `0006`); `OrderRepository` (`packages/database/src/orders.ts`): `quote` (server-side prices/totals, stock and active checks, merged SKUs, single currency), `createDraft` (always `pending_approval`, price snapshots, newer AI draft cancels the pending one of that conversation), `approve` (atomic stock reduction, all-or-nothing), `reject`; AI tool `create_order_draft` needs name, phone and delivery info; member routes under `/v1/shops/:shopId/order-drafts` (list, get, approve, reject). Tests: `tests/unit/orders.test.ts` and the "agent tools and order drafts" block in `tests/integration/sales-agent.test.ts`. Not done: manual draft creation or editing by members, customer notification after a decision, shipping/payment, order numbers, stock reservation before approval.
+
+## Feature 8 acceptance (met)
+Migration `0007_takeover_notify`: `shop_conversations.ai_paused|ai_paused_at|ai_paused_by_user_id`, table `shop_notify_settings`. Takeover: `PUT /v1/shops/:shopId/conversations/:id/ai {paused}` (any member, idempotent) and `POST .../conversations/:id/messages {text}` (a human reply through the linked account; pauses the AI first; refused before anything is recorded when the connector cannot send). The agent skips a paused conversation (`ai_runs` row `skipped`/`AI_PAUSED`, no model call). The bridge adopts the member's pending `human` row like D14. Telegram: `TelegramNotifier` (`apps/api/src/services/notifier.ts`, plain `fetch`, shared bot token `HEPSON_TELEGRAM_BOT_TOKEN`) announces a newly opened escalation and a new order draft to the shop's chat; `GET|PUT /v1/shops/:shopId/notifications` (owner writes). Shared send path: `services/shop-sender.ts`. Tests: `tests/integration/takeover-stats.test.ts`, `tests/unit/notifier.test.ts`. Not done: live Telegram call, a test-message route, bot webhook/commands (replying from Telegram), notification for customer messages in paused/escalated conversations, auto-pause when a person types in the Instagram app (D16), per-event opt-out, notification retry, customer notification after a draft decision.
+
+## Feature 9 acceptance (met)
+`StatsRepository` (`packages/database/src/stats.ts`) and `GET /v1/shops/:shopId/stats?from&to` (any member; half-open period on creation time, default last 30 days, max 366): messages by sender, active conversations, new customers, paused conversations, agent runs by status with model requests and tokens, reply rate, escalations (opened, resolved, open now, average resolution time), order drafts by status and approved totals per currency, daily UTC series. All queries filter by `shop_id`. Tests: "statistics" block in `tests/integration/takeover-stats.test.ts`. Not done: cost in money (no price table), per-model breakdown, response-time metrics, export, caching (queries are aggregates over indexed shop rows; fine for early scale).
+
+## Feature 10 acceptance (met)
+Migration `0008_web_chat`: `web_chat_configs` (enabled, public `hwk_` widget key, exact-origin allow-list), `web_chat_sessions` (visitor token `hwv_`, sha256 stored). Visitors are customers/conversations on channel `website` in the shared tables (D11); replies are stored as `sent` rows with id `web:<uuid>` (D19). Public routes `POST /public/web-chat/:widgetKey/session`, `POST|GET .../messages` (header `x-hepson-visitor`), widget script `GET /widget/web-chat.js` (`apps/api/src/widget/web-chat.js`, shadow DOM, `textContent` only). Owner routes `GET|PUT /v1/shops/:shopId/web-chat`, `POST .../web-chat/rotate-key`. The AI agent answers website messages through `SalesAgent.triggerInternal`; human reply, pause/resume, escalations, order drafts, stats and Telegram work unchanged. Abuse limits: Origin allow-list + CORS, visitor token, sessions per IP, messages per session and per IP, daily cap per shop, 1000-char messages, expired-session purge. Tests: `tests/integration/web-chat.test.ts`, `tests/e2e/web-chat-widget.test.ts` (`pnpm test:browser`). Not done: SSE/typing indicator (visitors poll every 3 s), file uploads, visitor-supplied contact form, CAPTCHA, per-shop widget styling/greeting, visitor consent/privacy notice text, conversation closing by the visitor, Retry-After awareness in the widget.
+
+## Feature 11 acceptance (met)
+`apps/dashboard` (React + Vite, port 5174, proxy to the API; `pnpm dev:dashboard`, built by `pnpm build`): login/register (bearer token in `localStorage`), shop switcher and creation, Inbox (conversation list, thread, human reply, pause/resume AI), Orders (open escalations with resolve, order drafts with approve/reject), Catalog (list, search, stock edit, create simple product), Stats, Settings (AI switch + notes, website chat + snippet + key rotation, Telegram chat, team list/add). Ukrainian labels, owner-only controls disabled for managers (the server enforces roles). Not done: automated UI tests, i18n, product variants/edit/deactivate in the UI, customer list, order draft editing, Instagram account onboarding, member role change/removal, password reset, responsive polish, SSE (polling 4-8 s).
+
+## Feature 12 acceptance (met)
+`POST /v1/shops/:shopId/products/import` (owner; body `{csv, dryRun}`, `dryRun` defaults to true, 2 MB): upsert by SKU, `;`/`,`/tab delimiters, BOM, Ukrainian or English headers, `group` column for variants, all-or-nothing with line-numbered errors; logic in `packages/database/src/catalog-import.ts`. Dashboard: import card in the Catalog tab (pick file, preview, apply). Hardening: `GET /ready` (database check), `nosniff`/`no-referrer`/`no-store` headers on `/v1/*` and `/public/*`, purge of user sessions dead for over a week (6-hourly timer), `pnpm backup` (online SQLite backup, mode 0600, never copies `profiles/`). Tests: `tests/unit/catalog-import.test.ts`, "catalog CSV import API" and "hardening" blocks in `tests/integration/catalog-api.test.ts`. Not done: Excel, feed URLs/scheduled sync, product delete, backup rotation/restore script, metrics, CSRF-safe cookie sessions.
+
+# Pivot roadmap (P-series)
+
+Goal: a working MVP of the core loop, message to paid order to TTN, on official APIs only (D22), then beat NovaSale on trust and price. Nothing in P1-P9 is implemented as of 2026-10-29. "Live check" means a run against the real platform with an authorized account; until it is done the item is not described as verified. Test fixtures for external platforms are written from the platforms' public documentation (labelled as such) until a live capture replaces them.
+
+| # | Feature | Status | Needs owner | Depends on |
+|---|---------|--------|-------------|-----------|
+| P0 | Baseline: commit F1-F12; pivot docs | docs DONE (2026-10-29); commit TODO | yes (commit) | - |
+| P1 | `instagram-official` adapter, credential store, egress guard, browser adapter off by default | TODO | yes (Meta app, tunnel, own professional account) | P0 |
+| P2 | Telegram customer channel | TODO | yes (a test bot) | P1 (credential store, egress guard) |
+| P3 | Policies and FAQ tool | TODO | no | - |
+| P4 | Checkout data and Nova Poshta | TODO | yes (NP API key) | P1, P3 optional |
+| P5 | Payment links | TODO | yes (sandbox/merchant credentials; pilot provider) | P4 |
+| P6 | Customer notifications | TODO | no | P1, P2, P5 |
+| P7 | Plans and quotas | TODO | no | - |
+| P8 | Catalog and analytics | TODO | no | P4, P5 for the funnel |
+| P9 | Matching their extras | TODO | no | P1, P8 |
+| Later | Meta Business Verification, App Review (Advanced Access), Tech Provider status, Hepson subscription billing | BLOCKED on FOP | yes | - |
+
+Ordering note: the brief puts P4 (TTN) before P5 (payments), but a prepaid order may only get a TTN after `paid` (D25). So P4 creates TTNs for cash-on-delivery orders (from `cod_confirmed`) and for any order a member marks shippable by hand; the prepaid path is wired in P5 when `paid` exists.
+
+## P0 Baseline
+- Owner commits F1-F12 in several logical commits before any pivot code. Agents never commit without being told.
+- This session's docs: `DECISIONS.md` (D22-D28 plus status notes on D12/D13/D15/D16/D17/D21), `ROADMAP.md`, `PROJECT_CONTEXT.md`, `LIMITATIONS.md`, `FUTURE_META_ADAPTER.md` (superseded banner), `AI_HANDOFF.md`, `OVERVIEW.md` banner, `AGENTS.md` direction lines.
+- Acceptance: tree committed by the owner; `pnpm typecheck`, `pnpm test` unchanged from the F12 validation.
+
+## P1 `instagram-official` adapter
+Scope: everything needed for one shop to connect its own professional account and have the existing agent answer over the official API.
+- **Foundations first (small, reusable by P2-P5):** credential store per D28 (`shop_credentials`, envelope encryption, master-key versioning, rewrap script, no-read-back API, pino redaction); egress helper that allows only the D22 host list, with the OpenAI client and Telegram notifier moved onto it; env settings for the Meta app id, app secret, verify token, master key.
+- **Connect flow:** dashboard button, OAuth business login, single-use `state`, long-lived token stored encrypted, account id stored as non-secret reference, disconnect, and a "needs reconnect" state. Scheduled token refresh job.
+- **Webhook route:** `GET` handshake; `POST` with raw-body `X-Hub-Signature-256` check before parsing; resolve shop by account id; dedupe by message id; echo events stored as outgoing and never trigger the agent; fast acknowledgment.
+- **Send API + 24-hour window:** server-side window check before calling Meta (`OUTSIDE_MESSAGING_WINDOW`); `uncertain` is never retried; the agent skips or escalates and notifies when the window is closed.
+- **Mapping into the shop tables:** decide and record the adapter shape (D23 open point: `MessagingAdapter` plus `ChannelBridge` versus direct ingest). Customer = Instagram-scoped id of the sender, profile name/username fetched when available. The agent trigger stays one run per inbound message (D13).
+- **Browser adapter off by default:** explicit flag (for example `HEPSON_ENABLE_BROWSER_ADAPTER`, default false); with the flag off, creating or connecting an `instagram-browser` account is refused with a clear error; Phase 1 tests run with the flag on. Docs mark it deprecated.
+- **D16 check:** inspect echo events live and amend D16.
+- **Acceptance:** with a mock Graph API, an owner connects an account, a signed webhook produces exactly one agent run and exactly one reply via the Send API; a replayed webhook produces nothing new; an invalid signature is rejected and stored nowhere; a closed window sends nothing and notifies; a revoked token stops sending and flags reconnect; credentials never appear in API output or logs; the master key can be rotated without changing any decrypted secret; any `fetch` to a non-allow-listed host fails in tests.
+- **Tests:** unit (crypto round trip, AAD mismatch, rotation, signature check, window math, egress helper); integration with a mock Graph server and webhook fixtures (labelled "from documentation"); existing suites green with the browser flag on. **Live check** (owner): HTTPS tunnel, own professional account as a tester, send a DM, confirm one reply and a correct echo event.
+- Out of scope: Telegram, shared-media attachments, human-agent tag, Advanced Access, storefront.
+
+## P2 Telegram customer channel (D27)
+- Per-shop bot token (D28), webhook registration with per-shop `secret_token`, opaque webhook path, update dedupe, mapping into shop conversations on channel `telegram`, send path, disconnect with `deleteWebhook`.
+- Acceptance: a signed-by-secret update produces one agent run and one reply; wrong secret is rejected; blocked-bot send is `failed`; token never leaves the credential layer; operator notifier unaffected.
+- Tests: mock Bot API, integration for dedupe and isolation between two shops' bots. Live check: one test bot.
+
+## P3 Policies and FAQ tool
+- Per-shop delivery, returns, payment and opening-hours text (owner edits in the dashboard); `get_policy` tool returning the stored text with a version; prompt and guard changes so a policy, delivery-time or return-term claim must come from a `get_policy` result in the same run, otherwise the reply is repaired or escalated (extends D13).
+- Acceptance: a reply stating a delivery time or return period not present in the policy text is blocked; a shop with no policy text gets an escalation instead of an invented answer; edits are shop-scoped and owner-only.
+- Tests: guard unit tests (uk/ru/en phrasings), scripted-LLM integration tests, route isolation tests.
+
+## P4 Checkout data and Nova Poshta
+- Tools to collect and validate name, phone, city and branch; city and warehouse lookup through the NP API with the shop's key; draft creation requires resolved NP ids; TTN creation on approval (`approval_required` or `auto_confirm`) for COD orders; tracking-status polling; `shipped`/`delivered` transitions with events (D25); COD option; per-shop NP sender settings.
+- Returns (D25): NP status refused or returning moves `shipped` to `returning` and notifies the shop; no restock until a member confirms the parcel is back (`returned`, restock once). Refusals are counted per customer (normalized phone, per shop); at the shop's limit (default 1, range 1-3, 0 off) COD is no longer offered, the checkout tool lists prepaid methods only, COD drafts are refused by the server and never auto-confirmed.
+- Acceptance: a customer at the refusal limit cannot get a COD draft (server-side, whatever the model says); `returning` does not change stock and `returned` restores it exactly once; a draft cannot be approved without resolved checkout data; TTN is created at most once per order (idempotent); the stored TTN number and status come only from NP responses; a reply about delivery status must come from a tool result (guard).
+- Tests: mock NP API, state-machine unit tests, polling idempotence, guard tests. Live check: NP test/real key with the owner.
+
+## P5 Payment links (D24)
+- Monobank acquiring and WayForPay invoice creation with the shop's credentials; invoice created by server code on entry to `awaiting_payment`; fixed-template message carrying the link; provider webhooks with signature verification; reconciliation job; `paid` only from a verified event or status call; amount/currency match; read-only order-status tool; guard rule for payment claims; `refund_requested` recording; payment-timeout cancel with restock (24 hours default, per-shop) and one customer reminder before expiry (default 6 hours before, idempotent; Instagram window closed means notify the shop instead). Monobank first (first pilot), WayForPay second.
+- Acceptance: a forged or unsigned webhook changes nothing; a replay changes nothing; an amount mismatch escalates instead of marking `paid`; the model has no tool that accepts an amount; "I paid" in chat does not change state; prepaid TTN creation starts only from `paid`.
+- Tests: signature fixtures built from provider documentation and sandbox, mock providers, idempotency and ordering tests. Live check: sandbox where available.
+
+## P6 Customer notifications
+- On approve, reject, paid, shipped, delivered, payment-link reminder, send the customer a server-templated message through the original channel; idempotent per (order, event); Instagram 24-hour window respected, else "notify the shop" (D23).
+- Acceptance: each event sends at most one message even with retries and restarts; a closed Instagram window sends nothing and notifies the shop; wording is server text, not model text.
+- Tests: integration across the three channels with fakes.
+
+## P7 Plans and quotas
+- AI-reply cap per shop per month, usage counters derived from `ai_runs`, dashboard usage display. At the cap: escalate to a human and notify the owner; never stay silent. No billing (FOP).
+- Acceptance: at the cap no model call is made, the customer's conversation is escalated, the owner is notified once, the stats show the cap state; owner can see usage.
+- Tests: boundary tests around the cap, month rollover (UTC), isolation between shops.
+
+## P8 Catalog and analytics
+- XLSX import; Google Sheets import by fixed-host fetch (prefer the Sheets CSV export path first, which reuses the CSV importer and avoids an XLSX parser; add XLSX only with a vetted parser and size/row limits, revisiting D21); Excel export of orders; funnel stats (conversation, draft, approved, paid, shipped) and AI vs human order counts from order events (D25).
+- Acceptance: imports keep D21's all-or-nothing and dry-run rules; the Sheets fetch refuses any other host and any redirect off it; funnel numbers equal the event rows.
+- Tests: importer fixtures, SSRF/redirect tests, stats unit tests.
+
+## P9 Matching their extras
+- Photo-based product search, reading a forwarded Instagram post (shared-media attachments from webhooks), upsell and alternative suggestions from catalog data (never invented products), public storefront. Each is its own session; image handling needs a decision on cost and image storage first.
+
+## Later (needs a registered business)
+Meta Business Verification; App Review for Advanced Access (privacy policy URL, data-deletion callback, screencast); Tech Provider status; Hepson's own subscription billing; Human Agent feature approval. Moving from Development mode to Advanced Access is configuration, not a rewrite (D22).
+
+# Appendix: frozen Phase 1 backlog (browser adapter, D22)
+No new work. Kept for reference only: live-test media, groups, a non-English UI, a second account, `uncertain` sends, concurrent sends, reboot recovery; on `UI_CHANGED` run `pnpm calibrate <uuid>` and fix only `selectors.ts` and `parsers.ts`, keeping `tests/fixtures/fake-instagram.ts` in sync. Deletion of `packages/instagram-browser` is considered only after `instagram-official` is live-verified.

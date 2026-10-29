@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-10-29 by D23 (`docs/DECISIONS.md`) and P1 (`docs/ROADMAP.md`).** Kept as input notes for the P1 session; where this file and D23 differ, D23 wins. Differences: the API family is "Instagram API with Instagram Login"; the app runs in Development mode with testers until Advanced Access (App Review is not a prerequisite for the pilot); tokens go in the per-shop envelope-encrypted store of D28 (not a "dedicated table" decided here); the 24-hour window check happens in Hepson before calling Meta; whether the adapter implements `MessagingAdapter` or ingests straight into shop tables is an open design point for P1. Endpoint names and scope names below are from memory and must be re-checked against Meta's current documentation. Nothing here has run.
+
 # Future: Meta official API adapter (`instagram-official`)
 
 **Plug-in point:** implement `MessagingAdapter` (`packages/connector-core/src/types.ts`) as `packages/instagram-official` and register it for `connectorType: 'instagram-official'` in `buildApp` (`apps/api/src/server.ts`). Public API, DB and console stay unchanged.

@@ -66,7 +66,7 @@ See [.env.example](.env.example). Key ones: `HEPSON_DATA_DIR` (DB, profiles, loc
 
 ## Docs
 
-[API](docs/API.md) · [Manual Instagram test](docs/MANUAL_INSTAGRAM_TEST.md) · [Limitations](docs/LIMITATIONS.md) · [Future Meta adapter](docs/FUTURE_META_ADAPTER.md) · [Plan](docs/PLAN.md) · [Checklist](docs/CHECKLIST.md)
+[API](docs/API.md) · [Manual Instagram test](docs/MANUAL_INSTAGRAM_TEST.md) · [Limitations](docs/LIMITATIONS.md) · [Future Meta adapter](docs/FUTURE_META_ADAPTER.md) · [Phase 1 plan](docs/PLAN.md) · [Phase 2 roadmap](docs/ROADMAP.md) · [Decisions](docs/DECISIONS.md) · [Project context](docs/PROJECT_CONTEXT.md) · [Checklist](docs/CHECKLIST.md)
 
 ## Test results
 
