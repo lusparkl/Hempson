@@ -30,6 +30,7 @@ export function accountView(svc: ConnectorService, a: AccountRow, profiles: Prof
     statusMessage: HUMAN[a.status] ?? a.status,
     enabled: a.enabled,
     paused: a.paused,
+    shopId: a.shopId,
     outboundEnabled: a.outboundEnabled,
     consentRecordedAt: a.consentRecordedAt,
     expectedInstagramHandle: a.expectedInstagramHandle,

@@ -25,6 +25,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     maxConcurrentBrowsers: int(env.HEPSON_MAX_BROWSERS, 3),
     browserHeadless: bool(env.HEPSON_BROWSER_HEADLESS, false),
     instagramBaseUrl: env.HEPSON_INSTAGRAM_BASE_URL ?? 'https://www.instagram.com',
+    /** Dashboard users may self-register (creates a user only; no shop access). */
+    allowRegistration: bool(env.HEPSON_ALLOW_REGISTRATION, true),
+    sessionTtlDays: int(env.HEPSON_SESSION_TTL_DAYS, 30),
+    /** Sales agent (Feature 6). The agent is inactive unless both key and model are set. Never log the key. */
+    openaiApiKey: env.OPENAI_API_KEY || undefined,
+    openaiModel: env.HEPSON_OPENAI_MODEL || undefined,
+    openaiBaseUrl: env.HEPSON_OPENAI_BASE_URL || undefined,
+    /** Telegram notifications (Feature 8). One shared bot; each shop sets its own chat id. Never log the token. */
+    telegramBotToken: env.HEPSON_TELEGRAM_BOT_TOKEN || undefined,
+    telegramApiBaseUrl: env.HEPSON_TELEGRAM_API_BASE_URL || undefined,
+    /** Public base URL of this API as embedded in the website chat snippet. */
+    publicUrl: (env.HEPSON_PUBLIC_URL || `http://${env.HEPSON_HOST ?? '127.0.0.1'}:${int(env.HEPSON_PORT, 8787)}`).replace(/\/+$/, ''),
+    /** Honour X-Forwarded-For (set only behind a reverse proxy you control; otherwise every visitor looks like the proxy). */
+    trustProxy: bool(env.HEPSON_TRUST_PROXY, false),
+    /** Website chat abuse limits (Feature 10). */
+    webChatSessionsPerIpPerHour: int(env.HEPSON_WEBCHAT_SESSIONS_PER_IP_HOUR, 20),
+    webChatMessagesPerSessionPerMinute: int(env.HEPSON_WEBCHAT_MESSAGES_PER_SESSION_MINUTE, 10),
+    webChatMessagesPerIpPerMinute: int(env.HEPSON_WEBCHAT_MESSAGES_PER_IP_MINUTE, 40),
+    webChatDailyMessagesPerShop: int(env.HEPSON_WEBCHAT_DAILY_MESSAGES_PER_SHOP, 2000),
+    webChatSessionDays: int(env.HEPSON_WEBCHAT_SESSION_DAYS, 30),
     loginWaitMs: int(env.HEPSON_LOGIN_WAIT_MS, 10 * 60_000),
   };
 }

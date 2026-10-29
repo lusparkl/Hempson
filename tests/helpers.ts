@@ -13,7 +13,7 @@ export type TestApp = Awaited<ReturnType<typeof makeApp>>;
 
 export const authH = (key: string) => ({ authorization: `Bearer ${key}` });
 
-export async function call(a: { app: App['app'] }, key: string | null, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: unknown) {
+export async function call(a: { app: App['app'] }, key: string | null, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, payload?: unknown) {
   const res = await a.app.inject({ method, url, headers: key ? authH(key) : {}, payload: payload as never });
   return { status: res.statusCode, body: res.body ? safeJson(res.body) : null, headers: res.headers };
 }

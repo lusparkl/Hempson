@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { ConnectorError, fingerprintAll, type ConnectorStatus, type EventType, type MessagingAdapter, type ObservedMessage } from '@hepson/connector-core';
 import type { AccountRow, ConversationRow, MessageRow, OutboxRow, Store } from '@hepson/database';
 import type { Config } from '../config';
+import type { ChannelBridge } from './channel-bridge';
 import type { EventBus } from './event-bus';
 
 type Logger = { info(o: object, m?: string): void; warn(o: object, m?: string): void; error(o: object, m?: string): void };
@@ -26,6 +27,8 @@ export class ConnectorService {
     private adapters: AdapterRegistry,
     private cfg: Config,
     private log: Logger,
+    /** Mirrors stored messages into the linked shop (Phase 2). Optional: absent in connector-only setups. */
+    private bridge?: ChannelBridge,
   ) {
     for (const a of Object.values(adapters)) if (a && !this.wired.has(a)) this.wire(a);
   }
@@ -269,6 +272,7 @@ export class ConnectorService {
         const mine = m.text ? this.store.findAdoptableOutgoing(accountId, conv.id, m.text) : undefined;
         if (mine) {
           this.store.setMessageFingerprint(accountId, mine.id, fp, m.providerMessageId ?? null);
+          this.mirrorStored(accountId, conv, mine.id);
           const ob = this.store.findUncertainOutbox(accountId, conv.id, m.text!);
           if (ob && this.store.transitionOutbox(accountId, ob.id, ['uncertain'], 'sent'))
             this.bus.emit(accountId, 'message.sent', { outboxId: ob.id, conversationId: conv.id, messageId: mine.id, resolvedFromUncertain: true });
@@ -290,8 +294,14 @@ export class ConnectorService {
         observedAt: new Date().toISOString(),
         deliveryStatus: m.direction === 'outgoing' ? 'sent' : 'observed',
       });
+      if (row) this.bridge?.mirror(accountId, conv, row);
       if (row && m.direction === 'incoming' && emitReceived && i > lastKnown) this.bus.emit(accountId, 'message.received', { message: toPublicMessage(row) });
     });
+  }
+
+  private mirrorStored(accountId: string, conv: ConversationRow, messageId: string) {
+    const row = this.store.getMessage(accountId, messageId);
+    if (row) this.bridge?.mirror(accountId, conv, row);
   }
 
   // ---------- reads ----------
@@ -392,11 +402,12 @@ export class ConnectorService {
         observedAt: new Date().toISOString(),
         deliveryStatus: 'sent',
       });
+      if (row) this.bridge?.mirror(accountId, conv, row);
       this.bus.emit(accountId, 'message.sent', { outboxId, conversationId: conv.id, messageId: row?.id ?? null });
     } else {
       // Local record of an uncertain send so a later sync can reconcile it instead of duplicating.
       if (status === 'uncertain') {
-        this.store.insertMessageIfNew(accountId, {
+        const local = this.store.insertMessageIfNew(accountId, {
           conversationId: conv.id,
           providerId: null,
           fingerprint: `out:${outboxId}`,
@@ -408,6 +419,7 @@ export class ConnectorService {
           observedAt: new Date().toISOString(),
           deliveryStatus: 'uncertain',
         });
+        if (local) this.bridge?.mirror(accountId, conv, local);
       }
       this.bus.emit(accountId, 'connector.error', { code: errorCode ?? 'TEMPORARY_FAILURE', operation: 'sendText', outboxId, outcome: status });
     }

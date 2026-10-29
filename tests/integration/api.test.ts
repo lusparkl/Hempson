@@ -298,7 +298,10 @@ describe('persistence & privacy', () => {
       .map((r: any) => r.name);
     for (const t of ['store_accounts', 'api_keys', 'conversations', 'messages', 'outbox', 'events', 'connector_state']) expect(tables).toContain(t);
     const bad = /cookie|password|passwd|secret|totp|2fa|session_?id|access_?token|profile_?bytes|storage_?state/i;
+    // Phase 2 dashboard tables hold hashed user passwords / session ids by design; this guard covers connector (Phase 1) tables.
+    const dashboardTables = ['users', 'user_sessions'];
     for (const t of Object.values(schema)) {
+      if (dashboardTables.includes(getTableName(t as any))) continue;
       for (const col of Object.values(getTableColumns(t as any))) expect((col as any).name, `${getTableName(t as any)}.${(col as any).name}`).not.toMatch(bad);
     }
   });
