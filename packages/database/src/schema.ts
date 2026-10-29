@@ -1,4 +1,5 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // NOTE: no column here may ever hold cookies, tokens, passwords, 2FA secrets or profile bytes.
 // Browser auth state lives only in the protected per-account user-data directory.
@@ -17,6 +18,8 @@ function accountsTable() {
     lastAuthValidatedAt: text('last_auth_validated_at'),
     lastErrorCode: text('last_error_code'),
     paused: integer('paused', { mode: 'boolean' }).notNull().default(false),
+    /** Phase 2 tenant that owns this connector account (null = not linked, nothing is mirrored). Set by an admin key only. */
+    shopId: text('shop_id').references(() => shops.id),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   });
@@ -125,3 +128,374 @@ export const connectorState = sqliteTable('connector_state', {
   /** 1 once the first full sync completed; later new messages are "new", earlier ones are backfill. */
   baselineDone: integer('baseline_done', { mode: 'boolean' }).notNull().default(false),
 });
+
+/** Tenant root (Phase 2). Every future shop-owned table must reference `shops.id`. Unrelated to `storeAccounts` (Instagram connector accounts) until a later feature links them. */
+export const shops = sqliteTable(
+  'shops',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    slug: text('slug').notNull(),
+    defaultCurrency: text('default_currency').notNull().default('UAH'),
+    defaultLanguage: text('default_language').notNull().default('uk'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('shops_slug_uq').on(t.slug)],
+);
+
+/** Dashboard users (Phase 2). Unrelated to Phase 1 `apiKeys`, which authenticate connector clients. */
+export const users = sqliteTable(
+  'users',
+  {
+    id: text('id').primaryKey(),
+    /** Lowercased, trimmed. */
+    email: text('email').notNull(),
+    displayName: text('display_name').notNull(),
+    /** scrypt hash string; never plaintext. */
+    passwordHash: text('password_hash').notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('users_email_uq').on(t.email)],
+);
+
+export const memberships = sqliteTable(
+  'memberships',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    role: text('role', { enum: ['owner', 'manager'] }).notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => [uniqueIndex('memberships_shop_user_uq').on(t.shopId, t.userId), index('memberships_user_idx').on(t.userId)],
+);
+
+export const userSessions = sqliteTable(
+  'user_sessions',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    /** sha256 of the bearer token; the token itself is never stored. */
+    hashedToken: text('hashed_token').notNull(),
+    createdAt: text('created_at').notNull(),
+    expiresAt: text('expires_at').notNull(),
+    revokedAt: text('revoked_at'),
+  },
+  (t) => [uniqueIndex('user_sessions_hash_uq').on(t.hashedToken), index('user_sessions_user_idx').on(t.userId)],
+);
+
+/** Catalog (Phase 2). Prices are integer minor units (kopiykas for UAH). Every row carries shop_id. */
+export const products = sqliteTable(
+  'products',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    priceMinor: integer('price_minor').notNull(),
+    currency: text('currency').notNull(),
+    active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    /** Opaque media references (URLs or storage keys); Hepson does not host media yet. */
+    media: text('media', { mode: 'json' }).$type<string[]>().notNull(),
+    /** Lowercased name + description + SKUs + option values (JS-folded so Cyrillic matches case-insensitively). */
+    searchText: text('search_text').notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [index('products_shop_idx').on(t.shopId, t.createdAt), check('products_price_nonneg', sql`${t.priceMinor} >= 0`)],
+);
+
+export const productVariants = sqliteTable(
+  'product_variants',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    productId: text('product_id')
+      .notNull()
+      .references(() => products.id),
+    /** Uppercased; unique per shop. */
+    sku: text('sku').notNull(),
+    /** e.g. {"size":"M","color":"black"}; {} for a product's default (single) variant. */
+    options: text('options', { mode: 'json' }).$type<Record<string, string>>().notNull(),
+    /** null = use the product price. */
+    priceMinor: integer('price_minor'),
+    stock: integer('stock').notNull().default(0),
+    active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [
+    uniqueIndex('variants_shop_sku_uq').on(t.shopId, t.sku),
+    index('variants_product_idx').on(t.productId),
+    check('variants_stock_nonneg', sql`${t.stock} >= 0`),
+    check('variants_price_nonneg', sql`${t.priceMinor} is null or ${t.priceMinor} >= 0`),
+  ],
+);
+
+/**
+ * Customers, conversations and messages (Phase 2, tenant-owned). Distinct from Phase 1 `conversations` / `messages`,
+ * which belong to a connector account; Feature 5 maps connector data into these tables. Every row carries shop_id.
+ */
+export const customers = sqliteTable(
+  'customers',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    /** Channel key, e.g. `instagram` or `website`. */
+    channel: text('channel').notNull(),
+    /** Channel-specific user id (opaque). */
+    externalId: text('external_id').notNull(),
+    displayName: text('display_name'),
+    handle: text('handle'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('customers_shop_channel_ext_uq').on(t.shopId, t.channel, t.externalId), index('customers_shop_idx').on(t.shopId, t.createdAt)],
+);
+
+export const shopConversations = sqliteTable(
+  'shop_conversations',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    customerId: text('customer_id')
+      .notNull()
+      .references(() => customers.id),
+    channel: text('channel').notNull(),
+    /** Channel-specific conversation/thread id (opaque). */
+    externalId: text('external_id').notNull(),
+    status: text('status', { enum: ['open', 'closed'] })
+      .notNull()
+      .default('open'),
+    lastMessageAt: text('last_message_at'),
+    /** Human takeover (Feature 8): while true the AI agent stays silent in this conversation. */
+    aiPaused: integer('ai_paused', { mode: 'boolean' }).notNull().default(false),
+    aiPausedAt: text('ai_paused_at'),
+    aiPausedByUserId: text('ai_paused_by_user_id').references(() => users.id),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [
+    uniqueIndex('shop_conv_shop_channel_ext_uq').on(t.shopId, t.channel, t.externalId),
+    index('shop_conv_last_idx').on(t.shopId, t.lastMessageAt),
+    index('shop_conv_customer_idx').on(t.customerId),
+  ],
+);
+
+export const shopMessages = sqliteTable(
+  'shop_messages',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => shopConversations.id),
+    /** Channel message id; null for an outbound message not yet acknowledged. Unique per conversation when present. */
+    externalId: text('external_id'),
+    direction: text('direction', { enum: ['incoming', 'outgoing'] }).notNull(),
+    /** incoming => customer; outgoing => ai | human | system. */
+    senderType: text('sender_type', { enum: ['customer', 'ai', 'human', 'system'] }).notNull(),
+    /** Dashboard user who sent a `human` message. */
+    senderUserId: text('sender_user_id').references(() => users.id),
+    text: text('text'),
+    attachments: text('attachments', { mode: 'json' }).$type<Array<{ kind: string; url?: string; name?: string }>>().notNull(),
+    /** received (incoming) | pending -> sent | failed | uncertain (outgoing). Never set `sent` without a real acknowledgement. */
+    deliveryStatus: text('delivery_status', { enum: ['received', 'pending', 'sent', 'failed', 'uncertain'] }).notNull(),
+    deliveryError: text('delivery_error'),
+    /** Per-conversation order, assigned on insert. */
+    seq: integer('seq').notNull(),
+    /** When the message happened according to the channel, else ingest time. */
+    occurredAt: text('occurred_at').notNull(),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [
+    uniqueIndex('shop_msg_conv_ext_uq').on(t.conversationId, t.externalId),
+    uniqueIndex('shop_msg_conv_seq_uq').on(t.conversationId, t.seq),
+    index('shop_msg_shop_idx').on(t.shopId, t.createdAt),
+    check('shop_msg_sender_dir', sql`(${t.direction} = 'incoming' and ${t.senderType} = 'customer') or (${t.direction} = 'outgoing' and ${t.senderType} <> 'customer')`),
+    check('shop_msg_human_user', sql`${t.senderUserId} is null or ${t.senderType} = 'human'`),
+  ],
+);
+
+/** Per-shop AI switch and extra instructions (Feature 6). Absent row = AI off. */
+export const shopAiSettings = sqliteTable('shop_ai_settings', {
+  shopId: text('shop_id')
+    .primaryKey()
+    .references(() => shops.id),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+  /** Owner-written tone/policy notes appended to the agent prompt. */
+  instructions: text('instructions').notNull().default(''),
+  updatedAt: text('updated_at').notNull(),
+});
+
+/** Where a shop gets notified (Feature 8). Absent row or null chat id = no notifications. */
+export const shopNotifySettings = sqliteTable('shop_notify_settings', {
+  shopId: text('shop_id')
+    .primaryKey()
+    .references(() => shops.id),
+  /** Telegram chat the shared bot posts to (numeric id or @channelname). */
+  telegramChatId: text('telegram_chat_id'),
+  updatedAt: text('updated_at').notNull(),
+});
+
+/** Website chat channel of a shop (Feature 10). Absent row or `enabled=false` = the widget key answers 404. */
+export const webChatConfigs = sqliteTable('web_chat_configs', {
+  shopId: text('shop_id')
+    .primaryKey()
+    .references(() => shops.id),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+  /** Public identifier embedded in the widget snippet. Not a secret: origin checks and visitor tokens protect the chat. */
+  widgetKey: text('widget_key').notNull(),
+  /** Exact origins (scheme://host[:port]) allowed to embed the widget. Empty = nobody. */
+  allowedOrigins: text('allowed_origins', { mode: 'json' }).$type<string[]>().notNull().default(sql`'[]'`),
+  updatedAt: text('updated_at').notNull(),
+}, (t) => [uniqueIndex('web_chat_key_uq').on(t.widgetKey)]);
+
+/** Anonymous visitor session: the opaque token (sha256 stored) is the visitor's only credential. */
+export const webChatSessions = sqliteTable(
+  'web_chat_sessions',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    /** Customer and conversation external id on channel `website`. */
+    visitorId: text('visitor_id').notNull(),
+    displayName: text('display_name'),
+    tokenHash: text('token_hash').notNull(),
+    createdAt: text('created_at').notNull(),
+    lastSeenAt: text('last_seen_at').notNull(),
+    expiresAt: text('expires_at').notNull(),
+  },
+  (t) => [uniqueIndex('web_chat_session_token_uq').on(t.tokenHash), index('web_chat_session_shop_idx').on(t.shopId, t.expiresAt)],
+);
+
+/** One agent run per inbound message that triggered it (unique) = audit trail and source for AI statistics. */
+export const aiRuns = sqliteTable(
+  'ai_runs',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => shopConversations.id),
+    triggerMessageId: text('trigger_message_id')
+      .notNull()
+      .references(() => shopMessages.id),
+    status: text('status', { enum: ['running', 'replied', 'send_uncertain', 'escalated', 'skipped', 'superseded', 'failed'] }).notNull(),
+    model: text('model'),
+    modelRequests: integer('model_requests').notNull().default(0),
+    inputTokens: integer('input_tokens').notNull().default(0),
+    outputTokens: integer('output_tokens').notNull().default(0),
+    replyMessageId: text('reply_message_id').references(() => shopMessages.id),
+    /** Short machine code or reason (no customer text, no secrets). */
+    detail: text('detail'),
+    createdAt: text('created_at').notNull(),
+    finishedAt: text('finished_at'),
+  },
+  (t) => [uniqueIndex('ai_runs_trigger_uq').on(t.triggerMessageId), index('ai_runs_shop_idx').on(t.shopId, t.createdAt)],
+);
+
+/** The agent (or a human) asks for human attention. While one is open the agent stays silent in that conversation. */
+export const escalations = sqliteTable(
+  'escalations',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => shopConversations.id),
+    runId: text('run_id').references(() => aiRuns.id),
+    reason: text('reason').notNull(),
+    status: text('status', { enum: ['open', 'resolved'] })
+      .notNull()
+      .default('open'),
+    createdAt: text('created_at').notNull(),
+    resolvedAt: text('resolved_at'),
+    resolvedByUserId: text('resolved_by_user_id').references(() => users.id),
+  },
+  (t) => [index('escalations_shop_idx').on(t.shopId, t.status, t.createdAt), index('escalations_conv_idx').on(t.conversationId, t.status)],
+);
+
+/**
+ * Order drafts (Feature 7). The AI can only create `pending_approval` drafts; a shop member approves or rejects.
+ * Items snapshot name/options/price at draft time so later catalog edits do not rewrite the draft.
+ */
+export const orderDrafts = sqliteTable(
+  'order_drafts',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => shopConversations.id),
+    customerId: text('customer_id')
+      .notNull()
+      .references(() => customers.id),
+    status: text('status', { enum: ['pending_approval', 'approved', 'rejected', 'cancelled'] }).notNull(),
+    createdBy: text('created_by', { enum: ['ai', 'user'] }).notNull(),
+    runId: text('run_id').references(() => aiRuns.id),
+    contactName: text('contact_name'),
+    contactPhone: text('contact_phone'),
+    deliveryInfo: text('delivery_info'),
+    note: text('note'),
+    currency: text('currency').notNull(),
+    totalMinor: integer('total_minor').notNull(),
+    decidedByUserId: text('decided_by_user_id').references(() => users.id),
+    decidedAt: text('decided_at'),
+    decisionNote: text('decision_note'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [index('order_drafts_shop_idx').on(t.shopId, t.status, t.createdAt), index('order_drafts_conv_idx').on(t.conversationId, t.status), check('order_drafts_total_nonneg', sql`${t.totalMinor} >= 0`)],
+);
+
+export const orderDraftItems = sqliteTable(
+  'order_draft_items',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    draftId: text('draft_id')
+      .notNull()
+      .references(() => orderDrafts.id),
+    productId: text('product_id')
+      .notNull()
+      .references(() => products.id),
+    variantId: text('variant_id')
+      .notNull()
+      .references(() => productVariants.id),
+    sku: text('sku').notNull(),
+    productName: text('product_name').notNull(),
+    options: text('options', { mode: 'json' }).$type<Record<string, string>>().notNull(),
+    quantity: integer('quantity').notNull(),
+    unitPriceMinor: integer('unit_price_minor').notNull(),
+  },
+  (t) => [index('order_items_draft_idx').on(t.draftId), check('order_items_qty_pos', sql`${t.quantity} > 0`)],
+);

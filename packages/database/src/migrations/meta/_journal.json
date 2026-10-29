@@ -8,6 +8,62 @@
       "when": 1793181399604,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1793219260356,
+      "tag": "0001_shops",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1793219426900,
+      "tag": "0002_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1793220773416,
+      "tag": "0003_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1793259276397,
+      "tag": "0004_conversations",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1793260055966,
+      "tag": "0005_account_shop_link",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1793261155918,
+      "tag": "0006_ai_agent_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1793294628930,
+      "tag": "0007_takeover_notify",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1793295945034,
+      "tag": "0008_web_chat",
+      "breakpoints": true
     }
   ]
 }

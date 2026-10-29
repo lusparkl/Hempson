@@ -37,6 +37,7 @@ export class Store {
       lastAuthValidatedAt: null,
       lastErrorCode: null,
       paused: false,
+      shopId: null,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -46,6 +47,9 @@ export class Store {
   listAccounts(onlyId?: string): AccountRow[] {
     const q = this.db.select().from(t.storeAccounts);
     return (onlyId ? q.where(eq(t.storeAccounts.id, onlyId)) : q).orderBy(asc(t.storeAccounts.createdAt)).all();
+  }
+  listAccountsForShop(shopId: string): AccountRow[] {
+    return this.db.select().from(t.storeAccounts).where(eq(t.storeAccounts.shopId, shopId)).orderBy(asc(t.storeAccounts.createdAt)).all();
   }
   getAccount(id: string): AccountRow | undefined {
     return this.db.select().from(t.storeAccounts).where(eq(t.storeAccounts.id, id)).get();
@@ -122,6 +126,16 @@ export class Store {
       .from(t.conversations)
       .where(and(eq(t.conversations.accountId, accountId), eq(t.conversations.id, id)))
       .get();
+  }
+  /** The connector conversation behind a provider thread id (the shop-side external id; falls back to the local id when the provider id is unknown). */
+  findConversationByProvider(accountId: string, providerId: string): ConversationRow | undefined {
+    return (
+      this.db
+        .select()
+        .from(t.conversations)
+        .where(and(eq(t.conversations.accountId, accountId), eq(t.conversations.providerId, providerId)))
+        .get() ?? this.getConversation(accountId, providerId)
+    );
   }
   /** Keyset pagination; newest first. cursor = `${lastMessageAt}|${id}`. */
   listConversations(accountId: string, limit: number, cursor?: string): { items: ConversationRow[]; nextCursor: string | null } {
@@ -220,6 +234,19 @@ export class Store {
     const page = rows.slice(0, limit);
     const oldest = page[page.length - 1];
     return { items: page.reverse(), nextCursor: rows.length > limit && oldest ? String(oldest.seq) : null };
+  }
+  getMessage(accountId: string, id: string): MessageRow | undefined {
+    return this.db
+      .select()
+      .from(t.messages)
+      .where(and(eq(t.messages.accountId, accountId), eq(t.messages.id, id)))
+      .get();
+  }
+  /** Every cached conversation and its messages (oldest first); used to mirror history into a linked shop. */
+  listAllForMirror(accountId: string): Array<{ conversation: ConversationRow; messages: MessageRow[] }> {
+    const convs = this.db.select().from(t.conversations).where(eq(t.conversations.accountId, accountId)).orderBy(asc(t.conversations.id)).all();
+    const msgs = this.db.select().from(t.messages).where(eq(t.messages.accountId, accountId)).orderBy(asc(t.messages.seq)).all();
+    return convs.map((conversation) => ({ conversation, messages: msgs.filter((m) => m.conversationId === conversation.id) }));
   }
   hasAnyMessages(accountId: string): boolean {
     return !!this.db.select({ id: t.messages.id }).from(t.messages).where(eq(t.messages.accountId, accountId)).limit(1).get();

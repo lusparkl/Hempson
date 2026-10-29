@@ -1,0 +1,1 @@
+ALTER TABLE `store_accounts` ADD `shop_id` text REFERENCES shops(id);

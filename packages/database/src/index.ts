@@ -1,3 +1,12 @@
 export * from './db';
 export * from './store';
 export * as schema from './schema';
+export * from './shops';
+export * from './auth';
+export * from './catalog';
+export * from './catalog-import';
+export * from './conversations';
+export * from './agent';
+export * from './orders';
+export * from './stats';
+export * from './webchat';
