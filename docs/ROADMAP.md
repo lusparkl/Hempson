@@ -58,12 +58,12 @@ Migration `0008_web_chat`: `web_chat_configs` (enabled, public `hwk_` widget key
 
 # Pivot roadmap (P-series)
 
-Goal: a working MVP of the core loop, message to paid order to TTN, on official APIs only (D22), then beat NovaSale on trust and price. Nothing in P1-P9 is implemented as of 2026-10-29. "Live check" means a run against the real platform with an authorized account; until it is done the item is not described as verified. Test fixtures for external platforms are written from the platforms' public documentation (labelled as such) until a live capture replaces them.
+Goal: a working MVP of the core loop, message to paid order to TTN, on official APIs only (D22), then beat NovaSale on trust and price. P1 is implemented against a mock Graph API only; P2-P9 are not implemented as of 2026-10-29. "Live check" means a run against the real platform with an authorized account; until it is done the item is not described as verified. Test fixtures for external platforms are written from the platforms' public documentation (labelled as such) until a live capture replaces them.
 
 | # | Feature | Status | Needs owner | Depends on |
 |---|---------|--------|-------------|-----------|
-| P0 | Baseline: commit F1-F12; pivot docs | docs DONE (2026-10-29); commit TODO | yes (commit) | - |
-| P1 | `instagram-official` adapter, credential store, egress guard, browser adapter off by default | TODO | yes (Meta app, tunnel, own professional account) | P0 |
+| P0 | Baseline: commit F1-F12; pivot docs | DONE (committed 2026-10-29) | - | - |
+| P1 | `instagram-official` adapter, credential store, egress guard, browser adapter off by default | DONE in code and mock tests (2026-10-29); **live check TODO** | yes (Meta app, tunnel, own professional account) | P0 |
 | P2 | Telegram customer channel | TODO | yes (a test bot) | P1 (credential store, egress guard) |
 | P3 | Policies and FAQ tool | TODO | no | - |
 | P4 | Checkout data and Nova Poshta | TODO | yes (NP API key) | P1, P3 optional |
@@ -93,6 +93,8 @@ Scope: everything needed for one shop to connect its own professional account an
 - **Acceptance:** with a mock Graph API, an owner connects an account, a signed webhook produces exactly one agent run and exactly one reply via the Send API; a replayed webhook produces nothing new; an invalid signature is rejected and stored nowhere; a closed window sends nothing and notifies; a revoked token stops sending and flags reconnect; credentials never appear in API output or logs; the master key can be rotated without changing any decrypted secret; any `fetch` to a non-allow-listed host fails in tests.
 - **Tests:** unit (crypto round trip, AAD mismatch, rotation, signature check, window math, egress helper); integration with a mock Graph server and webhook fixtures (labelled "from documentation"); existing suites green with the browser flag on. **Live check** (owner): HTTPS tunnel, own professional account as a tester, send a DM, confirm one reply and a correct echo event.
 - Out of scope: Telegram, shared-media attachments, human-agent tag, Advanced Access, storefront.
+
+**P1 status (2026-10-30): built; acceptance met against a mock Graph API; not run against Meta. The connect/API layer was moved from Instagram Login to Unified login (D29) because new Meta apps no longer offer Instagram Login.** What exists: `shop_credentials`/`instagram_channels`/`instagram_oauth_states` (migration `0009_instagram_official`); `CredentialVault`/`Keyring`; `createEgress`; `InstagramGraph` (HTTP), `InstagramService` (connect, webhook, send, refresh), routes in `apps/api/src/routes/instagram.ts` (`GET|POST|DELETE /v1/shops/:shopId/instagram[/connect]`, `GET /public/instagram/callback`, `GET|POST /webhooks/instagram`); dashboard card in Settings; `pnpm gen-master-key`, `pnpm rewrap-credentials`; `HEPSON_ENABLE_BROWSER_ADAPTER`. The adapter shape was decided as direct ingest into shop tables (D23 amendment). Tests: `tests/unit/{credentials,egress}.test.ts`, `tests/integration/instagram.test.ts` (29 tests; payloads "from documentation"). Deviations from the scope list: no separate "mapping" layer (done in `InstagramService`); D16 auto-pause deliberately not built (unverified echo semantics); profile name/username fetched after the ack, best effort. **Still open (owner live check):** Meta app + HTTPS tunnel + own professional account as tester, then connect, send a DM, confirm one reply, a correct echo (`mid` equals the Send API `message_id`?), the real window error shape, and whether Development-mode webhooks arrive; capture real payloads and replace the documentation fixtures.
 
 ## P2 Telegram customer channel (D27)
 - Per-shop bot token (D28), webhook registration with per-shop `secret_token`, opaque webhook path, update dedupe, mapping into shop conversations on channel `telegram`, send path, disconnect with `deleteWebhook`.
