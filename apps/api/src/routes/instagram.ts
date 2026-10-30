@@ -11,7 +11,11 @@ const shopP = z.object({ shopId: z.uuid() });
 const callbackQ = z.object({ code: z.string().min(1).max(2048).optional(), state: z.string().min(1).max(256).optional(), error: z.string().max(100).optional() });
 const handshakeQ = z.object({ 'hub.mode': z.string().max(50).optional(), 'hub.verify_token': z.string().max(256).optional(), 'hub.challenge': z.string().max(256).optional() });
 
-const sameSecret = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const sameSecret = (a: string, b: string) => {
+  const given = Buffer.from(a);
+  const expected = Buffer.from(b);
+  return given.length === expected.length && timingSafeEqual(given, expected);
+};
 
 /**
  * Instagram (D23): owner connect flow and Meta's webhook. The webhook is authenticated only by the HMAC of the raw body

@@ -22,7 +22,14 @@ afterEach(async () => {
   a = undefined;
 });
 
-type Graph = { calls: Array<{ method: string; url: string; auth: string | null; body: string | null }>; send: () => Response; accounts: () => Response; exchange: () => Response; conversations: () => Response };
+type Graph = {
+  calls: Array<{ method: string; url: string; auth: string | null; body: string | null }>;
+  send: () => Response;
+  accounts: () => Response;
+  exchange: () => Response;
+  conversations: () => Response | Promise<Response>;
+  subscribe: () => Response;
+};
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { 'content-type': 'application/json' } });
 
 function fakeMeta(): Graph & { fetchImpl: typeof fetch } {
@@ -33,6 +40,7 @@ function fakeMeta(): Graph & { fetchImpl: typeof fetch } {
     accounts: () => json({ data: [{ id: IG, username: 'shop_ig' }] }),
     exchange: () => json({ access_token: TOKEN_LONG, token_type: 'bearer' }),
     conversations: () => json({ data: [] }),
+    subscribe: () => json({ success: true }),
   };
   const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = String(input);
@@ -42,7 +50,7 @@ function fakeMeta(): Graph & { fetchImpl: typeof fetch } {
     if (u.pathname.endsWith('/oauth/access_token')) return g.exchange();
     if (u.pathname.endsWith('/me/assigned_instagram_accounts')) return g.accounts();
     if (u.pathname.endsWith('/conversations')) return g.conversations();
-    if (u.pathname.endsWith('/subscribed_apps')) return json({ success: true });
+    if (u.pathname.endsWith('/subscribed_apps')) return init?.method === 'POST' ? g.subscribe() : json({ success: true });
     if (u.pathname.endsWith('/messages')) return g.send();
     return json({ name: 'Іра', username: 'ira_k' }); // profile lookup
   }) as typeof fetch;
@@ -140,6 +148,50 @@ describe('connect flow', () => {
     // replaying the same state gets nothing
     const again = await a!.app.inject({ method: 'GET', url: `/public/instagram/callback?code=x&state=${state}` });
     expect(again.headers.location).toBe('https://dash.example/?instagram=error');
+  });
+
+  it.each([503, 200])('does not connect when webhook subscription fails with HTTP %i', async (status) => {
+    const s = await setup();
+    s.meta.subscribe = () => (status === 200 ? json({ success: false }) : json({ error: { code: 2 } }, status));
+    const r = await connect(s);
+    expect(r.res.headers.location).toBe('https://dash.example/?instagram=error');
+    expect(a!.ig.status(s.shopId).status).toBe('not_connected');
+    expect(a!.vault.get(s.shopId, 'instagram')).toBeUndefined();
+
+    s.meta.subscribe = () => json({ success: true });
+    await connected(s);
+    expect(a!.ig.status(s.shopId)).toMatchObject({ status: 'connected', lastError: null });
+  });
+
+  it('preserves an existing connection when replacement webhook subscription fails', async () => {
+    const s = await setup();
+    await connected(s);
+    const before = a!.igRepo.getChannel(s.shopId);
+    s.meta.exchange = () => json({ access_token: 'replacement-token' });
+    s.meta.accounts = () => json({ data: [{ id: '17841400000000002', username: 'another_shop' }] });
+    s.meta.subscribe = () => json({ error: { code: 200 } }, 403);
+    const r = await connect(s);
+    expect(r.res.headers.location).toBe('https://dash.example/?instagram=error');
+    expect(a!.igRepo.getChannel(s.shopId)).toEqual(before);
+    expect(await a!.vault.withSecret(s.shopId, 'instagram', async (token) => token === TOKEN_LONG)).toBe(true);
+  });
+
+  it('rolls back channel and token changes together when saving a replacement fails', async () => {
+    const s = await setup();
+    await connected(s);
+    const before = a!.igRepo.getChannel(s.shopId);
+    s.meta.exchange = () => json({ access_token: 'replacement-token' });
+    s.meta.accounts = () => json({ data: [{ id: '17841400000000002', username: 'another_shop' }] });
+    const save = a!.vault.save.bind(a!.vault);
+    const failingSave = vi.spyOn(a!.vault, 'save').mockImplementationOnce((...args) => {
+      save(...args);
+      throw new Error('simulated storage failure');
+    });
+    const r = await connect(s);
+    failingSave.mockRestore();
+    expect(r.res.headers.location).toBe('https://dash.example/?instagram=error');
+    expect(a!.igRepo.getChannel(s.shopId)).toEqual(before);
+    expect(await a!.vault.withSecret(s.shopId, 'instagram', async (token) => token === TOKEN_LONG)).toBe(true);
   });
 
   it('only owners connect; outsiders get 404; unknown or expired state is refused; denial redirects', async () => {
@@ -521,7 +573,7 @@ describe('polling fallback', () => {
   });
   const convs = (...messages: unknown[]) => json({ data: [{ id: 'c1', updated_time: iso(Date.now()), messages: { data: messages } }] });
 
-  it('the first run only sets the cursor; later runs ingest new messages once, run the agent once and record our own messages as echoes', async () => {
+  it('polls since connection without importing history; later runs ingest once and record our own messages as echoes', async () => {
     const s = await setup({ script: [say('Вітаю!')] });
     await connected(s);
     const old = polled('mid.old', Date.now() - 3_600_000, 'старе');
@@ -572,6 +624,30 @@ describe('polling fallback', () => {
     s.meta.conversations = () => json({ error: { message: 'bad', code: 190 } }, 400);
     await a!.ig.pollOnce();
     expect(a!.ig.status(s.shopId)).toMatchObject({ status: 'needs_reconnect', lastError: 'TOKEN_REJECTED' });
+  });
+
+  it.each(['disconnect', 'switch', 'reconnect'] as const)('ignores a stale poll after %s', async (change) => {
+    const s = await setup({ ai: false });
+    await connected(s);
+    let release!: (response: Response) => void;
+    s.meta.conversations = () =>
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+    const polling = a!.ig.pollOnce();
+    if (change === 'disconnect') {
+      await a!.ig.disconnect(s.shopId);
+    } else {
+      if (change === 'switch') s.meta.accounts = () => json({ data: [{ id: '17841400000000002', username: 'another_shop' }] });
+      await connected(s);
+    }
+    const channelAfterChange = a!.igRepo.getChannel(s.shopId);
+    // A response from the old token must neither ingest old-account messages nor invalidate the new token.
+    release(change === 'reconnect' ? json({ error: { code: 190 } }, 401) : convs(polled('mid.stale', Date.now() + 2000, 'Old account')));
+    expect(await polling).toBe(0);
+    expect(conv(s)).toBeUndefined();
+    expect(a!.igRepo.getChannel(s.shopId)).toEqual(channelAfterChange);
+    if (change !== 'disconnect') expect(a!.vault.get(s.shopId, 'instagram')?.status).toBe('active');
   });
 });
 

@@ -78,7 +78,7 @@ export class InstagramRepository {
       if (mine) {
         return this.db
           .update(t.instagramChannels)
-          .set({ igUserId: c.igUserId, username: c.username, status: 'connected', tokenExpiresAt: c.tokenExpiresAt, tokenRefreshedAt: ts, lastError: null, connectedAt: ts, updatedAt: ts })
+          .set({ igUserId: c.igUserId, username: c.username, status: 'connected', tokenExpiresAt: c.tokenExpiresAt, tokenRefreshedAt: ts, lastError: null, connectedAt: ts, updatedAt: ts, polledUntil: mine.igUserId === c.igUserId ? mine.polledUntil : null })
           .where(eq(t.instagramChannels.id, mine.id))
           .returning()
           .get()!;

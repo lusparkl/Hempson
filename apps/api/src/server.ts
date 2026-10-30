@@ -56,7 +56,11 @@ export type App = {
 
 /** Same fields as Fastify's default request log, with one-time OAuth `code`/`state` and the webhook verify token removed from the URL. */
 function logReq(r: { method?: string; url?: string; host?: string; ip?: string; socket?: { remotePort?: number } }) {
-  return { method: r.method, url: r.url?.replace(/([?&](?:code|state|hub\.verify_token)=)[^&]*/g, '$1[redacted]'), host: r.host, remoteAddress: r.ip, remotePort: r.socket?.remotePort };
+  const url = r.url?.replace(/([?&])([^=&]+)=[^&]*/g, (parameter, separator: string, key: string) => {
+    const decodedKey = new URLSearchParams(`${key}=`).keys().next().value;
+    return decodedKey && ['code', 'state', 'hub.verify_token'].includes(decodedKey) ? `${separator}${key}=[redacted]` : parameter;
+  });
+  return { method: r.method, url, host: r.host, remoteAddress: r.ip, remotePort: r.socket?.remotePort };
 }
 
 export const REDACT_PATHS = [

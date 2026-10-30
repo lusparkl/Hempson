@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { ConnectorError } from '@hepson/connector-core';
 import {
+  ConversationValidationError,
   CredentialDecryptError,
   CredentialMissingError,
   CredentialsUnavailableError,
@@ -70,6 +71,9 @@ function eventTime(ts: unknown, now: Date): string {
 export class InstagramService {
   private inflight = new Set<Promise<unknown>>();
   private profileTried = new Set<string>();
+  private connectingAccounts = new Set<string>();
+  private connectionOperations = new Map<string, { kind: 'connect' | 'disconnect' }>();
+  private connectionVersion = 0;
   constructor(private d: InstagramServiceDeps) {}
 
   private now() {
@@ -122,24 +126,46 @@ export class InstagramService {
     const st = this.d.repo.consumeState(state);
     if (!st) throw new ConnectorError('FORBIDDEN', 'Connect link expired or already used');
     const { graph, vault, repo, log } = this.d;
+    if (this.connectionOperations.has(st.shopId)) throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram connection is already in progress');
+    const operation = { kind: 'connect' as const };
+    this.connectionOperations.set(st.shopId, operation);
+    const requireCurrent = () => {
+      if (this.connectionOperations.get(st.shopId) !== operation) throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram connection was canceled');
+    };
     let step = 'exchange_code';
     try {
       const tok = await graph.exchangeCode(code, this.redirectUri);
+      requireCurrent();
       step = 'assigned_accounts';
       const accounts = await graph.assignedAccounts(tok.accessToken);
+      requireCurrent();
       // One shop = one account. Never guess which of several to use.
       if (accounts.length !== 1) throw new InstagramAccountSelectionError(accounts.length);
       const me = accounts[0]!;
       const existing = repo.findByIgUserId(me.userId);
       if (existing && existing.shopId !== st.shopId) throw new InstagramAccountTakenError();
       const expiresAt = tok.expiresInSec > 0 ? new Date(this.now().getTime() + tok.expiresInSec * 1000).toISOString() : null;
-      vault.save(st.shopId, 'instagram', tok.accessToken);
-      repo.upsertChannel(st.shopId, { igUserId: me.userId, username: me.username, tokenExpiresAt: expiresAt });
+      step = 'subscribe';
+      if (this.connectingAccounts.has(me.userId)) throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram connection is already in progress');
+      this.connectingAccounts.add(me.userId);
       try {
         await graph.subscribe(tok.accessToken, me.userId);
-      } catch (e) {
-        log.warn({ shopId: st.shopId, code: e instanceof GraphError ? e.graphCode : null }, 'instagram webhook subscribe failed');
-        repo.setError(st.shopId, 'WEBHOOK_SUBSCRIBE_FAILED');
+        requireCurrent();
+        // A connection is usable only after Meta confirms the subscription. Preserve an existing connection on failure.
+        // Save both rows atomically: an account claimed while subscription was in flight must not replace its token.
+        repo.db.transaction(() => {
+          repo.upsertChannel(st.shopId, { igUserId: me.userId, username: me.username, tokenExpiresAt: expiresAt });
+          vault.save(st.shopId, 'instagram', tok.accessToken);
+        });
+        this.connectionVersion++;
+      } finally {
+        // A canceled attempt may already be subscribed remotely. Keep the account reserved until cleanup finishes.
+        if (this.connectionOperations.get(st.shopId) !== operation) {
+          await graph
+            .unsubscribe(tok.accessToken, me.userId)
+            .catch((e) => log.warn({ shopId: st.shopId, code: e instanceof GraphError ? e.graphCode : null }, 'instagram canceled connection unsubscribe failed'));
+        }
+        this.connectingAccounts.delete(me.userId);
       }
       return { shopId: st.shopId };
     } catch (e) {
@@ -149,23 +175,35 @@ export class InstagramService {
         throw new ConnectorError(e.kind === 'unavailable' ? 'TEMPORARY_FAILURE' : 'LOGIN_REQUIRED', 'Instagram did not accept the connection');
       }
       throw e;
+    } finally {
+      if (this.connectionOperations.get(st.shopId) === operation) this.connectionOperations.delete(st.shopId);
     }
   }
 
   async disconnect(shopId: string): Promise<void> {
-    const ch = this.d.repo.getChannel(shopId);
-    if (ch && this.d.vault.available) {
-      await this.d.vault
-        .withSecret(shopId, 'instagram', (t) => this.d.graph.unsubscribe(t, ch.igUserId))
-        .catch((e) => this.d.log.warn({ shopId, code: e instanceof GraphError ? e.graphCode : null }, 'instagram unsubscribe failed'));
+    if (this.connectionOperations.get(shopId)?.kind === 'disconnect') throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram disconnection is already in progress');
+    // Replacing the identity cancels a pending callback before any asynchronous unsubscribe work begins.
+    const operation = { kind: 'disconnect' as const };
+    this.connectionOperations.set(shopId, operation);
+    try {
+      const ch = this.d.repo.getChannel(shopId);
+      if (ch && this.d.vault.available) {
+        await this.d.vault
+          .withSecret(shopId, 'instagram', (t) => this.d.graph.unsubscribe(t, ch.igUserId))
+          .catch((e) => this.d.log.warn({ shopId, code: e instanceof GraphError ? e.graphCode : null }, 'instagram unsubscribe failed'));
+      }
+      if (this.d.vault.available) this.d.vault.delete(shopId, 'instagram');
+      this.d.repo.deleteChannel(shopId);
+      this.connectionVersion++;
+    } finally {
+      if (this.connectionOperations.get(shopId) === operation) this.connectionOperations.delete(shopId);
     }
-    if (this.d.vault.available) this.d.vault.delete(shopId, 'instagram');
-    this.d.repo.deleteChannel(shopId);
   }
 
   private markNeedsReconnect(shopId: string, code: string): void {
     this.d.vault.mark(shopId, 'instagram', 'needs_reconnect');
     if (this.d.repo.setNeedsReconnect(shopId, code)) {
+      this.connectionVersion++;
       this.d.log.warn({ shopId, code }, 'instagram needs reconnect');
       this.d.notifier?.notify({ kind: 'channel_issue', shopId, channel: 'instagram', issue: 'needs_reconnect' });
     }
@@ -181,6 +219,7 @@ export class InstagramService {
       return 0;
     }
     let stored = 0;
+    let retryableFailure = false;
     for (const e of root.entry) {
       const entry = obj(e);
       const igId = str(entry.id);
@@ -190,15 +229,22 @@ export class InstagramService {
       const messaging = [...(Array.isArray(entry.messaging) ? entry.messaging : []), ...changes.filter((c) => c.field === 'messages').map((c) => c.value)];
       // Shape only: ids of our own account, counts and field names. Never message text or customer ids.
       this.d.log.info({ entryId: igId ?? null, matched: !!ch, events: messaging.length, keys: Object.keys(entry).filter((k) => k !== 'id' && k !== 'time'), fields: changes.map((c) => str(c.field) ?? null) }, 'instagram webhook entry');
-      if (!ch) continue; // unknown account: acknowledged, dropped
+      if (!ch) {
+        // Meta can start delivery before the subscribe response returns and the channel is saved. Ask it to retry.
+        if (igId && this.connectingAccounts.has(igId)) retryableFailure = true;
+        continue; // unknown account: acknowledged, dropped
+      }
       for (const ev of messaging) {
         try {
           if (this.ingestEvent(ch, obj(ev))) stored++;
         } catch (err) {
-          this.d.log.warn({ shopId: ch.shopId, err: err instanceof Error ? err.name : 'ERROR' }, 'instagram event skipped');
+          const retryable = !(err instanceof ConversationValidationError);
+          retryableFailure ||= retryable;
+          this.d.log.warn({ shopId: ch.shopId, err: err instanceof Error ? err.name : 'ERROR', retryable }, 'instagram event skipped');
         }
       }
     }
+    if (retryableFailure) throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram webhook processing failed; retry delivery');
     return stored;
   }
 
@@ -230,9 +276,20 @@ export class InstagramService {
       return false;
     }
 
-    const r = conversations.ingestMessage(ch.shopId, { channel: INSTAGRAM_CHANNEL, conversationExternalId: customerId, customer: { externalId: customerId }, externalId: mid, text, attachments, occurredAt });
+    // Dispatch reads the newly stored message synchronously and queues its work for after this transaction commits.
+    // If dispatch throws, roll the insert back so a retried delivery can still trigger the agent exactly once.
+    const r = conversations.db.transaction(() => {
+      const incoming = conversations.ingestMessage(ch.shopId, { channel: INSTAGRAM_CHANNEL, conversationExternalId: customerId, customer: { externalId: customerId }, externalId: mid, text, attachments, occurredAt });
+      if (!incoming.duplicated) {
+        try {
+          this.d.onInbound(ch.shopId, incoming.conversation.id, incoming.message.id);
+        } catch {
+          throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram inbound dispatch failed');
+        }
+      }
+      return incoming;
+    });
     if (r.duplicated) return false;
-    this.d.onInbound(ch.shopId, r.conversation.id, r.message.id);
     if (!r.customer.displayName && !r.customer.handle) this.track(this.enrichProfile(ch.shopId, customerId));
     return true;
   }
@@ -292,7 +349,7 @@ export class InstagramService {
 
   /**
    * Reads recent messages through the Conversations API and feeds the same ingest as the webhook. A safety net for
-   * missed or undelivered webhooks, off unless configured. The first run only sets the cursor (no history import).
+   * missed or undelivered webhooks, off unless configured. The first run starts at connection time (no history import).
    * Message ids from this API are assumed to equal webhook `mid`s; if they did not, running both paths would store
    * a message twice (unverified, see D29).
    * @returns how many new customer messages were stored.
@@ -302,29 +359,40 @@ export class InstagramService {
     this.polling = true;
     let stored = 0;
     try {
-      for (const ch of this.d.repo.listConnected()) {
+      for (const { shopId } of this.d.repo.listConnected()) {
+        const ch = this.d.repo.getChannel(shopId);
+        if (!ch || ch.status !== 'connected') continue;
+        const connectionVersion = this.connectionVersion;
         try {
-          if (!ch.polledUntil) {
-            this.d.repo.setPolledUntil(ch.shopId, this.now().toISOString());
-            continue;
-          }
-          const since = Date.parse(ch.polledUntil);
+          const since = Date.parse(ch.polledUntil ?? ch.connectedAt);
           const msgs = await this.d.vault.withSecret(ch.shopId, 'instagram', (t) => this.d.graph.recentMessages(t, ch.igUserId));
+          // A connection changed while Graph was pending. Leave its cursor untouched and poll current state next time.
+          if (connectionVersion !== this.connectionVersion) continue;
           let newest = since;
+          let retryableFailure = false;
+          let shopStored = 0;
           for (const m of msgs) {
-            if (m.createdAtMs <= since) continue;
+            // A later poll may reveal another message with the same timestamp. Message ids deduplicate repeats.
+            if (m.createdAtMs < since) continue;
             newest = Math.max(newest, m.createdAtMs);
             const own = m.fromId === ch.igUserId || (!!ch.username && m.fromUsername === ch.username);
             try {
               const ev = { sender: { id: own ? ch.igUserId : m.fromId }, recipient: { id: own ? m.toId : ch.igUserId }, timestamp: m.createdAtMs, message: { mid: m.id, text: m.text ?? undefined, is_echo: own } };
-              if (this.ingestEvent(ch, ev)) stored++;
+              if (this.ingestEvent(ch, ev)) {
+                stored++;
+                shopStored++;
+              }
             } catch (err) {
-              this.d.log.warn({ shopId: ch.shopId, err: err instanceof Error ? err.name : 'ERROR' }, 'instagram polled message skipped');
+              const retryable = !(err instanceof ConversationValidationError);
+              retryableFailure ||= retryable;
+              this.d.log.warn({ shopId: ch.shopId, err: err instanceof Error ? err.name : 'ERROR', retryable }, 'instagram polled message skipped');
             }
           }
-          if (newest > since) this.d.repo.setPolledUntil(ch.shopId, new Date(newest).toISOString());
-          if (msgs.some((m) => m.createdAtMs > since)) this.d.log.info({ shopId: ch.shopId, fetched: msgs.length, stored }, 'instagram poll');
+          // Keep the batch available for retry when storage or dispatch failed; successful messages are idempotent.
+          if (!retryableFailure && (!ch.polledUntil || newest > since)) this.d.repo.setPolledUntil(ch.shopId, new Date(newest).toISOString());
+          if (newest > since || shopStored) this.d.log.info({ shopId: ch.shopId, fetched: msgs.length, stored: shopStored }, 'instagram poll');
         } catch (e) {
+          if (connectionVersion !== this.connectionVersion) continue;
           if (e instanceof GraphError && e.kind === 'auth') this.markNeedsReconnect(ch.shopId, 'TOKEN_REJECTED');
           else this.d.log.warn({ shopId: ch.shopId, code: e instanceof GraphError ? e.graphCode : e instanceof Error ? e.name : 'ERROR' }, 'instagram poll failed');
         }

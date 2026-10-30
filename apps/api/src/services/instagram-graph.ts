@@ -113,15 +113,36 @@ export class InstagramGraph {
 
   /** The Instagram professional accounts the business shared during login. Each `id` is the id used in webhook `entry.id` and in the Send API path. */
   async assignedAccounts(token: string): Promise<{ userId: string; username: string | null }[]> {
-    const r = await this.call(`${this.c.graphBaseUrl}/${this.c.apiVersion}/me/assigned_instagram_accounts?fields=id,username`, { method: 'GET', headers: { authorization: `Bearer ${token}` } });
-    if (!r.ok) this.fail(r);
-    const data = asObj(r.body).data;
     const out: { userId: string; username: string | null }[] = [];
-    for (const a of Array.isArray(data) ? data : []) {
-      const o = asObj(a);
-      if (typeof o.id === 'string' || typeof o.id === 'number') out.push({ userId: String(o.id), username: typeof o.username === 'string' ? o.username : null });
+    const cursors = new Set<string>();
+    const query = new URLSearchParams({ fields: 'id,username', limit: '2' });
+    // Two distinct accounts already make selection ambiguous. Never assume the first page is the complete list.
+    for (let page = 0; page < 20; page++) {
+      const r = await this.call(`${this.c.graphBaseUrl}/${this.c.apiVersion}/me/assigned_instagram_accounts?${query}`, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) this.fail(r);
+      const body = asObj(r.body);
+      if (!Array.isArray(body.data)) this.fail(r);
+      for (const a of body.data) {
+        const o = asObj(a);
+        if ((typeof o.id === 'string' && o.id) || (typeof o.id === 'number' && Number.isSafeInteger(o.id))) {
+          const userId = String(o.id);
+          if (!out.some((a) => a.userId === userId)) out.push({ userId, username: typeof o.username === 'string' ? o.username : null });
+        } else {
+          this.fail(r); // A malformed account must not make a multi-account grant look like one account.
+        }
+      }
+      const paging = asObj(body.paging);
+      if (out.length > 1 || !paging.next) return out;
+      const after = asObj(paging.cursors).after;
+      if (typeof after !== 'string' || !after || cursors.has(after)) this.fail(r);
+      cursors.add(after);
+      // Rebuild the trusted endpoint: never forward the token to a URL supplied in paging.next.
+      query.set('after', after);
     }
-    return out;
+    throw new GraphError('unavailable', null, null);
   }
 
   /**
@@ -149,8 +170,11 @@ export class InstagramGraph {
 
   /** Subscribes the account to `messages` webhooks for this app. */
   async subscribe(token: string, igUserId: string): Promise<void> {
-    const r = await this.call(`${this.c.graphBaseUrl}/${this.c.apiVersion}/${encodeURIComponent(igUserId)}/subscribed_apps?subscribed_fields=messages`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
-    if (!r.ok) this.fail(r);
+    const r = await this.call(`${this.c.graphBaseUrl}/${this.c.apiVersion}/${encodeURIComponent(igUserId)}/subscribed_apps?subscribed_fields=messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!r.ok || asObj(r.body).success !== true || asObj(r.body).error) this.fail(r);
   }
 
   async unsubscribe(token: string, igUserId: string): Promise<void> {
