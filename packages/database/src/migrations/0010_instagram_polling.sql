@@ -1,0 +1,1 @@
+ALTER TABLE `instagram_channels` ADD `polled_until` text;

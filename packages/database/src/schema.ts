@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import { CREDENTIAL_KINDS, CREDENTIAL_STATUSES } from './credential-kinds';
 import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // NOTE: no column here may ever hold cookies, tokens, passwords, 2FA secrets or profile bytes.
@@ -498,4 +499,73 @@ export const orderDraftItems = sqliteTable(
     unitPriceMinor: integer('unit_price_minor').notNull(),
   },
   (t) => [index('order_items_draft_idx').on(t.draftId), check('order_items_qty_pos', sql`${t.quantity} > 0`)],
+);
+
+/**
+ * Per-shop provider secrets (D28), envelope-encrypted: the secret is sealed with a random data key, the data key is
+ * wrapped with the master key from the environment. Both seals are AES-256-GCM with AAD = shop id, kind and row id.
+ * No plaintext column exists and none may be added. One row per (shop, kind): a new save overwrites the old one.
+ */
+export const shopCredentials = sqliteTable(
+  'shop_credentials',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    kind: text('kind', { enum: CREDENTIAL_KINDS }).notNull(),
+    status: text('status', { enum: CREDENTIAL_STATUSES }).notNull(),
+    keyVersion: integer('key_version').notNull(),
+    wrappedKey: text('wrapped_key').notNull(),
+    wrapNonce: text('wrap_nonce').notNull(),
+    wrapTag: text('wrap_tag').notNull(),
+    nonce: text('nonce').notNull(),
+    ciphertext: text('ciphertext').notNull(),
+    tag: text('tag').notNull(),
+    createdAt: text('created_at').notNull(),
+    rotatedAt: text('rotated_at'),
+    lastUsedAt: text('last_used_at'),
+    revokedAt: text('revoked_at'),
+  },
+  (t) => [uniqueIndex('shop_cred_shop_kind_uq').on(t.shopId, t.kind), index('shop_cred_version_idx').on(t.keyVersion)],
+);
+
+/** A shop's connected Instagram professional account (D23). Only non-secret references; the token lives in `shop_credentials`. */
+export const instagramChannels = sqliteTable(
+  'instagram_channels',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    /** Instagram professional account id: the `entry.id` of webhook events. Linked to one shop only. */
+    igUserId: text('ig_user_id').notNull(),
+    username: text('username'),
+    status: text('status', { enum: ['connected', 'needs_reconnect'] }).notNull(),
+    tokenExpiresAt: text('token_expires_at'),
+    tokenRefreshedAt: text('token_refreshed_at'),
+    /** Polling cursor: newest message time already ingested through the Conversations API (null until the first poll). */
+    polledUntil: text('polled_until'),
+    /** Short code only (never provider text). */
+    lastError: text('last_error'),
+    connectedAt: text('connected_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('ig_channel_shop_uq').on(t.shopId), uniqueIndex('ig_channel_user_uq').on(t.igUserId)],
+);
+
+/** Single-use OAuth `state` (sha256 stored) bound to the logged-in user and the shop that started the connect flow. */
+export const instagramOauthStates = sqliteTable(
+  'instagram_oauth_states',
+  {
+    stateHash: text('state_hash').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    expiresAt: text('expires_at').notNull(),
+  },
+  (t) => [index('ig_state_exp_idx').on(t.expiresAt)],
 );

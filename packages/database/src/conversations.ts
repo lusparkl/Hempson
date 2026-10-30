@@ -456,6 +456,15 @@ export class ConversationRepository {
     })();
   }
 
+  /** When the customer last wrote in this conversation (channel time), or undefined: the start of Instagram's 24-hour window. */
+  lastInboundAt(shopId: string, conversationId: string): string | undefined {
+    return this.db
+      .select({ at: sql<string>`max(${t.shopMessages.occurredAt})` })
+      .from(t.shopMessages)
+      .where(and(eq(t.shopMessages.shopId, shopId), eq(t.shopMessages.conversationId, conversationId), eq(t.shopMessages.direction, 'incoming')))
+      .get()?.at ?? undefined;
+  }
+
   getMessage(shopId: string, messageId: string): ShopMessageRow | undefined {
     return this.db
       .select()

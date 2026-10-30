@@ -64,6 +64,20 @@
       "when": 1793295945034,
       "tag": "0008_web_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1793305105342,
+      "tag": "0009_instagram_official",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1793355916269,
+      "tag": "0010_instagram_polling",
+      "breakpoints": true
     }
   ]
 }
