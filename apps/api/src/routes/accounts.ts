@@ -49,7 +49,7 @@ export function registerAccountRoutes(
   app: FastifyInstance,
   svc: ConnectorService,
   profiles: ProfileAdmin,
-  opts: { retentionDays: number; enableDev: boolean; maxMessageLength: number },
+  opts: { retentionDays: number; enableDev: boolean; maxMessageLength: number; browserAdapter: boolean },
 ) {
   const store = svc.store;
   const view = (a: AccountRow) => accountView(svc, a, profiles);
@@ -72,6 +72,8 @@ export function registerAccountRoutes(
     status: 201,
     body: S.CreateAccountBody,
     handler: ({ body }) => {
+      if (body.connectorType === 'instagram-browser' && !opts.browserAdapter)
+        throw new ConnectorError('FORBIDDEN', "The Instagram browser adapter is deprecated and disabled. Connect Instagram through the official API, or set HEPSON_ENABLE_BROWSER_ADAPTER=true (see docs/LIMITATIONS.md)");
       if (!body.consentConfirmed && body.connectorType !== 'mock')
         throw new ConnectorError('CONSENT_REQUIRED', "consentConfirmed must be true: record the shop owner's express authorization first");
       const a = store.createAccount({

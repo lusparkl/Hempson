@@ -4,7 +4,9 @@ type Logger = { warn(o: object, m?: string): void };
 
 export type Notification =
   | { kind: 'escalation'; shopId: string; conversationId: string; reason: string }
-  | { kind: 'order_draft'; shopId: string; conversationId: string; draftId: string; currency: string; totalMinor: number; itemCount: number };
+  | { kind: 'order_draft'; shopId: string; conversationId: string; draftId: string; currency: string; totalMinor: number; itemCount: number }
+  /** A channel stopped working and needs the owner (for example the Instagram token was rejected). Fixed text, no provider output. */
+  | { kind: 'channel_issue'; shopId: string; channel: 'instagram'; issue: 'needs_reconnect' };
 
 /** Tells a shop's people that something needs them (Feature 8). Fire and forget: never throws, never blocks the caller. */
 export interface Notifier {
@@ -18,6 +20,11 @@ const money = (minor: number, cur: string) => `${(minor / 100).toFixed(2)} ${cur
 /** Plain text, no markup (so customer-derived text cannot inject formatting). Ukrainian for `uk` shops, English otherwise. */
 export function renderNotification(n: Notification, ctx: { shopName: string; language: string; customer: string }): string {
   const uk = ctx.language.toLowerCase().startsWith('uk');
+  if (n.kind === 'channel_issue') {
+    return uk
+      ? `[${ctx.shopName}] Instagram відключився: токен більше не діє. Підключіть акаунт знову в панелі, поки цього не зроблено, відповіді в Instagram не надсилаються.`
+      : `[${ctx.shopName}] Instagram is disconnected: the access token is no longer valid. Reconnect the account in the dashboard; no Instagram replies are sent until then.`;
+  }
   if (n.kind === 'escalation') {
     return uk
       ? `[${ctx.shopName}] ШІ передає розмову людині.\nКлієнт: ${ctx.customer}\nПричина: ${n.reason}`
@@ -66,7 +73,7 @@ export class TelegramNotifier implements Notifier {
     if (!chatId) return;
     const shop = this.d.shops.get(n.shopId);
     if (!shop) return;
-    const conv = this.d.conversations.getConversation(n.shopId, n.conversationId);
+    const conv = n.kind === 'channel_issue' ? undefined : this.d.conversations.getConversation(n.shopId, n.conversationId);
     const customer = conv?.customer.displayName || conv?.customer.handle || '?';
     const text = renderNotification(n, { shopName: shop.name, language: shop.defaultLanguage, customer });
     const res = await (this.d.fetchImpl ?? fetch)(`${this.d.baseUrl ?? 'https://api.telegram.org'}/bot${this.d.token}/sendMessage`, {

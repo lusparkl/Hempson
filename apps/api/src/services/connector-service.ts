@@ -131,7 +131,7 @@ export class ConnectorService {
 
   /** Boot: reopen every enabled, non-paused account's saved session. Never prompts for login. */
   async autostart(): Promise<void> {
-    const accs = this.store.listAccounts().filter((a) => a.enabled && !a.paused && (a.connectorType === 'mock' || a.lastAuthValidatedAt));
+    const accs = this.store.listAccounts().filter((a) => a.enabled && !a.paused && !!this.adapters[a.connectorType] && (a.connectorType === 'mock' || a.lastAuthValidatedAt));
     const real = accs.filter((a) => a.connectorType !== 'mock');
     const mock = accs.filter((a) => a.connectorType === 'mock');
     for (const a of mock)

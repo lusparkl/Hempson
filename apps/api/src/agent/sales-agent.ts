@@ -1,7 +1,8 @@
-import type { AgentRepository, AiRunStatus, CatalogRepository, ConversationRepository, OrderRepository, RunPatch, ShopMessageRow, ShopRepository, Store } from '@hepson/database';
+import { INSTAGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, AiRunStatus, CatalogRepository, ConversationRepository, OrderRepository, RunPatch, ShopMessageRow, ShopRepository, Store } from '@hepson/database';
 import { channelOf } from '../services/channel-bridge';
 import type { ConnectorService } from '../services/connector-service';
 import type { EventBus, PublicEvent } from '../services/event-bus';
+import type { InstagramService } from '../services/instagram';
 import type { Notifier } from '../services/notifier';
 import { deliverPending } from '../services/shop-sender';
 import { checkReply } from './guard';
@@ -30,10 +31,11 @@ export type SalesAgentDeps = {
   log: Logger;
   maxMessageLength: number;
   notifier?: Notifier;
+  instagram?: InstagramService;
 };
 
 /** `connector`: reply through a Phase 1 account. `internal`: a channel Hepson itself hosts (website chat): the stored reply is the delivery. */
-type Delivery = { kind: 'connector'; accountId: string; providerConversationId: string } | { kind: 'internal' };
+type Delivery = { kind: 'connector'; accountId: string; providerConversationId: string } | { kind: 'instagram' } | { kind: 'internal' };
 type Target = { shopId: string; shopConversationId: string; trigger: ShopMessageRow; delivery: Delivery };
 
 /**
@@ -68,12 +70,14 @@ export class SalesAgent {
     if (target) this.enqueue(target);
   }
 
-  /** A new inbound message on a channel Hepson hosts itself (website chat). Same rules as a connector message. */
-  triggerInternal(shopId: string, conversationId: string, triggerMessageId: string): void {
+  /** A new inbound message stored directly in the shop tables (website chat, Instagram webhook). Same rules as a connector message. */
+  trigger(shopId: string, conversationId: string, triggerMessageId: string): void {
     if (!this.d.agent.getSettings(shopId).enabled) return;
     const trigger = this.d.conversations.getMessage(shopId, triggerMessageId);
-    if (!trigger || trigger.direction !== 'incoming' || trigger.conversationId !== conversationId) return;
-    this.enqueue({ shopId, shopConversationId: conversationId, trigger, delivery: { kind: 'internal' } });
+    const conv = this.d.conversations.getConversation(shopId, conversationId);
+    if (!trigger || !conv || trigger.direction !== 'incoming' || trigger.conversationId !== conversationId) return;
+    const delivery: Delivery | null = conv.conversation.channel === WEB_CHANNEL ? { kind: 'internal' } : conv.conversation.channel === INSTAGRAM_CHANNEL ? { kind: 'instagram' } : null;
+    if (delivery) this.enqueue({ shopId, shopConversationId: conversationId, trigger, delivery });
   }
 
   private enqueue(target: Target): void {
@@ -194,11 +198,17 @@ export class SalesAgent {
     }
     const { message } = conversations.recordOutbound(t.shopId, t.shopConversationId, { senderType: 'ai', text, deliveryStatus: 'pending' });
     const r = await deliverPending(
-      { store, svc, conversations },
+      { store, svc, conversations, ig: this.d.instagram },
       { shopId: t.shopId, ...t.delivery, message, idempotencyKey: `ai:${t.trigger.id}` },
     );
     if (r.status === 'sent') return void done(ok, r.code, message.id);
     if (r.status === 'uncertain') return void done('send_uncertain', r.code, message.id);
+    if (r.code === 'OUTSIDE_MESSAGING_WINDOW') {
+      // The reply cannot reach the customer: hand the conversation to a person instead of staying silent.
+      const reason = 'The Instagram 24-hour messaging window closed before the AI reply could be sent';
+      const e = agent.escalate(t.shopId, t.shopConversationId, reason, runId);
+      if (e.created) this.d.notifier?.notify({ kind: 'escalation', shopId: t.shopId, conversationId: t.shopConversationId, reason });
+    }
     done('failed', r.code, message.id);
   }
 }

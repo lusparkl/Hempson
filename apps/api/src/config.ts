@@ -6,11 +6,14 @@ export type Config = ReturnType<typeof loadConfig>;
 const bool = (v: string | undefined, d: boolean) => (v === undefined ? d : ['1', 'true', 'yes'].includes(v.toLowerCase()));
 const int = (v: string | undefined, d: number) => (v && Number.isFinite(Number(v)) ? Number(v) : d);
 
+/** `~` and `~/x` mean the home directory, as in .env.example. Env files are not shell-expanded, so `~` would otherwise become a folder in the working directory. */
+const expandHome = (p: string) => (p === '~' || p.startsWith('~/') ? path.join(os.homedir(), p.slice(1)) : p);
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
-  const dataDir = path.resolve(env.HEPSON_DATA_DIR ?? path.join(os.homedir(), '.hepson'));
+  const dataDir = path.resolve(expandHome(env.HEPSON_DATA_DIR ?? path.join(os.homedir(), '.hepson')));
   return {
     dataDir,
-    dbFile: path.resolve(env.HEPSON_DB_FILE ?? path.join(dataDir, 'hepson.db')),
+    dbFile: path.resolve(env.HEPSON_DB_FILE ? expandHome(env.HEPSON_DB_FILE) : path.join(dataDir, 'hepson.db')),
     host: env.HEPSON_HOST ?? '127.0.0.1',
     port: int(env.HEPSON_PORT, 8787),
     logLevel: env.HEPSON_LOG_LEVEL ?? 'info',
@@ -45,6 +48,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     webChatMessagesPerIpPerMinute: int(env.HEPSON_WEBCHAT_MESSAGES_PER_IP_MINUTE, 40),
     webChatDailyMessagesPerShop: int(env.HEPSON_WEBCHAT_DAILY_MESSAGES_PER_SHOP, 2000),
     webChatSessionDays: int(env.HEPSON_WEBCHAT_SESSION_DAYS, 30),
+    /** The Instagram web-UI adapter is frozen and deprecated (D22): off unless explicitly enabled. */
+    enableBrowserAdapter: bool(env.HEPSON_ENABLE_BROWSER_ADAPTER, false),
+    /** Extra outbound hosts beyond the built-in allow-list (comma separated). The LLM and Telegram base URL hosts are added automatically. */
+    egressExtraHosts: (env.HEPSON_EGRESS_EXTRA_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean),
+    /** Operator-level Meta app (D23, D29): the app's own id and secret (not an Instagram app id). Webhooks and the connect flow are off unless id, secret, verify token and config id are set. Never log the secret. */
+    metaAppId: env.HEPSON_META_APP_ID || undefined,
+    /** Facebook Login for Business configuration of the app's "API setup with Unified login" (not a secret). */
+    metaConfigId: env.HEPSON_META_CONFIG_ID || undefined,
+    metaAppSecret: env.HEPSON_META_APP_SECRET || undefined,
+    metaVerifyToken: env.HEPSON_META_VERIFY_TOKEN || undefined,
+    metaApiVersion: env.HEPSON_META_API_VERSION || 'v26.0',
+    metaGraphBaseUrl: (env.HEPSON_META_GRAPH_BASE_URL || 'https://graph.facebook.com').replace(/\/+$/, ''),
+    metaAuthorizeUrl: env.HEPSON_META_AUTHORIZE_URL || 'https://www.facebook.com/dialog/oauth',
+    /** Poll Instagram for new messages every N seconds (0 = off). A fallback for missed webhooks; webhooks stay the primary path. */
+    instagramPollSeconds: int(env.HEPSON_INSTAGRAM_POLL_SECONDS, 0),
+    /** Where the browser is sent after the connect flow (the dashboard). */
+    dashboardUrl: (env.HEPSON_DASHBOARD_URL || env.HEPSON_PUBLIC_URL || `http://${env.HEPSON_HOST ?? '127.0.0.1'}:${int(env.HEPSON_PORT, 8787)}`).replace(/\/+$/, ''),
     loginWaitMs: int(env.HEPSON_LOGIN_WAIT_MS, 10 * 60_000),
   };
 }

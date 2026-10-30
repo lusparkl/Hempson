@@ -4,6 +4,7 @@ import { ConnectorError } from '@hepson/connector-core';
 import { ConversationNotFoundError, ConversationValidationError, type AuthRepository, type ConversationRepository, type ConversationWithCustomer, type CustomerRow, type ShopMessageRow, type ShopRepository, type Store } from '@hepson/database';
 import { route } from './define';
 import type { ConnectorService } from '../services/connector-service';
+import type { InstagramService } from '../services/instagram';
 import { deliverPending, locateThread } from '../services/shop-sender';
 import { makeRequireRole } from './shops';
 
@@ -49,9 +50,9 @@ const messageView = (m: ShopMessageRow) => ({
  */
 export function registerConversationRoutes(
   app: FastifyInstance,
-  deps: { shops: ShopRepository; auth: AuthRepository; conversations: ConversationRepository; store: Store; svc: ConnectorService; maxMessageLength: number },
+  deps: { shops: ShopRepository; auth: AuthRepository; conversations: ConversationRepository; store: Store; svc: ConnectorService; maxMessageLength: number; ig?: InstagramService },
 ) {
-  const { shops, auth, conversations, store, svc, maxMessageLength } = deps;
+  const { shops, auth, conversations, store, svc, maxMessageLength, ig } = deps;
   const requireRole = makeRequireRole(shops, auth);
   const sendBody = z.strictObject({ text: z.string().trim().min(1).max(maxMessageLength) });
   const notFound = (e: unknown): never => {
@@ -152,10 +153,15 @@ export function registerConversationRoutes(
       requireRole(req, params.shopId, 'manager');
       const conv = conversations.getConversation(params.shopId, params.conversationId);
       if (!conv) throw new ConnectorError('NOT_FOUND', 'conversation not found');
-      const thread = locateThread(store, params.shopId, conv.conversation.channel, conv.conversation.externalId);
+      const thread = locateThread(store, params.shopId, conv.conversation.channel, conv.conversation.externalId, ig);
       if (!thread) throw new ConnectorError('ACCOUNT_NOT_CONNECTED', 'no linked channel account can reach this conversation');
       // Dry run: the connector's own checks (outbound enabled, account connected, length) run before anything is recorded or paused.
       if (thread.kind === 'connector') await svc.requestSend(thread.accountId, thread.providerConversationId, body.text, `check:${params.conversationId}`, true);
+      if (thread.kind === 'instagram') {
+        // Same rule as the dry run above: refuse before anything is recorded or paused.
+        const blocked = ig?.blockReason(params.shopId, params.conversationId);
+        if (blocked) throw new ConnectorError(blocked, blocked === 'OUTSIDE_MESSAGING_WINDOW' ? 'The 24-hour Instagram messaging window has closed' : 'Instagram is not connected');
+      }
       const userId = req.user!.user.id;
       let message: ShopMessageRow;
       try {
@@ -164,7 +170,7 @@ export function registerConversationRoutes(
       } catch (e) {
         return notFound(e);
       }
-      const r = await deliverPending({ store, svc, conversations }, { shopId: params.shopId, ...thread, message, idempotencyKey: `human:${message.id}` });
+      const r = await deliverPending({ store, svc, conversations, ig }, { shopId: params.shopId, ...thread, message, idempotencyKey: `human:${message.id}` });
       return { ...messageView(r.message), aiPaused: true };
     },
   });
