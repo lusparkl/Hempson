@@ -2,7 +2,7 @@ import type { ChatMessage, LlmClient, LlmResult, ToolSpec } from '../../apps/api
 
 export type LlmStep = Partial<Pick<LlmResult, 'content' | 'toolCalls' | 'inputTokens' | 'outputTokens'>>;
 type Req = { messages: ChatMessage[]; tools: ToolSpec[] };
-type Entry = LlmStep | Error | ((req: Req) => LlmStep | Error | Promise<LlmStep | Error>);
+export type Entry = LlmStep | Error | ((req: Req) => LlmStep | Error | Promise<LlmStep | Error>);
 
 /** Test double for the model: plays back a script, records every request. No network, no key. */
 export class ScriptedLlm implements LlmClient {

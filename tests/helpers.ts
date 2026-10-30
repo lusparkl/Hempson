@@ -5,7 +5,7 @@ import { buildApp, type App } from '../apps/api/src/server';
 
 export async function makeApp(over: Parameters<typeof buildApp>[0] & { dir?: string } = {}) {
   const dir = over.dir ?? mkdtempSync(path.join(os.tmpdir(), 'hepson-test-'));
-  const a = await buildApp({ dataDir: dir, dbFile: path.join(dir, 'hepson.db'), logger: false, autostart: false, pollIntervalMs: 3_600_000, browserHeadless: true, ...over });
+  const a = await buildApp({ dataDir: dir, dbFile: path.join(dir, 'hepson.db'), logger: false, autostart: false, pollIntervalMs: 3_600_000, browserHeadless: true, enableBrowserAdapter: true, ...over });
   const admin = a.store.createApiKey('admin', null).key;
   return { ...a, dir, admin, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
