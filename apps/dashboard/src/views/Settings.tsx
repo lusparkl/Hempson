@@ -4,6 +4,7 @@ import { api, errText, useLoad, type Shop } from '../api';
 type Ai = { enabled: boolean; instructions: string; available: boolean };
 type Notify = { telegram: { available: boolean; chatId: string | null } };
 type Web = { enabled: boolean; widgetKey: string | null; allowedOrigins: string[]; snippet: string | null };
+type Ig = { available: boolean; status: 'not_connected' | 'connected' | 'needs_reconnect'; username: string | null; tokenExpiresAt: string | null; lastError: string | null };
 type Member = { userId: string; email: string; displayName: string; role: string };
 
 function useSave() {
@@ -28,11 +29,57 @@ export function Settings({ shop }: { shop: Shop }) {
   return (
     <div className="stack">
       {!owner && <p className="muted">Змінювати налаштування може лише власник.</p>}
+      <InstagramCard base={base} owner={owner} />
       <AiCard base={base} owner={owner} />
       <WebCard base={base} owner={owner} />
       <TelegramCard base={base} owner={owner} />
       <TeamCard base={base} owner={owner} />
     </div>
+  );
+}
+
+const IG_RESULT: Record<string, string> = {
+  connected: 'Instagram підключено.',
+  denied: 'Доступ у Instagram не надано.',
+  taken: 'Цей Instagram-акаунт уже підключений до іншого магазину.',
+  select_one: 'Під час входу потрібно вибрати рівно один Instagram-акаунт. Підключіть ще раз.',
+  error: 'Не вдалося підключити Instagram. Спробуйте ще раз.',
+};
+
+function InstagramCard({ base, owner }: { base: string; owner: boolean }) {
+  const ig = useLoad(() => api<Ig>('GET', `${base}/instagram`), [base]);
+  const s = useSave();
+  const result = IG_RESULT[new URLSearchParams(window.location.search).get('instagram') ?? ''];
+  if (!ig.data) return <section className="card">{ig.error ?? '…'}</section>;
+  const d = ig.data;
+  const connect = () =>
+    void s.run(async () => {
+      const r = await api<{ authorizeUrl: string }>('POST', `${base}/instagram/connect`);
+      window.location.assign(r.authorizeUrl);
+    });
+  const disconnect = () =>
+    window.confirm('Відключити Instagram? Токен буде видалено, відповіді в Instagram припиняться.') &&
+    void s.run(async () => {
+      await api('DELETE', `${base}/instagram`);
+      await ig.reload();
+    });
+  return (
+    <section className="card">
+      <h2>Instagram</h2>
+      {result && <p className="muted">{result}</p>}
+      {!d.available && <p className="error">Сервер не налаштований для Instagram (ключі Meta-застосунку та HEPSON_MASTER_KEY).</p>}
+      {d.status === 'connected' && <p>Підключено{d.username ? `: @${d.username}` : ''}. {d.tokenExpiresAt ? `Токен діє до ${new Date(d.tokenExpiresAt).toLocaleDateString('uk-UA')}.` : 'Токен без строку дії.'}</p>}
+      {d.status === 'needs_reconnect' && <p className="error">Потрібно підключити знову: токен більше не діє. Відповіді в Instagram не надсилаються.</p>}
+      {d.status === 'not_connected' && <p className="muted">Не підключено. Потрібен професійний акаунт Instagram.</p>}
+      {d.lastError && d.status === 'connected' && <p className="error">Є проблема: {d.lastError}</p>}
+      {owner && d.available && (
+        <>
+          <button type="button" onClick={connect}>{d.status === 'connected' ? 'Підключити знову' : 'Підключити Instagram'}</button>{' '}
+          {d.status !== 'not_connected' && <button type="button" onClick={disconnect}>Відключити</button>}
+        </>
+      )}{' '}
+      <Note m={s.msg} />
+    </section>
   );
 }
 
