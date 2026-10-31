@@ -569,3 +569,30 @@ export const instagramOauthStates = sqliteTable(
   },
   (t) => [index('ig_state_exp_idx').on(t.expiresAt)],
 );
+
+/**
+ * Official Telegram channel (P2, D27): one shop's own bot. The bot token lives only in `shop_credentials`
+ * (`telegram_bot`); the webhook header value is stored as a sha256 hash, so this table holds nothing usable.
+ */
+export const telegramChannels = sqliteTable(
+  'telegram_channels',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    /** Telegram user id of the bot (from `getMe`). One bot serves one shop only. */
+    botId: text('bot_id').notNull(),
+    botUsername: text('bot_username'),
+    /** Opaque random path segment of the webhook URL (never the token). */
+    webhookId: text('webhook_id').notNull(),
+    /** sha256 of the `secret_token` given to `setWebhook` (Telegram echoes it in a header on every delivery). */
+    webhookAuthHash: text('webhook_auth_hash').notNull(),
+    status: text('status', { enum: ['connected', 'needs_reconnect'] }).notNull(),
+    /** Short code only (never provider text). */
+    lastError: text('last_error'),
+    connectedAt: text('connected_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('tg_channel_shop_uq').on(t.shopId), uniqueIndex('tg_channel_bot_uq').on(t.botId), uniqueIndex('tg_channel_webhook_uq').on(t.webhookId)],
+);

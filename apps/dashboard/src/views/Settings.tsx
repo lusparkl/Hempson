@@ -5,6 +5,7 @@ type Ai = { enabled: boolean; instructions: string; available: boolean };
 type Notify = { telegram: { available: boolean; chatId: string | null } };
 type Web = { enabled: boolean; widgetKey: string | null; allowedOrigins: string[]; snippet: string | null };
 type Ig = { available: boolean; status: 'not_connected' | 'connected' | 'needs_reconnect'; username: string | null; tokenExpiresAt: string | null; lastError: string | null };
+type Tg = { available: boolean; status: 'not_connected' | 'connected' | 'needs_reconnect'; botUsername: string | null; lastError: string | null };
 type Member = { userId: string; email: string; displayName: string; role: string };
 
 function useSave() {
@@ -30,6 +31,7 @@ export function Settings({ shop }: { shop: Shop }) {
     <div className="stack">
       {!owner && <p className="muted">Змінювати налаштування може лише власник.</p>}
       <InstagramCard base={base} owner={owner} />
+      <TelegramBotCard base={base} owner={owner} />
       <AiCard base={base} owner={owner} />
       <WebCard base={base} owner={owner} />
       <TelegramCard base={base} owner={owner} />
@@ -78,6 +80,46 @@ function InstagramCard({ base, owner }: { base: string; owner: boolean }) {
           {d.status !== 'not_connected' && <button type="button" onClick={disconnect}>Відключити</button>}
         </>
       )}{' '}
+      <Note m={s.msg} />
+    </section>
+  );
+}
+
+function TelegramBotCard({ base, owner }: { base: string; owner: boolean }) {
+  const tg = useLoad(() => api<Tg>('GET', `${base}/telegram`), [base]);
+  const s = useSave();
+  if (!tg.data) return <section className="card">{tg.error ?? '…'}</section>;
+  const d = tg.data;
+  const connect = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const token = String(new FormData(form).get('token') ?? '');
+    void s.run(async () => {
+      await api('PUT', `${base}/telegram`, { token });
+      form.reset();
+      await tg.reload();
+    });
+  };
+  const disconnect = () =>
+    window.confirm('Відключити Telegram-бота? Токен буде видалено, відповіді в Telegram припиняться.') &&
+    void s.run(async () => {
+      await api('DELETE', `${base}/telegram`);
+      await tg.reload();
+    });
+  return (
+    <section className="card">
+      <h2>Telegram-бот для клієнтів</h2>
+      {!d.available && <p className="error">Сервер не налаштований для Telegram (HEPSON_MASTER_KEY та HTTPS-адреса HEPSON_PUBLIC_URL).</p>}
+      {d.status === 'connected' && <p>Підключено{d.botUsername ? `: @${d.botUsername}` : ''}.</p>}
+      {d.status === 'needs_reconnect' && <p className="error">Потрібно підключити знову: токен більше не діє. Відповіді в Telegram не надсилаються.</p>}
+      {d.status === 'not_connected' && <p className="muted">Не підключено. Створіть бота в @BotFather і вставте його токен.</p>}
+      {owner && d.available && (
+        <form className="row" onSubmit={connect}>
+          <input name="token" type="password" autoComplete="off" placeholder="токен бота від @BotFather" required />
+          <button type="submit">{d.status === 'not_connected' ? 'Підключити' : 'Замінити токен'}</button>
+          {d.status !== 'not_connected' && <button type="button" onClick={disconnect}>Відключити</button>}
+        </form>
+      )}
       <Note m={s.msg} />
     </section>
   );

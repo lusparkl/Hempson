@@ -24,7 +24,7 @@ Node 22+ (dev on 24), TypeScript strict, pnpm workspace, Fastify 5, Zod 4, SQLit
 | `packages/database` | Drizzle schema, migrations `0000`-`0010`, `Store` (Phase 1) and one repository per area (`shops`, `auth`, `catalog`, `catalog-import`, `conversations`, `agent`, `orders`, `stats`, `webchat`, `instagram`), `CredentialVault`/`Keyring` (`credentials.ts`) |
 | `packages/mock-adapter` | In-memory connector for tests and demos |
 | `packages/instagram-browser` | Frozen browser adapter: all Instagram DOM knowledge (`selectors.ts`, `parsers.ts`), profile, lock, login and sender |
-| `apps/api` | Fastify server: `routes/`, `services/` (`instagram*.ts`, `egress.ts`, `shop-sender.ts`, `web-chat.ts`, `notifier.ts`, Phase 1 `connector-service.ts`/`channel-bridge.ts`), `auth/`, `agent/`, `widget/` |
+| `apps/api` | Fastify server: `routes/`, `services/` (`instagram*.ts`, `telegram*.ts`, `egress.ts`, `shop-sender.ts`, `web-chat.ts`, `notifier.ts`, Phase 1 `connector-service.ts`/`channel-bridge.ts`), `auth/`, `agent/`, `widget/` |
 | `apps/dev-console` | Admin-key tool for Phase 1 connector accounts |
 | `apps/dashboard` | Shop-owner UI (user sessions, port 5174) |
 | `scripts/` | `migrate`, `bootstrap-key`, `backup`, `gen-openapi`, `gen-master-key`, `rewrap-credentials`; browser-only `calibrate-selectors`, `live-smoke` |
@@ -34,16 +34,18 @@ Node 22+ (dev on 24), TypeScript strict, pnpm workspace, Fastify 5, Zod 4, SQLit
 
 ```
 Instagram DM ─► /webhooks/instagram or polling ─► InstagramService ─┐
+Telegram msg ─► /webhooks/telegram/:id ─► TelegramService ──────────┤
 Website visitor ─► /public/web-chat ─► WebChatService ──────────────┼─► SalesAgent ─► OpenAI tool loop
 (frozen) browser adapter ─► ConnectorService ─► ChannelBridge ──────┘        │
                                                                              ▼
                                                      reply guard (no unverified price/stock)
                                                                              ▼
-                          shop-sender: Instagram Send API | website (internal) | browser send queue
+                          shop-sender: Instagram Send API | Telegram sendMessage | website (internal) | browser send queue
 ```
 
 - **Official Instagram.** `InstagramService` writes straight into the shop tables on channel `instagram-official` (D23 amendment). Signed webhooks and the polling fallback share one ingest path with dedupe on Meta's message id; echoes adopt our pending row. Sends check the 24-hour window first; `uncertain` is never retried. Tokens live in `CredentialVault`; all outbound HTTP goes through `createEgress`.
-- **Channel bridge (frozen path).** Mirrors Phase 1 account-scoped conversations into shop-scoped `customers`, `shop_conversations` and `shop_messages`. Phase 1 tables are never altered.
+- **Telegram.** One bot per shop (D27). The owner pastes the BotFather token; `TelegramService` checks it with `getMe`, registers the webhook (opaque path, random secret header, stored hashed) and keeps the token in `CredentialVault`. Ingest writes to channel `telegram` with message id `<chat_id>:<message_id>`; private chats only. A blocked bot makes the send `failed`; a rejected token marks the channel `needs_reconnect` and notifies the owner.
+- **Channel bridge (frozen path). Mirrors Phase 1 account-scoped conversations into shop-scoped `customers`, `shop_conversations` and `shop_messages`. Phase 1 tables are never altered.
 - **Sales agent.** One run per inbound message, serial per conversation. Tools: `search_products`, `get_variant`, `quote_order`, `create_order_draft`, `escalate`. The server computes prices and totals. The reply guard blocks any price or stock figure that no tool returned (one repair attempt, then escalate and send nothing).
 - **Human takeover.** Per-conversation AI pause. A human reply pauses the AI first. Telegram notifies on new escalations and order drafts.
 - **Orders.** Drafts are always `pending_approval`. Approval reduces stock atomically, all or nothing.

@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { ConnectorError } from '@hepson/connector-core';
-import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, InstagramRepository, Keyring, OrderRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, WebChatRepository, type DbHandle } from '@hepson/database';
+import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, InstagramRepository, Keyring, OrderRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
 import { MockAdapter } from '@hepson/mock-adapter';
 import { BrowserInstagramAdapter } from '@hepson/instagram-browser';
 import { loadConfig, type Config } from './config';
@@ -18,12 +18,15 @@ import { registerAiRoutes } from './routes/ai';
 import { registerOrderRoutes } from './routes/orders';
 import { registerStatsRoutes } from './routes/stats';
 import { registerInstagramRoutes } from './routes/instagram';
+import { registerTelegramRoutes } from './routes/telegram';
 import { registerWebChatRoutes } from './routes/web-chat';
 import { createEgress, hostOf } from './services/egress';
 import { InstagramService } from './services/instagram';
 import { InstagramGraph } from './services/instagram-graph';
 import { RateLimitedError, WebChatService } from './services/web-chat';
 import { TelegramNotifier, type Notifier } from './services/notifier';
+import { TelegramService } from './services/telegram';
+import { TelegramBotApi } from './services/telegram-bot';
 import { LoginThrottle } from './auth/throttle';
 import { registry, route } from './routes/define';
 import { buildOpenApi } from './openapi';
@@ -46,6 +49,8 @@ export type App = {
   vault: CredentialVault;
   igRepo: InstagramRepository;
   ig: InstagramService;
+  tgRepo: TelegramRepository;
+  tg: TelegramService;
   notifier: Notifier | null;
   salesAgent: SalesAgent | null;
   mock: MockAdapter;
@@ -102,6 +107,7 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   const keyring = overrides.keyring !== undefined ? overrides.keyring : Keyring.fromEnv(process.env);
   const vault = new CredentialVault(handle, keyring);
   const igRepo = new InstagramRepository(handle);
+  const tgRepo = new TelegramRepository(handle);
   // The only outbound transport (D22): configured provider hosts are added to the built-in allow-list.
   const egress = createEgress({
     extraHosts: [...cfg.egressExtraHosts, cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl].flatMap((u) => (u ? [hostOf(u) ?? ''] : [])).filter(Boolean),
@@ -157,7 +163,18 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     onInbound: (shopId, conversationId, messageId) => salesAgent?.trigger(shopId, conversationId, messageId),
     notifier: notifier ?? undefined,
   });
-  const salesAgent = llm ? new SalesAgent({ store, bus, svc, shops, conversations, catalog, orders, agent: agentRepo, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig }) : null;
+  // Shop bots (D27) share only the API base URL with the operator notifier bot, never its token.
+  const tg = new TelegramService({
+    api: new TelegramBotApi(egress, cfg.telegramApiBaseUrl),
+    vault,
+    repo: tgRepo,
+    conversations,
+    log,
+    publicUrl: cfg.publicUrl,
+    onInbound: (shopId, conversationId, messageId) => salesAgent?.trigger(shopId, conversationId, messageId),
+    notifier: notifier ?? undefined,
+  });
+  const salesAgent = llm ? new SalesAgent({ store, bus, svc, shops, conversations, catalog, orders, agent: agentRepo, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg }) : null;
 
   const webChatSvc = new WebChatService(
     webChat,
@@ -226,12 +243,13 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   registerAuthRoutes(app, auth, { allowRegistration: cfg.allowRegistration, sessionTtlMs: cfg.sessionTtlDays * 86_400_000, throttle: new LoginThrottle() });
   registerShopRoutes(app, { shops, auth, handle });
   registerCatalogRoutes(app, { shops, auth, catalog });
-  registerConversationRoutes(app, { shops, auth, conversations, store, svc, maxMessageLength: cfg.maxMessageLength, ig });
+  registerConversationRoutes(app, { shops, auth, conversations, store, svc, maxMessageLength: cfg.maxMessageLength, ig, tg });
   registerChannelRoutes(app, { store, shops, auth, bridge });
   registerAiRoutes(app, { shops, auth, agent: agentRepo, aiAvailable: salesAgent !== null, telegramAvailable: notifier !== null });
   registerStatsRoutes(app, { shops, auth, stats });
   registerWebChatRoutes(app, { shops, auth, webChat, svc: webChatSvc, publicUrl: cfg.publicUrl });
   registerOrderRoutes(app, { shops, auth, orders });
+  registerTelegramRoutes(app, { shops, auth, tg });
   await registerInstagramRoutes(app, { shops, auth, ig, appSecret: cfg.metaAppSecret, verifyToken: cfg.metaVerifyToken, dashboardUrl: cfg.dashboardUrl });
   const spec = buildOpenApi(registry);
   app.get('/v1/openapi.json', async () => spec);
@@ -268,6 +286,8 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     vault,
     igRepo,
     ig,
+    tgRepo,
+    tg,
     notifier,
     salesAgent,
     mock,

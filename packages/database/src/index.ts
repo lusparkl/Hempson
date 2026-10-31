@@ -12,3 +12,4 @@ export * from './stats';
 export * from './webchat';
 export * from './credentials';
 export * from './instagram';
+export * from './telegram';

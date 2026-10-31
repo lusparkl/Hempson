@@ -6,7 +6,7 @@ export type Notification =
   | { kind: 'escalation'; shopId: string; conversationId: string; reason: string }
   | { kind: 'order_draft'; shopId: string; conversationId: string; draftId: string; currency: string; totalMinor: number; itemCount: number }
   /** A channel stopped working and needs the owner (for example the Instagram token was rejected). Fixed text, no provider output. */
-  | { kind: 'channel_issue'; shopId: string; channel: 'instagram'; issue: 'needs_reconnect' };
+  | { kind: 'channel_issue'; shopId: string; channel: 'instagram' | 'telegram'; issue: 'needs_reconnect' };
 
 /** Tells a shop's people that something needs them (Feature 8). Fire and forget: never throws, never blocks the caller. */
 export interface Notifier {
@@ -20,6 +20,11 @@ const money = (minor: number, cur: string) => `${(minor / 100).toFixed(2)} ${cur
 /** Plain text, no markup (so customer-derived text cannot inject formatting). Ukrainian for `uk` shops, English otherwise. */
 export function renderNotification(n: Notification, ctx: { shopName: string; language: string; customer: string }): string {
   const uk = ctx.language.toLowerCase().startsWith('uk');
+  if (n.kind === 'channel_issue' && n.channel === 'telegram') {
+    return uk
+      ? `[${ctx.shopName}] Telegram-бот відключився: токен більше не діє. Підключіть бота знову в панелі, поки цього не зроблено, відповіді в Telegram не надсилаються.`
+      : `[${ctx.shopName}] The Telegram bot is disconnected: its token is no longer valid. Reconnect the bot in the dashboard; no Telegram replies are sent until then.`;
+  }
   if (n.kind === 'channel_issue') {
     return uk
       ? `[${ctx.shopName}] Instagram відключився: токен більше не діє. Підключіть акаунт знову в панелі, поки цього не зроблено, відповіді в Instagram не надсилаються.`

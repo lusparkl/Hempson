@@ -14,8 +14,10 @@ agent:   GET|PUT .../ai, GET .../ai/runs, GET .../escalations, POST .../escalati
 orders:  GET .../order-drafts[/:draftId], POST .../order-drafts/:draftId/approve|reject
 other:   GET .../channels, GET|PUT .../notifications, GET .../stats?from&to, GET|PUT .../web-chat, POST .../web-chat/rotate-key
 instagram (official, D29): GET|DELETE .../instagram, POST .../instagram/connect
+telegram (shop bot, D27): GET|PUT {token}|DELETE .../telegram
 public:  POST /public/web-chat/:widgetKey/session, POST|GET /public/web-chat/:widgetKey/messages, GET /widget/web-chat.js
          GET /public/instagram/callback (OAuth), GET|POST /webhooks/instagram (handshake, signed events; not in OpenAPI)
+         POST /webhooks/telegram/:webhookId (X-Telegram-Bot-Api-Secret-Token required)
 ```
 
 # Phase 1 connector API (frozen, D22)
