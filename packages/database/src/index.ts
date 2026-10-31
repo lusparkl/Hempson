@@ -13,3 +13,5 @@ export * from './webchat';
 export * from './credentials';
 export * from './instagram';
 export * from './telegram';
+export * from './policies';
+export * from './delivery';

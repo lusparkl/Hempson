@@ -52,3 +52,79 @@ describe('checkReply', () => {
     expect(checkReply('x'.repeat(1001), facts(), { customerText: '', maxLength: 1000 })).toHaveLength(1);
   });
 });
+
+const withPolicy = (policies: Partial<Record<'delivery' | 'returns' | 'payment' | 'hours', string | null>>, f = facts()) => {
+  for (const [topic, text] of Object.entries(policies)) {
+    f.policies.set(topic as never, text ?? null);
+    for (const n of text?.match(/\d+/g) ?? []) f.policyNumbers.add(Number(n));
+  }
+  return f;
+};
+
+describe('checkReply: policy claims (P3)', () => {
+  const returns = 'Повернення або обмін протягом 14 днів з моменту отримання, якщо товар не був у користуванні.';
+  const delivery = 'Відправляємо Новою Поштою протягом 1-2 робочих днів після підтвердження.';
+  const hours = 'Працюємо з 9:00 до 18:00, без вихідних.';
+
+  it('accepts periods and hours that the policy text contains (uk/ru/en)', () => {
+    expect(check('Повернути товар можна протягом 14 днів.', withPolicy({ returns }))).toEqual([]);
+    expect(check('Возврат возможен в течение 14 дней.', withPolicy({ returns }))).toEqual([]);
+    expect(check('Returns are accepted within 14 days.', withPolicy({ returns }))).toEqual([]);
+    expect(check('Відправимо за 1-2 робочі дні.', withPolicy({ delivery }))).toEqual([]);
+    expect(check('Ми працюємо з 9 до 18.', withPolicy({ hours }))).toEqual([]);
+    expect(check('We are open from 9:00 to 18:00.', withPolicy({ hours }))).toEqual([]);
+  });
+  it('blocks a delivery time or return period that is not in the policy', () => {
+    expect(check('Повернення протягом 30 днів.', withPolicy({ returns }))).toEqual([expect.stringContaining('period 30 is not in the shop policy')]);
+    expect(check('Доставка займе 3 дні.', withPolicy({ delivery }))).toHaveLength(1);
+    expect(check('Возврат в течение 30 дней.', withPolicy({ returns }))).toHaveLength(1);
+    expect(check('Delivery takes 5 business days.', withPolicy({ delivery }))).toHaveLength(1);
+    expect(check('Працюємо з 10 до 20.', withPolicy({ hours }))).toHaveLength(2);
+  });
+  it('blocks periods and topic claims made without get_policy', () => {
+    expect(check('Доставка 1-2 дні.')).toEqual([expect.stringContaining('period 1 was stated without the shop policy'), expect.stringContaining('period 2')]);
+    expect(check('Повернення можливе, без проблем!')).toEqual([expect.stringContaining('get_policy with topic "returns"')]);
+    expect(check('Возврат без проблем.')).toHaveLength(1);
+    expect(check('Free shipping on all orders!')).toHaveLength(1);
+    expect(check('Є накладений платіж.')).toHaveLength(1);
+    expect(check('Працюємо щодня.')).toHaveLength(1);
+  });
+  it('a topic the shop has no text for may not be discussed; after escalate a holding message may name it', () => {
+    expect(check('Повернення можливе.', withPolicy({ returns: null }))).toEqual([expect.stringContaining('no returns policy text')]);
+    const f = withPolicy({ returns: null });
+    f.escalatedReason = 'Питання про повернення';
+    expect(check('Щодо повернення відповість менеджер.', f)).toEqual([]);
+    expect(check('Повернення протягом 14 днів, менеджер уточнить.', f)).toHaveLength(1);
+  });
+  it('payment terms are backed by the policy or by checkout options', () => {
+    expect(check('Можна оплатити накладеним платежем.', withPolicy({ payment: 'Оплата: накладений платіж або передоплата на картку.' }))).toEqual([]);
+    const f = facts();
+    f.paymentMethods = ['cod'];
+    expect(check('Доступний накладений платіж.', f)).toEqual([]);
+  });
+  it('leaves ordinary replies alone', () => {
+    expect(check('Оформлюю доставку на відділення №5.', facts())).toEqual([]);
+    expect(check('Є розміри від 42 до 46 розміру.', facts())).toEqual([]);
+    expect(check('Ціни від 12 до 18 грн.', facts({ prices: [1200, 1800] }))).toEqual([]);
+    expect(check('Худі розмір 42 коштує 1299 грн', facts({ prices: [129_900] }))).toEqual([]);
+  });
+});
+
+describe('checkReply: delivery status and TTN (P4)', () => {
+  it('a parcel status needs get_order_status in the same run', () => {
+    expect(check('Ваше замовлення вже відправлено!')).toEqual([expect.stringContaining('get_order_status')]);
+    expect(check('Посилка в дорозі.')).toHaveLength(1);
+    expect(check('Your order has been shipped.')).toHaveLength(1);
+    expect(check('Заказ уже отправлен.')).toHaveLength(1);
+    const f = facts();
+    f.orderStatusLookups = 1;
+    expect(check('Посилка в дорозі.', f)).toEqual([]);
+  });
+  it('a TTN number must come from a tool', () => {
+    const f = facts();
+    f.orderStatusLookups = 1;
+    f.ttns.add('20450000000001');
+    expect(check('Ваша ТТН: 20450000000001', f)).toEqual([]);
+    expect(check('Ваша ТТН: 20450000009999', f)).toEqual([expect.stringContaining('TTN 20450000009999')]);
+  });
+});

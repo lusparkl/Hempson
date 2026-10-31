@@ -6,7 +6,9 @@ export type Notification =
   | { kind: 'escalation'; shopId: string; conversationId: string; reason: string }
   | { kind: 'order_draft'; shopId: string; conversationId: string; draftId: string; currency: string; totalMinor: number; itemCount: number }
   /** A channel stopped working and needs the owner (for example the Instagram token was rejected). Fixed text, no provider output. */
-  | { kind: 'channel_issue'; shopId: string; channel: 'instagram' | 'telegram'; issue: 'needs_reconnect' };
+  | { kind: 'channel_issue'; shopId: string; channel: 'instagram' | 'telegram' | 'nova_poshta'; issue: 'needs_reconnect' }
+  /** An order needs a person (P4): the parcel is coming back, or the TTN could not be created (or may exist). Fixed text. */
+  | { kind: 'order_update'; shopId: string; conversationId: string; draftId: string; event: 'returning' | 'ttn_failed' | 'ttn_uncertain' | 'auto_confirmed'; ttn: string | null };
 
 /** Tells a shop's people that something needs them (Feature 8). Fire and forget: never throws, never blocks the caller. */
 export interface Notifier {
@@ -24,6 +26,29 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
     return uk
       ? `[${ctx.shopName}] Telegram-бот відключився: токен більше не діє. Підключіть бота знову в панелі, поки цього не зроблено, відповіді в Telegram не надсилаються.`
       : `[${ctx.shopName}] The Telegram bot is disconnected: its token is no longer valid. Reconnect the bot in the dashboard; no Telegram replies are sent until then.`;
+  }
+  if (n.kind === 'channel_issue' && n.channel === 'nova_poshta') {
+    return uk
+      ? `[${ctx.shopName}] Нова Пошта не приймає API-ключ. Введіть ключ знову в панелі; поки цього не зроблено, ТТН не створюються, статуси не оновлюються.`
+      : `[${ctx.shopName}] Nova Poshta rejects the API key. Enter the key again in the dashboard; no TTNs are created and no statuses are updated until then.`;
+  }
+  if (n.kind === 'order_update') {
+    const id = n.draftId.slice(0, 8);
+    const ttn = n.ttn ? ` ТТН ${n.ttn}` : '';
+    const ttnEn = n.ttn ? ` TTN ${n.ttn}` : '';
+    const uks: Record<typeof n.event, string> = {
+      returning: `Посилка${ttn} повертається (клієнт: ${ctx.customer}, замовлення ${id}). Коли вона буде у вас, позначте «Повернено» в панелі.`,
+      ttn_failed: `Не вдалося створити ТТН для замовлення ${id} (клієнт: ${ctx.customer}). Перевірте дані відправника й спробуйте ще раз у панелі.`,
+      ttn_uncertain: `Нова Пошта не відповіла під час створення ТТН для замовлення ${id} (клієнт: ${ctx.customer}). Перевірте кабінет НП, перш ніж пробувати знову.`,
+      auto_confirmed: `ШІ-замовлення ${id} підтверджено автоматично (клієнт: ${ctx.customer}).`,
+    };
+    const ens: Record<typeof n.event, string> = {
+      returning: `Parcel${ttnEn} is coming back (customer: ${ctx.customer}, order ${id}). Mark it "Returned" in the dashboard once it is with you.`,
+      ttn_failed: `Could not create a TTN for order ${id} (customer: ${ctx.customer}). Check the sender settings and retry in the dashboard.`,
+      ttn_uncertain: `Nova Poshta did not answer while creating the TTN for order ${id} (customer: ${ctx.customer}). Check the NP cabinet before retrying.`,
+      auto_confirmed: `AI order ${id} was confirmed automatically (customer: ${ctx.customer}).`,
+    };
+    return `[${ctx.shopName}] ${uk ? uks[n.event] : ens[n.event]}`;
   }
   if (n.kind === 'channel_issue') {
     return uk

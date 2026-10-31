@@ -11,7 +11,12 @@ const pageQ = { limit: z.coerce.number().int().min(1).max(200).optional(), offse
 const runsQuery = z.object({ conversationId: z.uuid().optional(), ...pageQ });
 const escQuery = z.object({ status: z.enum(['open', 'resolved']).optional(), ...pageQ });
 const notifyBody = z.strictObject({ telegramChatId: z.string().nullable() });
-const settingsBody = z.strictObject({ enabled: z.boolean().optional(), instructions: z.string().optional() });
+const settingsBody = z.strictObject({
+  enabled: z.boolean().optional(),
+  instructions: z.string().optional(),
+  autonomy: z.enum(['approval_required', 'auto_confirm']).optional(),
+  autoConfirmMaxMinor: z.number().int().nullable().optional(),
+});
 
 const runView = (r: AiRunRow) => ({
   runId: r.id,
@@ -54,7 +59,16 @@ export function registerAiRoutes(
   const settingsView = (shopId: string) => {
     const s = agent.getSettings(shopId);
     // `available` = a model is configured on this server; `enabled` = the owner switched the agent on for this shop.
-    return { enabled: s.enabled, instructions: s.instructions, available: aiAvailable, updatedAt: s.updatedAt || null };
+    return {
+      enabled: s.enabled,
+      instructions: s.instructions,
+      available: aiAvailable,
+      autonomy: s.autonomy,
+      autoConfirmMaxMinor: s.autoConfirmMaxMinor,
+      autonomyChangedAt: s.autonomyChangedAt,
+      autonomyChangedBy: s.autonomyChangedBy,
+      updatedAt: s.updatedAt || null,
+    };
   };
 
   route(app, {
@@ -73,7 +87,7 @@ export function registerAiRoutes(
   route(app, {
     method: 'PUT',
     url: '/v1/shops/:shopId/ai',
-    summary: 'Switch the AI agent on/off and set owner notes (owner). Off by default.',
+    summary: 'Switch the AI agent on/off, set owner notes and the autonomy level (D26) (owner). Off and approval_required by default.',
     tag: 'ai',
     auth: 'user',
     params: shopP,
@@ -81,7 +95,7 @@ export function registerAiRoutes(
     handler: ({ req, params, body }) => {
       requireRole(req, params.shopId, 'owner');
       try {
-        agent.updateSettings(params.shopId, body);
+        agent.updateSettings(params.shopId, body, req.user!.user.id);
       } catch (e) {
         translate(e);
       }

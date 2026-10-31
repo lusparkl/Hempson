@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { CREDENTIAL_KINDS, CREDENTIAL_STATUSES } from './credential-kinds';
+import { ORDER_STATUSES, PAYMENT_METHODS, POLICY_TOPICS } from './order-kinds';
 import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // NOTE: no column here may ever hold cookies, tokens, passwords, 2FA secrets or profile bytes.
@@ -345,6 +346,12 @@ export const shopAiSettings = sqliteTable('shop_ai_settings', {
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
   /** Owner-written tone/policy notes appended to the agent prompt. */
   instructions: text('instructions').notNull().default(''),
+  /** D26: who approves AI drafts. Only an owner changes it; the last change is recorded below. */
+  autonomy: text('autonomy', { enum: ['approval_required', 'auto_confirm'] }).notNull().default('approval_required'),
+  /** Optional `auto_confirm` cap on the order total (minor units); null = no cap. */
+  autoConfirmMaxMinor: integer('auto_confirm_max_minor'),
+  autonomyChangedAt: text('autonomy_changed_at'),
+  autonomyChangedBy: text('autonomy_changed_by').references(() => users.id),
   updatedAt: text('updated_at').notNull(),
 });
 
@@ -458,7 +465,7 @@ export const orderDrafts = sqliteTable(
     customerId: text('customer_id')
       .notNull()
       .references(() => customers.id),
-    status: text('status', { enum: ['pending_approval', 'approved', 'rejected', 'cancelled'] }).notNull(),
+    status: text('status', { enum: ORDER_STATUSES }).notNull(),
     createdBy: text('created_by', { enum: ['ai', 'user'] }).notNull(),
     runId: text('run_id').references(() => aiRuns.id),
     contactName: text('contact_name'),
@@ -470,10 +477,59 @@ export const orderDrafts = sqliteTable(
     decidedByUserId: text('decided_by_user_id').references(() => users.id),
     decidedAt: text('decided_at'),
     decisionNote: text('decision_note'),
+    /** Set once when the order is approved (by a member or `system:auto_confirm`); stats count approvals by it. */
+    approvedAt: text('approved_at'),
+    /** Checkout data (P4). Approval requires all of it; the NP refs come only from Nova Poshta lookups. */
+    recipientFirstName: text('recipient_first_name'),
+    recipientLastName: text('recipient_last_name'),
+    /** Normalized `+380XXXXXXXXX`. */
+    recipientPhone: text('recipient_phone'),
+    npCityRef: text('np_city_ref'),
+    npCityName: text('np_city_name'),
+    npWarehouseRef: text('np_warehouse_ref'),
+    npWarehouseName: text('np_warehouse_name'),
+    paymentMethod: text('payment_method', { enum: PAYMENT_METHODS }),
+    /**
+     * TTN creation guard (at most once per order): `creating` is claimed before the NP call; `uncertain` = the call may
+     * have created a parcel, never retried automatically; `failed` = NP refused it, a member may retry.
+     */
+    ttnState: text('ttn_state', { enum: ['creating', 'created', 'failed', 'uncertain'] }),
+    ttnError: text('ttn_error'),
+    /** TTN number and document ref exactly as Nova Poshta returned them. */
+    ttn: text('ttn'),
+    npDocumentRef: text('np_document_ref'),
+    npStatusCode: text('np_status_code'),
+    npStatusText: text('np_status_text'),
+    npStatusAt: text('np_status_at'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
-  (t) => [index('order_drafts_shop_idx').on(t.shopId, t.status, t.createdAt), index('order_drafts_conv_idx').on(t.conversationId, t.status), check('order_drafts_total_nonneg', sql`${t.totalMinor} >= 0`)],
+  (t) => [
+    index('order_drafts_shop_idx').on(t.shopId, t.status, t.createdAt),
+    index('order_drafts_conv_idx').on(t.conversationId, t.status),
+    uniqueIndex('order_drafts_ttn_uq').on(t.shopId, t.ttn),
+    check('order_drafts_total_nonneg', sql`${t.totalMinor} >= 0`),
+  ],
+);
+
+/** Every order status change (D25 audit): who or what (`user:<id>`, `ai`, `system:auto_confirm`, `provider:nova_poshta`), from, to, when. */
+export const orderEvents = sqliteTable(
+  'order_events',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    draftId: text('draft_id')
+      .notNull()
+      .references(() => orderDrafts.id),
+    fromStatus: text('from_status', { enum: ORDER_STATUSES }),
+    toStatus: text('to_status', { enum: ORDER_STATUSES }).notNull(),
+    actor: text('actor').notNull(),
+    note: text('note'),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => [index('order_events_draft_idx').on(t.draftId, t.createdAt), index('order_events_shop_idx').on(t.shopId, t.createdAt)],
 );
 
 export const orderDraftItems = sqliteTable(
@@ -595,4 +651,65 @@ export const telegramChannels = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (t) => [uniqueIndex('tg_channel_shop_uq').on(t.shopId), uniqueIndex('tg_channel_bot_uq').on(t.botId), uniqueIndex('tg_channel_webhook_uq').on(t.webhookId)],
+);
+
+/** Shop policy texts the agent may quote (P3). One row per (shop, topic); `version` grows on every save. */
+export const shopPolicies = sqliteTable(
+  'shop_policies',
+  {
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    topic: text('topic', { enum: POLICY_TOPICS }).notNull(),
+    text: text('text').notNull(),
+    version: integer('version').notNull(),
+    updatedByUserId: text('updated_by_user_id').references(() => users.id),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('shop_policies_uq').on(t.shopId, t.topic)],
+);
+
+/** Nova Poshta sender and checkout settings of a shop (P4). The API key itself is in `shop_credentials` (kind `nova_poshta`). */
+export const shopDeliverySettings = sqliteTable('shop_delivery_settings', {
+  shopId: text('shop_id')
+    .primaryKey()
+    .references(() => shops.id),
+  /** Sender counterparty and contact person refs, read from NP when the key is saved. */
+  senderRef: text('sender_ref'),
+  senderContactRef: text('sender_contact_ref'),
+  senderPhone: text('sender_phone'),
+  senderCityRef: text('sender_city_ref'),
+  senderCityName: text('sender_city_name'),
+  senderWarehouseRef: text('sender_warehouse_ref'),
+  senderWarehouseName: text('sender_warehouse_name'),
+  codEnabled: integer('cod_enabled', { mode: 'boolean' }).notNull().default(true),
+  /** Prepaid orders wait in `awaiting_payment` until payment links exist (P5). */
+  prepaidEnabled: integer('prepaid_enabled', { mode: 'boolean' }).notNull().default(false),
+  /** D25: refused COD parcels per customer before COD stops being offered (0 = rule off). */
+  refusalLimit: integer('refusal_limit').notNull().default(1),
+  parcelWeightKg: text('parcel_weight_kg').notNull().default('1'),
+  parcelDescription: text('parcel_description').notNull().default('Товар'),
+  /** Short code only (never provider text). */
+  lastError: text('last_error'),
+  updatedAt: text('updated_at').notNull(),
+});
+
+/** Refused parcels per customer (D25), counted per shop by normalized phone, else by customer id. Never shared across shops. */
+export const customerRefusals = sqliteTable(
+  'customer_refusals',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    customerId: text('customer_id').references(() => customers.id),
+    phone: text('phone'),
+    /** The order whose parcel was refused; unique so NP polling counts one refusal per order. */
+    draftId: text('draft_id').references(() => orderDrafts.id),
+    source: text('source', { enum: ['nova_poshta', 'member'] }).notNull(),
+    createdByUserId: text('created_by_user_id').references(() => users.id),
+    note: text('note'),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => [index('refusals_shop_phone_idx').on(t.shopId, t.phone), index('refusals_shop_customer_idx').on(t.shopId, t.customerId), uniqueIndex('refusals_draft_uq').on(t.draftId)],
 );

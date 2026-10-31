@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeApp, call, mockAccount, type TestApp } from '../helpers';
+import { randomBytes } from 'node:crypto';
+import { Keyring } from '@hepson/database';
 import { ScriptedLlm, say, useTool } from '../fixtures/scripted-llm';
+import { NP_KEY, fakeNovaPoshta, npLookups, npOrder } from '../fixtures/fake-nova-poshta';
 import type { Notification, Notifier } from '../../apps/api/src/services/notifier';
 
 const PW = 'correct horse battery';
 const THREAD = 'mock-thread-olena';
-const order = { items: [{ sku: 'HOODIE-M', quantity: 2 }], contactName: 'Олена Коваль', contactPhone: '+380501112233', deliveryInfo: 'Київ, Нова пошта №5' };
+const order = npOrder([{ sku: 'HOODIE-M', quantity: 2 }]);
 let a: TestApp | undefined;
 afterEach(async () => {
   await a?.close();
@@ -28,7 +31,7 @@ async function login(email: string) {
 
 async function setup(llm: ScriptedLlm, o: { outbound?: boolean } = {}) {
   const notifier = new FakeNotifier();
-  a = await makeApp({ llm, notifier });
+  a = await makeApp({ llm, notifier, keyring: new Keyring(1, randomBytes(32)), fetchImpl: fakeNovaPoshta().fetchFor() });
   const token = await login('o@example.com');
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Магазин', slug: 'shop-one' })).body.shopId as string;
   a.catalog.createProduct(shopId, { name: 'Худі Classic', description: 'Бавовна', priceMinor: 129_900, currency: 'UAH', variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 3 }] });
@@ -37,6 +40,7 @@ async function setup(llm: ScriptedLlm, o: { outbound?: boolean } = {}) {
   await call(a, a.admin, 'PUT', `/v1/accounts/${acc}/shop`, { shopId });
   if (o.outbound !== false) await call(a, a.admin, 'PATCH', `/v1/accounts/${acc}/settings`, { outboundEnabled: true });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/ai`, { enabled: true });
+  await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/key`, { apiKey: NP_KEY });
   const conversationId = a.conversations.listConversations(shopId).items.find((x) => x.conversation.externalId === THREAD)!.conversation.id;
   return { token, shopId, acc, llm, notifier, conversationId, base: `/v1/shops/${shopId}/conversations/${conversationId}` };
 }
@@ -129,7 +133,7 @@ describe('human takeover', () => {
 
 describe('notifications', () => {
   it('announces a new escalation once and a new order draft; nothing for a repeated escalation', async () => {
-    const llm = new ScriptedLlm([useTool('escalate', { reason: 'Знижка' }), say('Передала менеджеру.'), useTool('create_order_draft', order), say('Менеджер підтвердить.')]);
+    const llm = new ScriptedLlm([useTool('escalate', { reason: 'Знижка' }), say('Передала менеджеру.'), npLookups(), useTool('create_order_draft', order), say('Менеджер підтвердить.')]);
     const s = await setup(llm);
     await customerWrites(s, 'Дайте знижку');
     expect(s.notifier.sent).toEqual([{ kind: 'escalation', shopId: s.shopId, conversationId: s.conversationId, reason: 'Знижка' }]);
@@ -166,7 +170,7 @@ describe('notifications', () => {
 
 describe('statistics', () => {
   it('counts runs, tokens, replies, escalations and drafts of the shop only', async () => {
-    const llm = new ScriptedLlm([say('Вітаю!'), useTool('escalate', { reason: 'Знижка' }), say('Передала менеджеру.'), useTool('create_order_draft', order), say('Менеджер підтвердить.')]);
+    const llm = new ScriptedLlm([say('Вітаю!'), useTool('escalate', { reason: 'Знижка' }), say('Передала менеджеру.'), npLookups(), useTool('create_order_draft', order), say('Менеджер підтвердить.')]);
     const s = await setup(llm);
     // Mirrored history counts as messages too (by ingest time): measure from the state after linking.
     const base = (await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/stats`)).body.messages;
@@ -180,14 +184,15 @@ describe('statistics', () => {
 
     const r = await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/stats`);
     expect(r.status).toBe(200);
-    expect(r.body.ai).toMatchObject({ runs: 3, byStatus: { replied: 2, escalated: 1 }, modelRequests: 5, inputTokens: 50, outputTokens: 25, replyRate: 2 / 3 });
+    expect(r.body.ai).toMatchObject({ runs: 3, byStatus: { replied: 2, escalated: 1 }, modelRequests: 6, inputTokens: 60, outputTokens: 30, replyRate: 2 / 3 });
     expect(r.body.messages).toMatchObject({ incoming: base.incoming + 3, outgoingAi: 3, outgoingHuman: base.outgoingHuman + 1, failedOutgoing: 0 });
     expect(r.body.escalations).toMatchObject({ opened: 1, resolved: 1, openNow: 0 });
     expect(r.body.escalations.avgResolutionSeconds).toBeGreaterThanOrEqual(0);
-    expect(r.body.orderDrafts).toMatchObject({ byStatus: { approved: 1 }, approved: [{ currency: 'UAH', count: 1, totalMinor: 259_800 }] });
+    // No sender settings: the COD order stays `cod_confirmed` (TTN not created); it still counts as approved.
+    expect(r.body.orderDrafts).toMatchObject({ byStatus: { cod_confirmed: 1 }, approved: [{ currency: 'UAH', count: 1, totalMinor: 259_800 }] });
     expect(r.body.conversations).toMatchObject({ aiPausedNow: 1 });
     expect(r.body.conversations.active).toBeGreaterThanOrEqual(1);
-    expect(r.body.daily).toMatchObject([{ runs: 3, replied: 2, escalated: 1, inputTokens: 50, outputTokens: 25 }]);
+    expect(r.body.daily).toMatchObject([{ runs: 3, replied: 2, escalated: 1, inputTokens: 60, outputTokens: 30 }]);
 
     // A second shop sees none of it.
     const t2 = await login('o2@example.com');

@@ -91,7 +91,7 @@ export class StatsRepository {
     );
     const approved = all<{ currency: string; n: number; total: number }>(
       `select currency, count(*) n, sum(total_minor) total from order_drafts
-       where shop_id = @shop and status = 'approved' and decided_at >= @from and decided_at < @to group by currency order by currency`,
+       where shop_id = @shop and approved_at >= @from and approved_at < @to group by currency order by currency`,
     );
 
     const daily = all<{ d: string; runs: number; replied: number; escalated: number; inp: number; out: number }>(

@@ -1,4 +1,5 @@
-import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, AiRunStatus, CatalogRepository, ConversationRepository, OrderRepository, RunPatch, ShopMessageRow, ShopRepository, Store } from '@hepson/database';
+import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, AiRunStatus, CatalogRepository, ConversationRepository, DeliveryRepository, OrderRepository, PolicyRepository, RunPatch, ShopMessageRow, ShopRepository, Store } from '@hepson/database';
+import type { DeliveryService } from '../services/delivery';
 import { channelOf } from '../services/channel-bridge';
 import type { ConnectorService } from '../services/connector-service';
 import type { EventBus, PublicEvent } from '../services/event-bus';
@@ -13,8 +14,8 @@ import { RunFacts, TOOLS, runTool } from './tools';
 
 type Logger = { info(o: object, m?: string): void; warn(o: object, m?: string): void; error(o: object, m?: string): void };
 
-const MAX_STEPS = 6;
-const MAX_TOOL_CALLS = 8;
+const MAX_STEPS = 8;
+const MAX_TOOL_CALLS = 12;
 const MAX_REPAIRS = 1;
 const HISTORY = 20;
 const HISTORY_CHARS = 1000;
@@ -28,6 +29,9 @@ export type SalesAgentDeps = {
   catalog: CatalogRepository;
   orders: OrderRepository;
   agent: AgentRepository;
+  policies: PolicyRepository;
+  deliveryRepo: DeliveryRepository;
+  delivery?: DeliveryService;
   llm: LlmClient;
   log: Logger;
   maxMessageLength: number;
@@ -127,7 +131,20 @@ export class SalesAgent {
 
       const conv = conversations.getConversation(t.shopId, t.shopConversationId)!;
       const facts = new RunFacts();
-      const ctx = { shopId: t.shopId, conversationId: t.shopConversationId, runId: run.id, catalog: this.d.catalog, orders: this.d.orders, agent, facts, notify: this.d.notifier };
+      const ctx = {
+        shopId: t.shopId,
+        conversationId: t.shopConversationId,
+        customerId: conv.customer.id,
+        runId: run.id,
+        catalog: this.d.catalog,
+        orders: this.d.orders,
+        agent,
+        facts,
+        policies: this.d.policies,
+        deliveryRepo: this.d.deliveryRepo,
+        delivery: this.d.delivery,
+        notify: this.d.notifier,
+      };
       const customerText = trailingCustomerText(recent);
       const messages: ChatMessage[] = [
         { role: 'system', content: buildSystemPrompt(shop, conv.conversation.channel, agent.getSettings(t.shopId).instructions) },
@@ -153,7 +170,7 @@ export class SalesAgent {
         if (r.toolCalls.length) {
           messages.push({ role: 'assistant', content: r.content, toolCalls: r.toolCalls });
           for (const c of r.toolCalls) {
-            const result = ++toolCalls > MAX_TOOL_CALLS ? JSON.stringify({ error: 'too many tool calls in this turn' }) : runTool(ctx, c.name, c.arguments);
+            const result = ++toolCalls > MAX_TOOL_CALLS ? JSON.stringify({ error: 'too many tool calls in this turn' }) : await runTool(ctx, c.name, c.arguments);
             messages.push({ role: 'tool', toolCallId: c.id, content: result });
           }
           continue;

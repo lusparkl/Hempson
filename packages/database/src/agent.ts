@@ -23,7 +23,12 @@ export class AgentNotFoundError extends Error {
   }
 }
 
-const settingsInput = z.strictObject({ enabled: z.boolean().optional(), instructions: z.string().max(2000).optional() });
+const settingsInput = z.strictObject({
+  enabled: z.boolean().optional(),
+  instructions: z.string().max(2000).optional(),
+  autonomy: z.enum(['approval_required', 'auto_confirm']).optional(),
+  autoConfirmMaxMinor: z.number().int().min(1).max(1_000_000_000).nullable().optional(),
+});
 const notifyInput = z.strictObject({
   telegramChatId: z
     .string()
@@ -53,19 +58,41 @@ export class AgentRepository {
 
   /** AI is off until the owner enables it. */
   getSettings(shopId: string): AiSettingsRow {
-    return this.db.select().from(t.shopAiSettings).where(eq(t.shopAiSettings.shopId, shopId)).get() ?? { shopId, enabled: false, instructions: '', updatedAt: '' };
+    return (
+      this.db.select().from(t.shopAiSettings).where(eq(t.shopAiSettings.shopId, shopId)).get() ?? {
+        shopId,
+        enabled: false,
+        instructions: '',
+        autonomy: 'approval_required',
+        autoConfirmMaxMinor: null,
+        autonomyChangedAt: null,
+        autonomyChangedBy: null,
+        updatedAt: '',
+      }
+    );
   }
 
-  updateSettings(shopId: string, input: z.input<typeof settingsInput>): AiSettingsRow {
+  /** `userId` is recorded when the autonomy level or its cap changes (D26: owner-only and audited). */
+  updateSettings(shopId: string, input: z.input<typeof settingsInput>, userId: string | null = null): AiSettingsRow {
     const r = settingsInput.safeParse(input);
     if (!r.success) throw new AgentValidationError(r.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`));
     const cur = this.getSettings(shopId);
-    const row = { shopId, enabled: r.data.enabled ?? cur.enabled, instructions: r.data.instructions ?? cur.instructions, updatedAt: this.now() };
-    this.db
-      .insert(t.shopAiSettings)
-      .values(row)
-      .onConflictDoUpdate({ target: t.shopAiSettings.shopId, set: { enabled: row.enabled, instructions: row.instructions, updatedAt: row.updatedAt } })
-      .run();
+    const ts = this.now();
+    const autonomy = r.data.autonomy ?? cur.autonomy;
+    const cap = r.data.autoConfirmMaxMinor !== undefined ? r.data.autoConfirmMaxMinor : cur.autoConfirmMaxMinor;
+    const changed = autonomy !== cur.autonomy || cap !== cur.autoConfirmMaxMinor;
+    const row: AiSettingsRow = {
+      shopId,
+      enabled: r.data.enabled ?? cur.enabled,
+      instructions: r.data.instructions ?? cur.instructions,
+      autonomy,
+      autoConfirmMaxMinor: cap,
+      autonomyChangedAt: changed ? ts : cur.autonomyChangedAt,
+      autonomyChangedBy: changed ? userId : cur.autonomyChangedBy,
+      updatedAt: ts,
+    };
+    const { shopId: _s, ...set } = row;
+    this.db.insert(t.shopAiSettings).values(row).onConflictDoUpdate({ target: t.shopAiSettings.shopId, set }).run();
     return row;
   }
 

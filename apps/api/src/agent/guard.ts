@@ -1,8 +1,11 @@
+import type { PolicyTopic } from '@hepson/database';
 import type { RunFacts } from './tools';
 
 /**
  * Last line of defence against invented facts. The model's text is never authoritative: every price and every stock
- * figure in a reply must have been shown to the model by a tool in this run, otherwise the reply is not sent.
+ * figure in a reply must have been shown to the model by a tool in this run, otherwise the reply is not sent. The same
+ * holds for policy claims (periods, hours, returns/payment/free-delivery terms: `get_policy`, P3) and for delivery status
+ * and TTN numbers (`get_order_status`, P4).
  * This is a heuristic over common Ukrainian/Russian/English phrasings, not a proof; the prompt and tools are the primary control.
  */
 const NUM = String.raw`(\d{1,3}(?:[\s\u00a0]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)`;
@@ -12,6 +15,20 @@ const PRICE_BEFORE = new RegExp(`(?:₴|\\$|€)\\s*${NUM}`, 'giu');
 const STOCK_CLAIM = new RegExp(`(?:залишил\\w+|в наявності|є в наявності|в наличии|осталось|in stock|available|left)\\s*:?\\s*(\\d+)|(\\d+)\\s*(?:шт\\.?|штук\\w*|pcs|pieces|units)`, 'giu');
 const STOCK_ONLY = new RegExp(`(?:залишил\\w+|в наявності|є в наявності|в наличии|осталось|in stock|available|left)\\s*:?\\s*(\\d+)`, 'giu');
 const AVAILABILITY_WORDS = /(?:є в наявності|немає в наявності|нема в наявності|в наявності|закінчи\w+|розпродан\w+|в наличии|нет в наличии|in stock|out of stock|available)/iu;
+
+// P3: policy claims. `\p{L}*` instead of `\w`, which is ASCII-only even with the `u` flag.
+const DURATION = /(\d+)(?:\s*[-–—]\s*(\d+))?\s*(?:робоч\p{L}*\s+|рабоч\p{L}*\s+|business\s+|working\s+|календарн\p{L}*\s+)?(?:дн\p{L}*|день|доб\p{L}*|тиж\p{L}*|недел\p{L}*|місяц\p{L}*|месяц\p{L}*|годин\p{L}*|час(?:а|ов)?|days?|weeks?|months?|hours?)(?!\p{L})/giu;
+const HOURS_RANGE = /(?:^|[^\p{L}])(?:з|с|from|від|от)\s*(\d{1,2})(?:[:.]\d{2})?\s*(?:до|to|-|–)\s*(\d{1,2})(?:[:.]\d{2})?(?!\d|\s*(?:грн|гривен|гривн|uah|₴|\$|€|шт|pcs|%|кг|kg|см|cm|розмір|size|дн|day|тиж|week))/giu;
+const CLOCK = /(?<!\d)(\d{1,2}):\d{2}(?!\d)/gu;
+const TOPIC_WORDS: Array<[PolicyTopic, RegExp]> = [
+  ['returns', /(?:поверненн\p{L}*|повернут\p{L}*|обмін\p{L}*|обміня\p{L}*|возврат\p{L}*|вернуть|обмен\p{L}*|обменя\p{L}*|(?<!\p{L})(?:refunds?|returns?|exchanges?)(?!\p{L}))/iu],
+  ['delivery', /(?:безкоштовн\p{L}*\s+доставк|доставк\p{L}*\s+(?:є\s+)?безкоштовн|бесплатн\p{L}*\s+доставк|доставк\p{L}*\s+бесплатн|free\s+(?:shipping|delivery))/iu],
+  ['payment', /(?:накладен\p{L}*\s+платіж\p{L}*|наложен\p{L}*\s+плат\p{L}*|післяплат\p{L}*|передоплат\p{L}*|предоплат\p{L}*|оплат\p{L}*\s+(?:при|під час)\s+отриманн\p{L}*|cash on delivery|prepay\p{L}*|pre-?payment)/iu],
+  ['hours', /(?:працюємо|графік\p{L}*\s+робот|вихідн\p{L}*|работаем|график\p{L}*\s+работ|выходн\p{L}*|opening hours|we are open|business hours)/iu],
+];
+// P4: delivery-status claims and TTN numbers (NP waybills are 14 digits starting with 20 or 59).
+const DELIVERY_STATUS = /(?:відправили|відправлено|вже в дорозі|в дорозі|прибул\p{L}*|доставлено|отримано|у відділенні|отправили|отправлен\p{L}*|в пути|доставлен\p{L}*|прибыл\p{L}*|(?<!\p{L})(?:shipped|delivered|arrived|on (?:its|the) way|in transit)(?!\p{L}))/iu;
+const TTN = /(?<!\d)(?:20|59)\d{12}(?!\d)/g;
 
 const toMinor = (raw: string) => Math.round(Number.parseFloat(raw.replace(/[\s ]/g, '').replace(',', '.')) * 100);
 const numbersIn = (s: string) => [...s.matchAll(/\d+/g)].map((m) => Number(m[0]));
@@ -37,5 +54,49 @@ export function checkReply(reply: string, facts: RunFacts, opts: { customerText:
   }
 
   if (AVAILABILITY_WORDS.test(reply) && facts.productLookups === 0) problems.push('availability was stated without checking the catalog. Call search_products or get_variant first.');
+
+  problems.push(...checkPolicyClaims(reply, facts), ...checkDeliveryClaims(reply, facts));
   return [...new Set(problems)];
+}
+
+/**
+ * P3: a period ("14 днів", "1-2 дні"), opening hours or a policy topic in a reply must come from `get_policy` in the same
+ * run. Numbers must appear in a returned policy text. A holding message after `escalate` may name the topic, never a figure.
+ */
+function checkPolicyClaims(reply: string, facts: RunFacts): string[] {
+  const problems: string[] = [];
+  const looked = [...facts.policies.values()].some((v) => v !== null);
+  const figure = (n: number, what: string) => {
+    if (facts.policyNumbers.has(n)) return;
+    problems.push(looked ? `${what} ${n} is not in the shop policy text. Quote only what get_policy returned, or call escalate.` : `${what} ${n} was stated without the shop policy. Call get_policy first, or escalate.`);
+  };
+  for (const m of reply.matchAll(DURATION)) {
+    figure(Number(m[1]), 'period');
+    if (m[2] !== undefined) figure(Number(m[2]), 'period');
+  }
+  for (const m of reply.matchAll(HOURS_RANGE)) {
+    figure(Number(m[1]), 'time');
+    figure(Number(m[2]), 'time');
+  }
+  for (const m of reply.matchAll(CLOCK)) figure(Number(m[1]), 'time');
+  if (facts.escalatedReason === null)
+    for (const [topic, re] of TOPIC_WORDS) {
+      if (!re.test(reply)) continue;
+      if (facts.policies.get(topic)) continue;
+      if (topic === 'payment' && facts.paymentMethods?.length) continue;
+      problems.push(
+        facts.policies.has(topic)
+          ? `the shop has no ${topic} policy text, so nothing may be said about it. Call escalate instead.`
+          : `${topic} terms were mentioned without the shop policy. Call get_policy with topic "${topic}" first.`,
+      );
+    }
+  return problems;
+}
+
+/** P4: the state of a parcel or a TTN number must come from `get_order_status` in the same run. */
+function checkDeliveryClaims(reply: string, facts: RunFacts): string[] {
+  const problems: string[] = [];
+  if (DELIVERY_STATUS.test(reply) && facts.orderStatusLookups === 0) problems.push('a delivery status was stated without checking the order. Call get_order_status first.');
+  for (const m of reply.matchAll(TTN)) if (!facts.ttns.has(m[0])) problems.push(`TTN ${m[0]} was not returned by get_order_status. Quote only TTNs from tool results.`);
+  return problems;
 }

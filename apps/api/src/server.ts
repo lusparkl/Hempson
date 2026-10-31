@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { ConnectorError } from '@hepson/connector-core';
-import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, InstagramRepository, Keyring, OrderRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
+import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, DeliveryRepository, InstagramRepository, Keyring, OrderRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
 import { MockAdapter } from '@hepson/mock-adapter';
 import { BrowserInstagramAdapter } from '@hepson/instagram-browser';
 import { loadConfig, type Config } from './config';
@@ -20,6 +20,10 @@ import { registerStatsRoutes } from './routes/stats';
 import { registerInstagramRoutes } from './routes/instagram';
 import { registerTelegramRoutes } from './routes/telegram';
 import { registerWebChatRoutes } from './routes/web-chat';
+import { registerPolicyRoutes } from './routes/policies';
+import { registerDeliveryRoutes } from './routes/delivery';
+import { DeliveryService } from './services/delivery';
+import { NovaPoshtaApi } from './services/nova-poshta';
 import { createEgress, hostOf } from './services/egress';
 import { InstagramService } from './services/instagram';
 import { InstagramGraph } from './services/instagram-graph';
@@ -51,6 +55,9 @@ export type App = {
   ig: InstagramService;
   tgRepo: TelegramRepository;
   tg: TelegramService;
+  policies: PolicyRepository;
+  deliveryRepo: DeliveryRepository;
+  delivery: DeliveryService;
   notifier: Notifier | null;
   salesAgent: SalesAgent | null;
   mock: MockAdapter;
@@ -108,9 +115,11 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   const vault = new CredentialVault(handle, keyring);
   const igRepo = new InstagramRepository(handle);
   const tgRepo = new TelegramRepository(handle);
+  const policies = new PolicyRepository(handle);
+  const deliveryRepo = new DeliveryRepository(handle);
   // The only outbound transport (D22): configured provider hosts are added to the built-in allow-list.
   const egress = createEgress({
-    extraHosts: [...cfg.egressExtraHosts, cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl].flatMap((u) => (u ? [hostOf(u) ?? ''] : [])).filter(Boolean),
+    extraHosts: [...cfg.egressExtraHosts, cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl, cfg.novaPoshtaBaseUrl].flatMap((u) => (u ? [hostOf(u) ?? ''] : [])).filter(Boolean),
     fetchImpl: overrides.fetchImpl,
   });
   const bus = new EventBus(store);
@@ -174,7 +183,10 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     onInbound: (shopId, conversationId, messageId) => salesAgent?.trigger(shopId, conversationId, messageId),
     notifier: notifier ?? undefined,
   });
-  const salesAgent = llm ? new SalesAgent({ store, bus, svc, shops, conversations, catalog, orders, agent: agentRepo, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg }) : null;
+  const delivery = new DeliveryService({ api: new NovaPoshtaApi(egress, cfg.novaPoshtaBaseUrl), vault, repo: deliveryRepo, orders, log, notifier: notifier ?? undefined });
+  const salesAgent = llm
+    ? new SalesAgent({ store, bus, svc, shops, conversations, catalog, orders, agent: agentRepo, policies, deliveryRepo, delivery, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg })
+    : null;
 
   const webChatSvc = new WebChatService(
     webChat,
@@ -248,7 +260,9 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   registerAiRoutes(app, { shops, auth, agent: agentRepo, aiAvailable: salesAgent !== null, telegramAvailable: notifier !== null });
   registerStatsRoutes(app, { shops, auth, stats });
   registerWebChatRoutes(app, { shops, auth, webChat, svc: webChatSvc, publicUrl: cfg.publicUrl });
-  registerOrderRoutes(app, { shops, auth, orders });
+  registerOrderRoutes(app, { shops, auth, orders, delivery });
+  registerPolicyRoutes(app, { shops, auth, policies });
+  registerDeliveryRoutes(app, { shops, auth, delivery, deliveryRepo, orders, conversations });
   registerTelegramRoutes(app, { shops, auth, tg });
   await registerInstagramRoutes(app, { shops, auth, ig, appSecret: cfg.metaAppSecret, verifyToken: cfg.metaVerifyToken, dashboardUrl: cfg.dashboardUrl });
   const spec = buildOpenApi(registry);
@@ -269,6 +283,8 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   void ig.expireDue().catch(() => undefined);
   const pollTimer = cfg.instagramPollSeconds > 0 ? setInterval(() => void ig.pollOnce().catch(() => undefined), cfg.instagramPollSeconds * 1000) : null;
   pollTimer?.unref();
+  const npTimer = cfg.novaPoshtaPollMinutes > 0 ? setInterval(() => void delivery.pollOnce().catch(() => undefined), cfg.novaPoshtaPollMinutes * 60_000) : null;
+  npTimer?.unref();
 
   let closed = false;
   return {
@@ -288,6 +304,9 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     ig,
     tgRepo,
     tg,
+    policies,
+    deliveryRepo,
+    delivery,
     notifier,
     salesAgent,
     mock,
@@ -298,9 +317,11 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
       closed = true;
       clearInterval(timer);
       if (pollTimer) clearInterval(pollTimer);
+      if (npTimer) clearInterval(npTimer);
       salesAgent?.stop();
       await salesAgent?.whenIdle();
       await ig.whenIdle();
+      await delivery.whenIdle();
       await notifier?.whenIdle();
       await svc.shutdown();
       await app.close();

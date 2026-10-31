@@ -2,9 +2,37 @@ import { useState } from 'react';
 import { api, errText, money, useLoad, when, type Shop } from '../api';
 
 type Item = { sku: string; productName: string; options: Record<string, string>; quantity: number; unitPriceMinor: number };
-type Draft = { draftId: string; status: string; createdBy: string; contactName: string | null; contactPhone: string | null; deliveryInfo: string | null; note: string | null; currency: string; totalMinor: number; createdAt: string; decisionNote: string | null; items: Item[] };
+type Draft = {
+  draftId: string;
+  customerId: string;
+  status: string;
+  createdBy: string;
+  contactName: string | null;
+  contactPhone: string | null;
+  deliveryInfo: string | null;
+  note: string | null;
+  currency: string;
+  totalMinor: number;
+  createdAt: string;
+  decisionNote: string | null;
+  checkout: { paymentMethod: 'cod' | 'prepaid' | null; missing: string[] };
+  delivery: { ttnState: 'creating' | 'created' | 'failed' | 'uncertain' | null; ttnError: string | null; ttn: string | null; statusText: string | null; statusAt: string | null };
+  items: Item[];
+};
 type Esc = { escalationId: string; conversationId: string; reason: string; createdAt: string };
-const STATUS: Record<string, string> = { pending_approval: 'Очікують', approved: 'Підтверджені', rejected: 'Відхилені', cancelled: 'Скасовані' };
+const STATUS: Record<string, string> = {
+  pending_approval: 'Очікують',
+  cod_confirmed: 'Накладений платіж',
+  awaiting_payment: 'Чекають оплату',
+  shipped: 'Відправлені',
+  delivered: 'Отримані',
+  returning: 'Повертаються',
+  returned: 'Повернені',
+  rejected: 'Відхилені',
+  cancelled: 'Скасовані',
+};
+const PAY: Record<string, string> = { cod: 'накладений платіж', prepaid: 'передоплата' };
+const HELD = ['approved', 'awaiting_payment', 'cod_confirmed', 'paid'];
 
 export function Orders({ shop }: { shop: Shop }) {
   const base = `/v1/shops/${shop.shopId}`;
@@ -13,11 +41,11 @@ export function Orders({ shop }: { shop: Shop }) {
   const esc = useLoad(() => api<{ items: Esc[] }>('GET', `${base}/escalations?status=open`), [shop.shopId], 8000);
   const [err, setErr] = useState<string | null>(null);
 
-  const act = async (path: string, confirmText?: string) => {
+  const act = async (path: string, confirmText?: string, body: unknown = {}) => {
     if (confirmText && !window.confirm(confirmText)) return;
     setErr(null);
     try {
-      await api('POST', path, {});
+      await api('POST', path, body);
       await Promise.all([drafts.reload(), esc.reload()]);
     } catch (e) {
       setErr(errText(e));
@@ -39,7 +67,7 @@ export function Orders({ shop }: { shop: Shop }) {
         ))}
       </ul>
 
-      <h2>Чернетки замовлень</h2>
+      <h2>Замовлення</h2>
       <p className="row">
         {Object.entries(STATUS).map(([k, label]) => (
           <button key={k} className={status === k ? 'active' : ''} onClick={() => setStatus(k)}>
@@ -63,14 +91,38 @@ export function Orders({ shop }: { shop: Shop }) {
               {d.contactName} {d.contactPhone}
               <br />
               {d.deliveryInfo}
+              {d.checkout.paymentMethod && <><br />Оплата: {PAY[d.checkout.paymentMethod]}</>}
               {d.note && <><br />{d.note}</>}
             </p>
-            {d.status === 'pending_approval' && (
-              <p className="row">
-                <button onClick={() => act(`${base}/order-drafts/${d.draftId}/approve`, 'Підтвердити замовлення? Залишки на складі зменшаться.')}>Підтвердити</button>
-                <button onClick={() => act(`${base}/order-drafts/${d.draftId}/reject`, 'Відхилити чернетку?')}>Відхилити</button>
+            {d.checkout.missing.length > 0 && d.status === 'pending_approval' && <p className="error">Бракує даних для підтвердження: {d.checkout.missing.join(', ')}</p>}
+            {d.delivery.ttn && (
+              <p>
+                ТТН {d.delivery.ttn}
+                {d.delivery.statusText && <> · {d.delivery.statusText} <span className="muted">({when(d.delivery.statusAt)})</span></>}
               </p>
             )}
+            {d.delivery.ttnState === 'creating' && <p className="muted">ТТН створюється…</p>}
+            {d.delivery.ttnState === 'failed' && <p className="error">ТТН не створено ({d.delivery.ttnError}).</p>}
+            {d.delivery.ttnState === 'uncertain' && <p className="error">Нова Пошта не відповіла під час створення ТТН. Перевірте кабінет НП: якщо накладної немає, дозвольте нову спробу.</p>}
+            <p className="row">
+              {d.status === 'pending_approval' && (
+                <>
+                  <button onClick={() => act(`${base}/order-drafts/${d.draftId}/approve`, 'Підтвердити замовлення? Залишки на складі зменшаться.')}>Підтвердити</button>
+                  <button onClick={() => act(`${base}/order-drafts/${d.draftId}/reject`, 'Відхилити чернетку?')}>Відхилити</button>
+                </>
+              )}
+              {d.status === 'cod_confirmed' && (d.delivery.ttnState === null || d.delivery.ttnState === 'failed') && <button onClick={() => act(`${base}/order-drafts/${d.draftId}/ttn`)}>Створити ТТН</button>}
+              {d.delivery.ttnState === 'uncertain' && <button onClick={() => act(`${base}/order-drafts/${d.draftId}/ttn/release`, 'Ви перевірили кабінет Нової Пошти і накладної для цього замовлення немає?')}>Накладної немає, спробувати знову</button>}
+              {HELD.includes(d.status) && d.delivery.ttnState !== 'creating' && d.delivery.ttnState !== 'uncertain' && (
+                <button onClick={() => act(`${base}/order-drafts/${d.draftId}/cancel`, 'Скасувати замовлення? Товар повернеться на склад.')}>Скасувати</button>
+              )}
+              {d.status === 'returning' && (
+                <>
+                  <button onClick={() => act(`${base}/order-drafts/${d.draftId}/returned`, 'Посилка вже у вас? Товар повернеться на склад.')}>Повернено</button>
+                  <button onClick={() => act(`${base}/order-drafts/${d.draftId}/returned`, 'Посилка у вас, але товар не повертається на склад (пошкоджений)?', { restock: false })}>Повернено без повернення на склад</button>
+                </>
+              )}
+            </p>
             {d.decisionNote && <p className="muted">{d.decisionNote}</p>}
           </li>
         ))}

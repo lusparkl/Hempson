@@ -63,6 +63,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     metaAuthorizeUrl: env.HEPSON_META_AUTHORIZE_URL || 'https://www.facebook.com/dialog/oauth',
     /** Poll Instagram for new messages every N seconds (0 = off). A fallback for missed webhooks; webhooks stay the primary path. */
     instagramPollSeconds: int(env.HEPSON_INSTAGRAM_POLL_SECONDS, 0),
+    /** Nova Poshta (P4): API base URL (override for a local mock) and how often shipped orders are tracked (0 = off). */
+    novaPoshtaBaseUrl: env.HEPSON_NOVA_POSHTA_BASE_URL || 'https://api.novaposhta.ua/v2.0/json/',
+    novaPoshtaPollMinutes: int(env.HEPSON_NOVA_POSHTA_POLL_MINUTES, 60),
     /** Where the browser is sent after the connect flow (the dashboard). */
     dashboardUrl: (env.HEPSON_DASHBOARD_URL || env.HEPSON_PUBLIC_URL || `http://${env.HEPSON_HOST ?? '127.0.0.1'}:${int(env.HEPSON_PORT, 8787)}`).replace(/\/+$/, ''),
     loginWaitMs: int(env.HEPSON_LOGIN_WAIT_MS, 10 * 60_000),

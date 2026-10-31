@@ -1,6 +1,6 @@
 # Hepson: codebase overview
 
-Reader's guide to the code as built (F1-F12, P1). Not a state record: current state lives in `docs/AI_HANDOFF.md`, feature status and plans in `docs/ROADMAP.md`, design reasoning in `docs/DECISIONS.md` (D1-D30). Updated 2026-10-31.
+Reader's guide to the code as built (F1-F12, P1-P4). Not a state record: current state lives in `docs/AI_HANDOFF.md`, feature status and plans in `docs/ROADMAP.md`, design reasoning in `docs/DECISIONS.md` (D1-D31). Updated 2026-10-31.
 
 ## What Hepson is
 
@@ -24,7 +24,7 @@ Node 22+ (dev on 24), TypeScript strict, pnpm workspace, Fastify 5, Zod 4, SQLit
 | `packages/database` | Drizzle schema, migrations `0000`-`0010`, `Store` (Phase 1) and one repository per area (`shops`, `auth`, `catalog`, `catalog-import`, `conversations`, `agent`, `orders`, `stats`, `webchat`, `instagram`), `CredentialVault`/`Keyring` (`credentials.ts`) |
 | `packages/mock-adapter` | In-memory connector for tests and demos |
 | `packages/instagram-browser` | Frozen browser adapter: all Instagram DOM knowledge (`selectors.ts`, `parsers.ts`), profile, lock, login and sender |
-| `apps/api` | Fastify server: `routes/`, `services/` (`instagram*.ts`, `telegram*.ts`, `egress.ts`, `shop-sender.ts`, `web-chat.ts`, `notifier.ts`, Phase 1 `connector-service.ts`/`channel-bridge.ts`), `auth/`, `agent/`, `widget/` |
+| `apps/api` | Fastify server: `routes/`, `services/` (`instagram*.ts`, `telegram*.ts`, `nova-poshta.ts` + `delivery.ts` (P4), `egress.ts`, `shop-sender.ts`, `web-chat.ts`, `notifier.ts`, Phase 1 `connector-service.ts`/`channel-bridge.ts`), `auth/`, `agent/`, `widget/` |
 | `apps/dev-console` | Admin-key tool for Phase 1 connector accounts |
 | `apps/dashboard` | Shop-owner UI (user sessions, port 5174) |
 | `scripts/` | `migrate`, `bootstrap-key`, `backup`, `gen-openapi`, `gen-master-key`, `rewrap-credentials`; browser-only `calibrate-selectors`, `live-smoke` |
@@ -38,7 +38,7 @@ Telegram msg ─► /webhooks/telegram/:id ─► TelegramService ────�
 Website visitor ─► /public/web-chat ─► WebChatService ──────────────┼─► SalesAgent ─► OpenAI tool loop
 (frozen) browser adapter ─► ConnectorService ─► ChannelBridge ──────┘        │
                                                                              ▼
-                                                     reply guard (no unverified price/stock)
+      reply guard (no unverified price/stock/policy claim/parcel status)
                                                                              ▼
                           shop-sender: Instagram Send API | Telegram sendMessage | website (internal) | browser send queue
 ```
@@ -46,9 +46,11 @@ Website visitor ─► /public/web-chat ─► WebChatService ──────
 - **Official Instagram.** `InstagramService` writes straight into the shop tables on channel `instagram-official` (D23 amendment). Signed webhooks and the polling fallback share one ingest path with dedupe on Meta's message id; echoes adopt our pending row. Sends check the 24-hour window first; `uncertain` is never retried. Tokens live in `CredentialVault`; all outbound HTTP goes through `createEgress`.
 - **Telegram.** One bot per shop (D27). The owner pastes the BotFather token; `TelegramService` checks it with `getMe`, registers the webhook (opaque path, random secret header, stored hashed) and keeps the token in `CredentialVault`. Ingest writes to channel `telegram` with message id `<chat_id>:<message_id>`; private chats only. A blocked bot makes the send `failed`; a rejected token marks the channel `needs_reconnect` and notifies the owner.
 - **Channel bridge (frozen path). Mirrors Phase 1 account-scoped conversations into shop-scoped `customers`, `shop_conversations` and `shop_messages`. Phase 1 tables are never altered.
-- **Sales agent.** One run per inbound message, serial per conversation. Tools: `search_products`, `get_variant`, `quote_order`, `create_order_draft`, `escalate`. The server computes prices and totals. The reply guard blocks any price or stock figure that no tool returned (one repair attempt, then escalate and send nothing).
+- **Sales agent.** One run per inbound message, serial per conversation. Tools: `search_products`, `get_variant`, `quote_order`, `get_policy` (P3), `find_np_city`, `find_np_branch`, `get_checkout_options`, `create_order_draft`, `get_order_status` (P4), `escalate`. The server computes prices and totals. The reply guard blocks any price or stock figure that no tool returned, any period/hours/returns/payment/free-delivery claim not backed by `get_policy` in the same run, and any parcel status or TTN not from `get_order_status` (one repair attempt, then escalate and send nothing).
+- **Policies (P3).** `PolicyRepository` (`shop_policies`): one text per topic, versioned; owner edits. No text = the agent escalates.
+- **Checkout and Nova Poshta (P4).** The shop's NP key is in `CredentialVault` (kind `nova_poshta`). `DeliveryService` does lookups, TTN creation (DB claim first, at most one per order, `uncertain` never retried) and tracking (`HEPSON_NOVA_POSHTA_POLL_MINUTES`). `DeliveryRepository` holds sender settings and the per-customer refusal count (D25).
 - **Human takeover.** Per-conversation AI pause. A human reply pauses the AI first. Telegram notifies on new escalations and order drafts.
-- **Orders.** Drafts are always `pending_approval`. Approval reduces stock atomically, all or nothing.
+- **Orders.** D25 lifecycle in `OrderRepository`, every transition in `order_events`. Approval needs complete checkout data, reduces stock atomically (all or nothing) and moves to `cod_confirmed` (TTN created, then `shipped`) or `awaiting_payment` (waits for P5). Tracking moves `shipped` to `delivered` or `returning`; a member confirms `returned` (restock once). `auto_confirm` (D26) lets the server approve when every check passes.
 - **Auth.** `hsu_` user sessions with owner and manager roles. Phase 1 uses `hep_` API keys. The two never mix: user routes reject API keys.
 - **Website chat.** Public routes protected by a widget key, an exact Origin allow-list, per-visitor tokens and rate limits (D19).
 - **Catalog.** Products and variants, integer minor-unit prices, SKU unique per shop, stock never below zero, Cyrillic-safe search, CSV import with dry run (D21).

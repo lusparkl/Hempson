@@ -2,7 +2,7 @@
 
 Base: `http://127.0.0.1:8787` (loopback by default). OpenAPI with every route and schema: `GET /v1/openapi.json` or `pnpm openapi` → `docs/openapi.json`.
 
-## Shop API (Phase 2 and P1)
+## Shop API (Phase 2, P1-P4)
 Dashboard users authenticate with `Authorization: Bearer hsu_…` from `POST /v1/auth/login` (or `/register`). These routes reject `hep_` API keys. Every `/v1/shops/:shopId/...` route checks membership; a shop the user is not a member of is `404`, an owner-only write by a manager is `403`.
 ```
 GET    /health · /ready
@@ -10,8 +10,13 @@ POST   /v1/auth/register|login|logout   GET /v1/auth/me
 GET|POST /v1/shops   GET|PATCH /v1/shops/:shopId   members: GET|POST .../members, PATCH|DELETE .../members/:userId
 catalog: .../products[/:productId[/variants[/:variantId[/stock]]]], POST .../products/import {csv, dryRun}
 chats:   GET .../customers, GET .../conversations[/:id], GET|POST .../conversations/:id/messages, PUT .../conversations/:id/ai {paused}
-agent:   GET|PUT .../ai, GET .../ai/runs, GET .../escalations, POST .../escalations/:id/resolve
-orders:  GET .../order-drafts[/:draftId], POST .../order-drafts/:draftId/approve|reject
+agent:   GET|PUT .../ai {enabled, instructions, autonomy, autoConfirmMaxMinor}, GET .../ai/runs, GET .../escalations, POST .../escalations/:id/resolve
+orders:  GET .../order-drafts[/:draftId], GET .../order-drafts/:draftId/events,
+         POST .../order-drafts/:draftId/approve|reject|cancel|returned {restock?}|ttn|ttn/release
+policies (P3): GET .../policies, PUT .../policies/:topic {text}   topic = delivery|returns|payment|hours (owner writes)
+nova poshta (P4): GET .../nova-poshta, PUT|DELETE .../nova-poshta/key {apiKey}, PUT .../nova-poshta/settings,
+         GET .../nova-poshta/cities?q, GET .../nova-poshta/branches?cityRef&q,
+         GET|POST .../customers/:customerId/refusals, DELETE .../customers/:customerId/refusals/:refusalId
 other:   GET .../channels, GET|PUT .../notifications, GET .../stats?from&to, GET|PUT .../web-chat, POST .../web-chat/rotate-key
 instagram (official, D29): GET|DELETE .../instagram, POST .../instagram/connect
 telegram (shop bot, D27): GET|PUT {token}|DELETE .../telegram
