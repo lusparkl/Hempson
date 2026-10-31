@@ -31,9 +31,9 @@ Meta Business Verification and App Review for Advanced Access need a business; H
 - Design rule: moving to Advanced Access is configuration (app credentials, approved scopes), not a rewrite.
 
 ## Architecture (modular monolith)
-- Phase 1 (done, **frozen**, D22): Instagram Direct connector via browser. Packages `connector-core`, `database`, `mock-adapter`, `instagram-browser`; `apps/api` (Fastify `/v1`, `ConnectorService`); `apps/dev-console`. Kept with its tests; disabled by default once P1 lands; deleted only after `instagram-official` is live-verified. See `AGENTS.md`.
+- Phase 1 (done, **frozen**, D22): Instagram Direct connector via browser. Packages `connector-core`, `database`, `mock-adapter`, `instagram-browser`; `apps/api` (Fastify `/v1`, `ConnectorService`); `apps/dev-console`. Kept with its tests; disabled by default since P1 (`HEPSON_ENABLE_BROWSER_ADAPTER`); deleted only after `instagram-official` is live-verified. See `AGENTS.md`.
 - Phase 2 (built, F1-F12): shops, auth, catalog, conversations, OpenAI agent with narrow tools, order drafts, takeover, Telegram operator notifications, stats, website chat, owner dashboard.
-- Pivot layers (planned, P1-P9): channel adapters for Instagram (official) and Telegram (normalize and ingest, no AI logic) · per-shop encrypted credential store (D28) · egress allow-list (D22) · policies tool · checkout data and Nova Poshta · payment links and verified webhooks · order state machine with events (D25) · customer notifications · quotas · imports/exports and funnel analytics.
+- Pivot layers (P1 built: official Instagram, credential store, egress guard; P2-P9 planned): channel adapters for Instagram (official) and Telegram (normalize and ingest, no AI logic) · per-shop encrypted credential store (D28) · egress allow-list (D22) · policies tool · checkout data and Nova Poshta · payment links and verified webhooks · order state machine with events (D25) · customer notifications · quotas · imports/exports and funnel analytics.
 - DB: SQLite via better-sqlite3 + Drizzle in `packages/database` (D1). All new tables live in the same migration chain.
 
 ## Rules

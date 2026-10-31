@@ -1,8 +1,28 @@
-# Hepson Instagram Connector — HTTP API v1
+# Hepson HTTP API v1
 
-Base: `http://127.0.0.1:8787` (loopback by default). OpenAPI: `GET /v1/openapi.json` or `pnpm openapi` → `docs/openapi.json`.
+Base: `http://127.0.0.1:8787` (loopback by default). OpenAPI with every route and schema: `GET /v1/openapi.json` or `pnpm openapi` → `docs/openapi.json`.
 
-## Authentication
+## Shop API (Phase 2 and P1)
+Dashboard users authenticate with `Authorization: Bearer hsu_…` from `POST /v1/auth/login` (or `/register`). These routes reject `hep_` API keys. Every `/v1/shops/:shopId/...` route checks membership; a shop the user is not a member of is `404`, an owner-only write by a manager is `403`.
+```
+GET    /health · /ready
+POST   /v1/auth/register|login|logout   GET /v1/auth/me
+GET|POST /v1/shops   GET|PATCH /v1/shops/:shopId   members: GET|POST .../members, PATCH|DELETE .../members/:userId
+catalog: .../products[/:productId[/variants[/:variantId[/stock]]]], POST .../products/import {csv, dryRun}
+chats:   GET .../customers, GET .../conversations[/:id], GET|POST .../conversations/:id/messages, PUT .../conversations/:id/ai {paused}
+agent:   GET|PUT .../ai, GET .../ai/runs, GET .../escalations, POST .../escalations/:id/resolve
+orders:  GET .../order-drafts[/:draftId], POST .../order-drafts/:draftId/approve|reject
+other:   GET .../channels, GET|PUT .../notifications, GET .../stats?from&to, GET|PUT .../web-chat, POST .../web-chat/rotate-key
+instagram (official, D29): GET|DELETE .../instagram, POST .../instagram/connect
+public:  POST /public/web-chat/:widgetKey/session, POST|GET /public/web-chat/:widgetKey/messages, GET /widget/web-chat.js
+         GET /public/instagram/callback (OAuth), GET|POST /webhooks/instagram (handshake, signed events; not in OpenAPI)
+```
+
+# Phase 1 connector API (frozen, D22)
+
+The `/v1/accounts` API below serves the mock and the frozen browser adapter. Creating or connecting an `instagram-browser` account is refused unless `HEPSON_ENABLE_BROWSER_ADAPTER=true`.
+
+## Authentication (connector)
 `Authorization: Bearer hep_…` on everything except `GET /health`, `GET /v1/openapi.json`.
 - **Admin key** (`pnpm bootstrap-key`): any account, may create accounts and keys.
 - **Account key** (`pnpm bootstrap-key --account <uuid>` or `POST /v1/accounts/:id/api-keys`): valid only for that account. Other accounts → `403 FORBIDDEN`; foreign conversation/outbox ids → `404`. `accountId` is only ever taken from the URL path, never the body.

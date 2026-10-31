@@ -22,8 +22,7 @@
     "rewrap-credentials": "tsx scripts/rewrap-credentials.ts",
     "gen-master-key": "tsx scripts/gen-master-key.ts",
     "calibrate": "tsx scripts/calibrate-selectors.ts",
-    "smoke:live": "tsx scripts/live-smoke.ts",
-    "example": "tsx example-client.ts"
+    "smoke:live": "tsx scripts/live-smoke.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",

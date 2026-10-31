@@ -1,4 +1,6 @@
-# Manual live test (real Instagram) — performed 2026-10-28, see results log
+# Manual live test of the browser adapter (frozen, D22) — performed 2026-10-28, see results log
+
+> Applies only to the frozen `instagram-browser` adapter (`HEPSON_ENABLE_BROWSER_ADAPTER=true`). The official Instagram path has no manual script yet; its live state is in `docs/LIMITATIONS.md` and `docs/ROADMAP.md` (P1).
 
 Everything here must be run by a human with a **shop-owned account** and the owner's **express authorization**, plus a **second authorized test account** to send DMs. The first live run is logged at the bottom (2026-10-28). Record each step as `pass`, `fail`, `blocked` or `not tested`.
 
@@ -15,7 +17,7 @@ Stop the API (profile lock!), then `pnpm calibrate <accountUUID>`. Every `false`
 Open A's conversations in the console; compare titles/order with the real inbox. Open one chat: direction (incoming vs outgoing) and text must match. Timestamps may legitimately be `null`.
 
 ## 4. Inbound exactly once
-From the second account DM the shop. Expect one `message.received` (console Events or `pnpm example`). Wait 3 poll cycles: still one.
+From the second account DM the shop. Expect one `message.received` (console Events or the SSE stream). Wait 3 poll cycles: still one.
 
 ## 5. Outbound
 Tick `outboundEnabled`. Send one reply from the console (confirmation dialog). Verify in the real Instagram chat: once, outgoing. Outbox must end `sent`; if `uncertain`, check Instagram, then **Mark reviewed**. `pnpm smoke:live` guides steps 3–5 (`HEPSON_LIVE_SMOKE=I_HAVE_OWNER_AUTHORIZATION`).
