@@ -66,6 +66,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     /** Nova Poshta (P4): API base URL (override for a local mock) and how often shipped orders are tracked (0 = off). */
     novaPoshtaBaseUrl: env.HEPSON_NOVA_POSHTA_BASE_URL || 'https://api.novaposhta.ua/v2.0/json/',
     novaPoshtaPollMinutes: int(env.HEPSON_NOVA_POSHTA_POLL_MINUTES, 60),
+    /** Monobank acquiring (P5): API base URL (override for a local mock) and how often open invoices, payment deadlines and reminders are checked (0 = off). */
+    monobankBaseUrl: (env.HEPSON_MONOBANK_BASE_URL || 'https://api.monobank.ua').replace(/\/+$/, ''),
+    paymentCheckMinutes: int(env.HEPSON_PAYMENT_CHECK_MINUTES, 5),
     /** Where the browser is sent after the connect flow (the dashboard). */
     dashboardUrl: (env.HEPSON_DASHBOARD_URL || env.HEPSON_PUBLIC_URL || `http://${env.HEPSON_HOST ?? '127.0.0.1'}:${int(env.HEPSON_PORT, 8787)}`).replace(/\/+$/, ''),
     loginWaitMs: int(env.HEPSON_LOGIN_WAIT_MS, 10 * 60_000),

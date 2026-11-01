@@ -1,9 +1,12 @@
+import { randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AgentRepository,
   AuthRepository,
   CatalogRepository,
   ConversationRepository,
+  CredentialVault,
+  Keyring,
   DeliveryRepository,
   OrderNotFoundError,
   OrderRepository,
@@ -25,6 +28,8 @@ let A: string;
 let B: string;
 let user: string;
 let convA: string;
+/** P5: prepaid is offered only with an active payment provider credential. */
+const connectMonobank = (shopId: string) => new CredentialVault(h, new Keyring(1, randomBytes(32))).save(shopId, 'monobank', 'test-acquiring-token-0123456789');
 
 beforeEach(() => {
   h = openDb(':memory:');
@@ -203,6 +208,9 @@ describe('checkout and refusal limit (P4, D25)', () => {
     expect(() => orders.createDraft(A, draftInput([{ sku: 'H-M', quantity: 1 }], { checkout: { ...checkout, phone: '12345' } }))).toThrow(/not a Ukrainian phone/);
     expect(() => orders.createDraft(A, draftInput([{ sku: 'H-M', quantity: 1 }], { checkout: { ...checkout, paymentMethod: 'prepaid' } }))).toThrow(/prepaid is not offered/);
     delivery.updateSettings(A, { prepaidEnabled: true });
+    // The switch alone is not enough: without a connected payment provider no link could be sent (P5).
+    expect(() => orders.createDraft(A, draftInput([{ sku: 'H-M', quantity: 1 }], { checkout: { ...checkout, paymentMethod: 'prepaid' } }))).toThrow(/prepaid is not offered/);
+    connectMonobank(A);
     expect(orders.createDraft(A, draftInput([{ sku: 'H-M', quantity: 1 }], { checkout: { ...checkout, paymentMethod: 'prepaid' } })).draft.paymentMethod).toBe('prepaid');
   });
   it('at the refusal limit COD is refused server-side, counted by normalized phone across conversations', () => {
@@ -249,6 +257,7 @@ describe('order lifecycle (D25)', () => {
       ['approved', 'cod_confirmed', `user:${user}`],
     ]);
     new DeliveryRepository(h).updateSettings(A, { prepaidEnabled: true });
+    connectMonobank(A);
     const p = orders.createDraft(A, draftInput([{ sku: 'H-L', quantity: 1 }], { checkout: { ...checkout, paymentMethod: 'prepaid' } })).draft;
     expect(orders.approve(A, p.id, user).draft.status).toBe('awaiting_payment');
     // Prepaid orders get a TTN only from `paid` (P5).

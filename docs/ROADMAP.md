@@ -58,7 +58,7 @@ Migration `0008_web_chat`: `web_chat_configs` (enabled, public `hwk_` widget key
 
 # Pivot roadmap (P-series)
 
-Goal: a working MVP of the core loop, message to paid order to TTN, on official APIs only (D22), then beat NovaSale on trust and price. P1 is built (mock Graph API tests; live polling intake on one tester account, D30); P2 is built and live-checked on one test bot (connect, inbound, AI reply; 2026-10-31); P3 and P4 are built against mocks (2026-10-31; P4 not live-checked); P5-P9 are not implemented as of 2026-10-31. "Live check" means a run against the real platform with an authorized account; until it is done the item is not described as verified. Test fixtures for external platforms are written from the platforms' public documentation (labelled as such) until a live capture replaces them.
+Goal: a working MVP of the core loop, message to paid order to TTN, on official APIs only (D22), then beat NovaSale on trust and price. P1 is built (mock Graph API tests; live polling intake on one tester account, D30); P2 is built and live-checked on one test bot (connect, inbound, AI reply; 2026-10-31); P3 and P4 are built against mocks (2026-10-31; P4 not live-checked); P5 is built for Monobank against a fake API (2026-11-01, not live-checked; WayForPay not built); P6-P9 are not implemented as of 2026-11-01. "Live check" means a run against the real platform with an authorized account; until it is done the item is not described as verified. Test fixtures for external platforms are written from the platforms' public documentation (labelled as such) until a live capture replaces them.
 
 | # | Feature | Status | Needs owner | Depends on |
 |---|---------|--------|-------------|-----------|
@@ -67,7 +67,7 @@ Goal: a working MVP of the core loop, message to paid order to TTN, on official 
 | P2 | Telegram customer channel | DONE; live: connect, one private message, one AI reply on a test bot (2026-10-31); disconnect live check TODO | yes (a test bot) | P1 (credential store, egress guard) |
 | P3 | Policies and FAQ tool | DONE (2026-10-31, scripted-LLM tests) | no | - |
 | P4 | Checkout data and Nova Poshta | DONE in code against a fake NP API (2026-10-31); **live check TODO** | yes (NP API key) | P1, P3 optional |
-| P5 | Payment links | TODO | yes (sandbox/merchant credentials; pilot provider) | P4 |
+| P5 | Payment links | Monobank DONE in code against a fake API (2026-11-01); **live check with a test token TODO**; WayForPay TODO | yes (Monobank test token, then the pilot's merchant token) | P4 |
 | P6 | Customer notifications | TODO | no | P1, P2, P5 |
 | P7 | Plans and quotas | TODO | no | - |
 | P8 | Catalog and analytics | TODO | no | P4, P5 for the funnel |

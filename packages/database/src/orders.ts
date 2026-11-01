@@ -6,12 +6,12 @@ import { DeliveryRepository, normalizeUaPhone } from './delivery';
 import { PAYMENT_METHODS } from './order-kinds';
 import * as t from './schema';
 
-export { ORDER_STATUSES, PAYMENT_METHODS } from './order-kinds';
+export { ORDER_STATUSES, PAYMENT_METHODS, PAYMENT_STATES, PAYMENT_PROVIDERS } from './order-kinds';
 export type OrderDraftRow = typeof t.orderDrafts.$inferSelect;
 export type OrderDraftItemRow = typeof t.orderDraftItems.$inferSelect;
 export type OrderEventRow = typeof t.orderEvents.$inferSelect;
 export type OrderStatus = OrderDraftRow['status'];
-/** Who changed an order: `user:<id>`, `ai`, `system:auto_confirm`, `system:supersede`, `provider:nova_poshta`. */
+/** Who changed an order: `user:<id>`, `ai`, `system:auto_confirm`, `system:supersede`, `system:timeout`, `provider:nova_poshta`, `provider:monobank`. */
 export type OrderActor = string;
 export type OrderDraft = { draft: OrderDraftRow; items: OrderDraftItemRow[] };
 export type OrderLine = { productId: string; variantId: string; sku: string; productName: string; options: Record<string, string>; quantity: number; unitPriceMinor: number; lineTotalMinor: number; stock: number };
@@ -76,6 +76,8 @@ export type CheckoutInput = z.input<typeof checkoutInput>;
 
 /** States that hold stock taken at approval; cancelling from one of them restores it (D25). */
 const STOCK_HELD: OrderStatus[] = ['approved', 'awaiting_payment', 'cod_confirmed', 'paid'];
+/** D25: a member may record `refund_requested` from these (refunds themselves happen in the provider's cabinet, D24). */
+const REFUNDABLE: OrderStatus[] = ['paid', 'shipped', 'delivered', 'returning', 'returned'];
 
 /** What is still missing before a draft may be approved. */
 export function checkoutMissing(d: OrderDraftRow): string[] {
@@ -221,6 +223,8 @@ export class OrderRepository {
         npStatusCode: null,
         npStatusText: null,
         npStatusAt: null,
+        paymentDueAt: null,
+        paymentReminderAt: null,
         createdAt: ts,
         updatedAt: ts,
       };
@@ -352,8 +356,14 @@ export class OrderRepository {
       if (!ok.changes) throw new OrderStockError(it.sku);
     }
     this.move(shopId, cur.id, 'pending_approval', 'approved', actor, note || null, { decidedByUserId: userId, decidedAt: ts, decisionNote: note || null, approvedAt: ts });
-    this.move(shopId, cur.id, 'approved', cur.paymentMethod === 'cod' ? 'cod_confirmed' : 'awaiting_payment', actor, null);
+    if (cur.paymentMethod === 'cod') this.move(shopId, cur.id, 'approved', 'cod_confirmed', actor, null);
+    else this.move(shopId, cur.id, 'approved', 'awaiting_payment', actor, null, { paymentDueAt: new Date(this.clock().getTime() + this.paymentTimeoutHours(shopId) * 3600_000).toISOString() });
     return this.getDraft(shopId, cur.id)!;
+  }
+
+  /** D25: hours an `awaiting_payment` order waits before it is cancelled (shop setting, default 24). */
+  private paymentTimeoutHours(shopId: string): number {
+    return this.db.select({ h: t.shopPaymentSettings.paymentTimeoutHours }).from(t.shopPaymentSettings).where(eq(t.shopPaymentSettings.shopId, shopId)).get()?.h ?? 24;
   }
 
   /**
@@ -421,6 +431,54 @@ export class OrderRepository {
       if (!this.move(shopId, cur.id, cur.status, 'cancelled', `user:${userId}`, n || null, { decisionNote: n || cur.decisionNote })) throw new OrderStateError('the order changed meanwhile, reload it');
       this.restock(shopId, cur.id);
       return this.getDraft(shopId, cur.id)!;
+    })();
+  }
+
+  // ---------- payments (P5, D24) ----------
+
+  /** A verified provider event says the order is paid: `awaiting_payment` to `paid`, once. False if the order is elsewhere. */
+  markPaid(shopId: string, draftId: string, actor: OrderActor, note: string): boolean {
+    return this.handle.raw.transaction(() => this.move(shopId, draftId, 'awaiting_payment', 'paid', actor, note))();
+  }
+
+  /** The payment deadline passed without a payment: cancelled with restock, attributed to `system:timeout`. */
+  expireUnpaid(shopId: string, draftId: string): boolean {
+    return this.handle.raw.transaction(() => {
+      if (!this.move(shopId, draftId, 'awaiting_payment', 'cancelled', 'system:timeout', 'payment not received in time', { decisionNote: 'payment not received in time' })) return false;
+      this.restock(shopId, draftId);
+      return true;
+    })();
+  }
+
+  /** Claims the one payment reminder of an unpaid order (compare-and-set): true for exactly one caller. */
+  claimPaymentReminder(shopId: string, draftId: string): boolean {
+    const r = this.db
+      .update(t.orderDrafts)
+      .set({ paymentReminderAt: this.now(), updatedAt: this.now() })
+      .where(and(eq(t.orderDrafts.shopId, shopId), eq(t.orderDrafts.id, draftId), eq(t.orderDrafts.status, 'awaiting_payment'), isNull(t.orderDrafts.paymentReminderAt)))
+      .run();
+    return r.changes > 0;
+  }
+
+  /** Unpaid prepaid orders across shops, earliest deadline first (the payment job checks deadlines and reminders). */
+  listAwaitingPayment(limit = 500): OrderDraftRow[] {
+    return this.db
+      .select()
+      .from(t.orderDrafts)
+      .where(and(eq(t.orderDrafts.status, 'awaiting_payment'), sql`${t.orderDrafts.paymentDueAt} is not null`))
+      .orderBy(asc(t.orderDrafts.paymentDueAt))
+      .limit(limit)
+      .all();
+  }
+
+  /** A member records that the customer asked for a refund (D24: the refund itself is made in the provider's cabinet). */
+  requestRefund(shopId: string, draftId: string, userId: string, note?: string): OrderDraft {
+    const n = parse(decisionNote, note);
+    return this.handle.raw.transaction(() => {
+      const cur = this.getDraft(shopId, draftId)?.draft;
+      if (!cur) throw new OrderNotFoundError();
+      if (!REFUNDABLE.includes(cur.status) || !this.move(shopId, draftId, cur.status, 'refund_requested', `user:${userId}`, n || null)) throw new OrderStateError(`a refund cannot be requested for an order in status ${cur.status}`);
+      return this.getDraft(shopId, draftId)!;
     })();
   }
 

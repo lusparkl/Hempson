@@ -5,7 +5,7 @@ import type { RunFacts } from './tools';
  * Last line of defence against invented facts. The model's text is never authoritative: every price and every stock
  * figure in a reply must have been shown to the model by a tool in this run, otherwise the reply is not sent. The same
  * holds for policy claims (periods, hours, returns/payment/free-delivery terms: `get_policy`, P3) and for delivery status
- * and TTN numbers (`get_order_status`, P4).
+ * and TTN numbers (`get_order_status`, P4), and for payment state and payment links (`get_order_status`, P5).
  * This is a heuristic over common Ukrainian/Russian/English phrasings, not a proof; the prompt and tools are the primary control.
  */
 const NUM = String.raw`(\d{1,3}(?:[\s\u00a0]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)`;
@@ -29,6 +29,11 @@ const TOPIC_WORDS: Array<[PolicyTopic, RegExp]> = [
 // P4: delivery-status claims and TTN numbers (NP waybills are 14 digits starting with 20 or 59).
 const DELIVERY_STATUS = /(?:відправили|відправлено|вже в дорозі|в дорозі|прибул\p{L}*|доставлено|отримано|у відділенні|отправили|отправлен\p{L}*|в пути|доставлен\p{L}*|прибыл\p{L}*|(?<!\p{L})(?:shipped|delivered|arrived|on (?:its|the) way|in transit)(?!\p{L}))/iu;
 const TTN = /(?<!\d)(?:20|59)\d{12}(?!\d)/g;
+// P5: "paid" claims and payment links. Questions ("ви вже оплатили?") are not claims, so only statement forms are listed.
+const PAID_CLAIM = /(?:оплачен\p{L}*|оплату\s+(?:отримано|отримали|зараховано|підтверджено)|оплата\s+(?:надійшла|пройшла|отримана|зарахована|підтверджена)|отримали\s+(?:вашу\s+)?оплату|оплата\s+прошла|получили\s+(?:вашу\s+)?оплату|оплата\s+поступила|(?<!\p{L})(?:payment\s+(?:received|confirmed|went through|is complete)|(?:has been|is|was)\s+paid|fully paid)(?!\p{L}))/iu;
+const NOT_PAID = /(?:не\s+оплачен\p{L}*|неоплачен\p{L}*|не\s+оплачено|not\s+(?:yet\s+)?(?:been\s+)?paid|unpaid)/iu;
+const LINK = /https?:\/\/[^\s)>\]"']+/giu;
+const PAYMENT_HOST = /(?:^|\.)(?:mbnk\.biz|monobank\.ua|wayforpay\.com|liqpay\.ua|privatbank\.ua|fondy\.eu|portmone\.com\.ua)$/i;
 
 const toMinor = (raw: string) => Math.round(Number.parseFloat(raw.replace(/[\s ]/g, '').replace(',', '.')) * 100);
 const numbersIn = (s: string) => [...s.matchAll(/\d+/g)].map((m) => Number(m[0]));
@@ -55,7 +60,7 @@ export function checkReply(reply: string, facts: RunFacts, opts: { customerText:
 
   if (AVAILABILITY_WORDS.test(reply) && facts.productLookups === 0) problems.push('availability was stated without checking the catalog. Call search_products or get_variant first.');
 
-  problems.push(...checkPolicyClaims(reply, facts), ...checkDeliveryClaims(reply, facts));
+  problems.push(...checkPolicyClaims(reply, facts), ...checkDeliveryClaims(reply, facts), ...checkPaymentClaims(reply, facts));
   return [...new Set(problems)];
 }
 
@@ -98,5 +103,24 @@ function checkDeliveryClaims(reply: string, facts: RunFacts): string[] {
   const problems: string[] = [];
   if (DELIVERY_STATUS.test(reply) && facts.orderStatusLookups === 0) problems.push('a delivery status was stated without checking the order. Call get_order_status first.');
   for (const m of reply.matchAll(TTN)) if (!facts.ttns.has(m[0])) problems.push(`TTN ${m[0]} was not returned by get_order_status. Quote only TTNs from tool results.`);
+  return problems;
+}
+
+/**
+ * P5 (D24): "paid / оплачено / payment received" needs `get_order_status` to have returned a paid order in this run, and a
+ * payment link may appear only as `get_order_status` returned it. A "not paid yet" statement is not a paid claim.
+ */
+function checkPaymentClaims(reply: string, facts: RunFacts): string[] {
+  const problems: string[] = [];
+  if (PAID_CLAIM.test(reply.replace(new RegExp(NOT_PAID.source, 'giu'), ' ')) && !facts.paidSeen) problems.push('a payment was stated as received without get_order_status showing a paid order. Call get_order_status; never say an order is paid otherwise.');
+  for (const m of reply.matchAll(LINK)) {
+    let host = '';
+    try {
+      host = new URL(m[0]).hostname;
+    } catch {
+      continue;
+    }
+    if (PAYMENT_HOST.test(host) && !facts.paymentLinks.has(m[0].replace(/[.,;:!?]+$/, ''))) problems.push('a payment link was written that get_order_status did not return. Never write payment links yourself; the shop system sends them.');
+  }
   return problems;
 }

@@ -128,3 +128,28 @@ describe('checkReply: delivery status and TTN (P4)', () => {
     expect(check('Ваша ТТН: 20450000009999', f)).toEqual([expect.stringContaining('TTN 20450000009999')]);
   });
 });
+
+describe('checkReply: payment claims and links (P5)', () => {
+  it('"paid" needs get_order_status to have shown a paid order in this run', () => {
+    for (const reply of ['Оплату отримано, дякуємо!', 'Оплата надійшла.', 'Замовлення оплачено.', 'Мы получили оплату.', 'Payment received, thank you!', 'Your order has been paid.'])
+      expect(check(reply), reply).toContainEqual(expect.stringContaining('a payment was stated as received'));
+    const f = facts();
+    f.orderStatusLookups = 1;
+    expect(check('Оплату отримано, дякуємо!', f)).toEqual([expect.stringContaining('a payment was stated as received')]);
+    f.paidSeen = true;
+    expect(check('Оплату отримано, дякуємо!', f)).toEqual([]);
+  });
+  it('"not paid yet" and questions about payment are not paid claims', () => {
+    expect(check('Замовлення ще не оплачене, посилання дійсне до вечора.')).toEqual([]);
+    expect(check('Your order is not paid yet.')).toEqual([]);
+    expect(check('Ви вже оплатили замовлення?')).toEqual([]);
+  });
+  it('a payment link must be one get_order_status returned', () => {
+    const f = facts();
+    f.paymentLinks.add('https://pay.mbnk.biz/p2_test1');
+    expect(check('Ось посилання: https://pay.mbnk.biz/p2_test1.', f)).toEqual([]);
+    expect(check('Ось посилання: https://pay.mbnk.biz/p2_fake', f)).toEqual([expect.stringContaining('payment link')]);
+    expect(check('Оплатіть тут: https://secure.wayforpay.com/pay/x', f)).toHaveLength(1);
+    expect(check('Наш сайт: https://shop.example.com/catalog', f)).toEqual([]);
+  });
+});

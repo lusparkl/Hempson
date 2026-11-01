@@ -15,3 +15,4 @@ export * from './instagram';
 export * from './telegram';
 export * from './policies';
 export * from './delivery';
+export * from './payments';

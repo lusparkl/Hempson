@@ -82,6 +82,26 @@ async function deliverDirect(
   return out;
 }
 
+/**
+ * Sends a fixed server text (payment link, reminder) to the customer of a conversation through whatever channel reaches
+ * it, recorded as a `system` message. One attempt, same rules as any reply; never throws.
+ */
+export async function sendSystemMessage(
+  d: { store: Store; svc: ConnectorService; conversations: ConversationRepository; ig?: InstagramService; tg?: TelegramService },
+  shopId: string,
+  conversationId: string,
+  text: string,
+  idempotencyKey: string,
+): Promise<{ status: 'sent' | 'uncertain' | 'failed'; code: string | null }> {
+  const conv = d.conversations.getConversation(shopId, conversationId);
+  if (!conv) return { status: 'failed', code: 'NOT_FOUND' };
+  const thread = locateThread(d.store, shopId, conv.conversation.channel, conv.conversation.externalId, d.ig, d.tg);
+  if (!thread) return { status: 'failed', code: 'ACCOUNT_NOT_CONNECTED' };
+  const { message } = d.conversations.recordOutbound(shopId, conversationId, { senderType: 'system', text, deliveryStatus: 'pending' });
+  const r = await deliverPending(d, { shopId, ...thread, message, idempotencyKey });
+  return { status: r.status, code: r.code };
+}
+
 /** How to reach a shop conversation: the website channel is internal, Instagram and Telegram use the shop's connected official account or bot, other channels need a linked connector account that knows the thread. */
 export function locateThread(store: Store, shopId: string, channel: string, externalId: string, ig?: InstagramService, tg?: TelegramService): Delivery | undefined {
   if (channel === WEB_CHANNEL) return { kind: 'internal' };

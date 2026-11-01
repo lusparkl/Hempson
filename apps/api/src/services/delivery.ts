@@ -142,10 +142,21 @@ export class DeliveryService {
     }
   }
 
-  /** Fire and forget after an approval: a COD order gets its TTN; anything else waits (prepaid needs `paid`, P5). */
+  /** Fire and forget after an approval: a COD order gets its TTN; a prepaid one waits for `paid` (`afterPaid`). */
   afterApproval(shopId: string, d: OrderDraft): void {
     if (d.draft.status !== 'cod_confirmed') return;
     this.track(this.createTtn(shopId, d.draft.id).catch(() => undefined));
+  }
+
+  /** Fire and forget after a verified payment (P5): a prepaid order gets its TTN from `paid` (D25). */
+  afterPaid(shopId: string, draftId: string): void {
+    const d = this.d.orders.getDraft(shopId, draftId)?.draft;
+    if (!d || d.status !== 'paid') return;
+    if (!this.connected(shopId) || !this.d.repo.senderComplete(this.d.repo.getSettings(shopId))) {
+      this.d.notifier?.notify({ kind: 'order_update', shopId, conversationId: d.conversationId, draftId, event: 'ttn_failed', ttn: null });
+      return;
+    }
+    this.track(this.createTtn(shopId, draftId).catch(() => undefined));
   }
 
   private track<T>(p: Promise<T>): Promise<T> {

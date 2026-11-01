@@ -16,6 +16,7 @@ type Draft = {
   createdAt: string;
   decisionNote: string | null;
   checkout: { paymentMethod: 'cod' | 'prepaid' | null; missing: string[] };
+  payment: { dueAt: string | null; latest: { state: string; pageUrl: string | null; linkDelivery: string | null; providerErrCode: string | null; flag: string | null } | null } | null;
   delivery: { ttnState: 'creating' | 'created' | 'failed' | 'uncertain' | null; ttnError: string | null; ttn: string | null; statusText: string | null; statusAt: string | null };
   items: Item[];
 };
@@ -24,13 +25,28 @@ const STATUS: Record<string, string> = {
   pending_approval: 'Очікують',
   cod_confirmed: 'Накладений платіж',
   awaiting_payment: 'Чекають оплату',
+  paid: 'Оплачені',
   shipped: 'Відправлені',
   delivered: 'Отримані',
   returning: 'Повертаються',
   returned: 'Повернені',
   rejected: 'Відхилені',
   cancelled: 'Скасовані',
+  refund_requested: 'Запит на повернення коштів',
 };
+const PAY_STATE: Record<string, string> = {
+  creating: 'посилання створюється…',
+  create_failed: 'посилання не створено',
+  created: 'посилання надіслано, оплати ще немає',
+  processing: 'оплата обробляється',
+  hold: 'кошти заблоковані',
+  success: 'оплачено (підтвердив monobank)',
+  failure: 'оплата не пройшла',
+  reversed: 'оплату повернуто клієнту',
+  expired: 'посилання прострочене',
+  removed: 'посилання деактивоване',
+};
+const PAID = ['paid', 'shipped', 'delivered', 'returning', 'returned'];
 const PAY: Record<string, string> = { cod: 'накладений платіж', prepaid: 'передоплата' };
 const HELD = ['approved', 'awaiting_payment', 'cod_confirmed', 'paid'];
 
@@ -101,6 +117,17 @@ export function Orders({ shop }: { shop: Shop }) {
                 {d.delivery.statusText && <> · {d.delivery.statusText} <span className="muted">({when(d.delivery.statusAt)})</span></>}
               </p>
             )}
+            {d.payment && (
+              <p>
+                Оплата monobank: {d.payment.latest ? PAY_STATE[d.payment.latest.state] ?? d.payment.latest.state : 'посилання ще немає'}
+                {d.payment.latest?.providerErrCode && <> (код {d.payment.latest.providerErrCode})</>}
+                {d.status === 'awaiting_payment' && d.payment.dueAt && <span className="muted"> · до {when(d.payment.dueAt)}</span>}
+                {d.payment.latest?.pageUrl && d.status === 'awaiting_payment' && <><br /><a href={d.payment.latest.pageUrl} target="_blank" rel="noreferrer">{d.payment.latest.pageUrl}</a></>}
+                {d.payment.latest?.linkDelivery && d.payment.latest.linkDelivery !== 'sent' && d.status === 'awaiting_payment' && <><br /><span className="error">Посилання не дійшло до клієнта, передайте його інакше.</span></>}
+                {d.payment.latest?.flag === 'AMOUNT_MISMATCH' && <><br /><span className="error">Сума оплати не збігається із замовленням. Перевірте кабінет monobank.</span></>}
+                {d.payment.latest?.flag === 'PAID_AFTER_CANCEL' && <><br /><span className="error">Оплата надійшла після скасування. Поверніть кошти в кабінеті monobank, якщо потрібно.</span></>}
+              </p>
+            )}
             {d.delivery.ttnState === 'creating' && <p className="muted">ТТН створюється…</p>}
             {d.delivery.ttnState === 'failed' && <p className="error">ТТН не створено ({d.delivery.ttnError}).</p>}
             {d.delivery.ttnState === 'uncertain' && <p className="error">Нова Пошта не відповіла під час створення ТТН. Перевірте кабінет НП: якщо накладної немає, дозвольте нову спробу.</p>}
@@ -111,7 +138,11 @@ export function Orders({ shop }: { shop: Shop }) {
                   <button onClick={() => act(`${base}/order-drafts/${d.draftId}/reject`, 'Відхилити чернетку?')}>Відхилити</button>
                 </>
               )}
-              {d.status === 'cod_confirmed' && (d.delivery.ttnState === null || d.delivery.ttnState === 'failed') && <button onClick={() => act(`${base}/order-drafts/${d.draftId}/ttn`)}>Створити ТТН</button>}
+              {d.status === 'awaiting_payment' && (!d.payment?.latest || ['create_failed', 'failure', 'expired'].includes(d.payment.latest.state)) && (
+                <button onClick={() => act(`${base}/order-drafts/${d.draftId}/payment-link`)}>Створити посилання на оплату</button>
+              )}
+              {PAID.includes(d.status) && <button onClick={() => act(`${base}/order-drafts/${d.draftId}/refund-requested`, 'Записати запит клієнта на повернення коштів? Самі кошти повертаються в кабінеті monobank.')}>Запит на повернення коштів</button>}
+              {(d.status === 'cod_confirmed' || d.status === 'paid') && (d.delivery.ttnState === null || d.delivery.ttnState === 'failed') && <button onClick={() => act(`${base}/order-drafts/${d.draftId}/ttn`)}>Створити ТТН</button>}
               {d.delivery.ttnState === 'uncertain' && <button onClick={() => act(`${base}/order-drafts/${d.draftId}/ttn/release`, 'Ви перевірили кабінет Нової Пошти і накладної для цього замовлення немає?')}>Накладної немає, спробувати знову</button>}
               {HELD.includes(d.status) && d.delivery.ttnState !== 'creating' && d.delivery.ttnState !== 'uncertain' && (
                 <button onClick={() => act(`${base}/order-drafts/${d.draftId}/cancel`, 'Скасувати замовлення? Товар повернеться на склад.')}>Скасувати</button>

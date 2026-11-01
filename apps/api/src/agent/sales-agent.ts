@@ -1,5 +1,6 @@
-import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, AiRunStatus, CatalogRepository, ConversationRepository, DeliveryRepository, OrderRepository, PolicyRepository, RunPatch, ShopMessageRow, ShopRepository, Store } from '@hepson/database';
+import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, AiRunStatus, CatalogRepository, ConversationRepository, DeliveryRepository, OrderRepository, type PaymentRepository, PolicyRepository, RunPatch, ShopMessageRow, ShopRepository, Store } from '@hepson/database';
 import type { DeliveryService } from '../services/delivery';
+import type { PaymentService } from '../services/payments';
 import { channelOf } from '../services/channel-bridge';
 import type { ConnectorService } from '../services/connector-service';
 import type { EventBus, PublicEvent } from '../services/event-bus';
@@ -32,6 +33,8 @@ export type SalesAgentDeps = {
   policies: PolicyRepository;
   deliveryRepo: DeliveryRepository;
   delivery?: DeliveryService;
+  paymentRepo?: PaymentRepository;
+  payments?: PaymentService;
   llm: LlmClient;
   log: Logger;
   maxMessageLength: number;
@@ -143,6 +146,8 @@ export class SalesAgent {
         policies: this.d.policies,
         deliveryRepo: this.d.deliveryRepo,
         delivery: this.d.delivery,
+        paymentRepo: this.d.paymentRepo,
+        payments: this.d.payments,
         notify: this.d.notifier,
       };
       const customerText = trailingCustomerText(recent);
@@ -212,7 +217,9 @@ export class SalesAgent {
     const ok = escalated ? 'escalated' : 'replied';
 
     // A newer customer message arrived while the model was working: drop this reply, the next run answers everything.
-    if (conversations.listMessages(t.shopId, t.shopConversationId, { limit: 1 }).items.at(-1)?.id !== t.trigger.id) {
+    // Server messages sent meanwhile (a payment link after auto-confirm) do not count.
+    const lastIncoming = conversations.listMessages(t.shopId, t.shopConversationId, { limit: 20 }).items.filter((m) => m.direction === 'incoming').at(-1);
+    if (lastIncoming && lastIncoming.id !== t.trigger.id) {
       agent.updateRun(t.shopId, runId, { ...usage, status: 'superseded', detail: 'NEWER_MESSAGE' });
       return;
     }

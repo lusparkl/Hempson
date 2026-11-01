@@ -92,6 +92,13 @@
       "when": 1793478524001,
       "tag": "0012_policies_checkout",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1793529522555,
+      "tag": "0013_payments",
+      "breakpoints": true
     }
   ]
 }

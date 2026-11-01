@@ -2,7 +2,7 @@
 
 Base: `http://127.0.0.1:8787` (loopback by default). OpenAPI with every route and schema: `GET /v1/openapi.json` or `pnpm openapi` → `docs/openapi.json`.
 
-## Shop API (Phase 2, P1-P4)
+## Shop API (Phase 2, P1-P5)
 Dashboard users authenticate with `Authorization: Bearer hsu_…` from `POST /v1/auth/login` (or `/register`). These routes reject `hep_` API keys. Every `/v1/shops/:shopId/...` route checks membership; a shop the user is not a member of is `404`, an owner-only write by a manager is `403`.
 ```
 GET    /health · /ready
@@ -11,18 +11,20 @@ GET|POST /v1/shops   GET|PATCH /v1/shops/:shopId   members: GET|POST .../members
 catalog: .../products[/:productId[/variants[/:variantId[/stock]]]], POST .../products/import {csv, dryRun}
 chats:   GET .../customers, GET .../conversations[/:id], GET|POST .../conversations/:id/messages, PUT .../conversations/:id/ai {paused}
 agent:   GET|PUT .../ai {enabled, instructions, autonomy, autoConfirmMaxMinor}, GET .../ai/runs, GET .../escalations, POST .../escalations/:id/resolve
-orders:  GET .../order-drafts[/:draftId], GET .../order-drafts/:draftId/events,
-         POST .../order-drafts/:draftId/approve|reject|cancel|returned {restock?}|ttn|ttn/release
+orders:  GET .../order-drafts[/:draftId], GET .../order-drafts/:draftId/events|payments,
+         POST .../order-drafts/:draftId/approve|reject|cancel|returned {restock?}|ttn|ttn/release|payment-link|refund-requested
 policies (P3): GET .../policies, PUT .../policies/:topic {text}   topic = delivery|returns|payment|hours (owner writes)
 nova poshta (P4): GET .../nova-poshta, PUT|DELETE .../nova-poshta/key {apiKey}, PUT .../nova-poshta/settings,
          GET .../nova-poshta/cities?q, GET .../nova-poshta/branches?cityRef&q,
          GET|POST .../customers/:customerId/refusals, DELETE .../customers/:customerId/refusals/:refusalId
+monobank (P5): GET .../monobank, PUT|DELETE .../monobank/token {token}, PUT .../monobank/settings {paymentTimeoutHours, reminderHoursBefore}
 other:   GET .../channels, GET|PUT .../notifications, GET .../stats?from&to, GET|PUT .../web-chat, POST .../web-chat/rotate-key
 instagram (official, D29): GET|DELETE .../instagram, POST .../instagram/connect
 telegram (shop bot, D27): GET|PUT {token}|DELETE .../telegram
 public:  POST /public/web-chat/:widgetKey/session, POST|GET /public/web-chat/:widgetKey/messages, GET /widget/web-chat.js
          GET /public/instagram/callback (OAuth), GET|POST /webhooks/instagram (handshake, signed events; not in OpenAPI)
          POST /webhooks/telegram/:webhookId (X-Telegram-Bot-Api-Secret-Token required)
+         POST /webhooks/monobank/:webhookId (x-sign ECDSA signature over the raw body required)
 ```
 
 # Phase 1 connector API (frozen, D22)

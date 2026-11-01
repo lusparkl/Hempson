@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { CREDENTIAL_KINDS, CREDENTIAL_STATUSES } from './credential-kinds';
-import { ORDER_STATUSES, PAYMENT_METHODS, POLICY_TOPICS } from './order-kinds';
+import { ORDER_STATUSES, PAYMENT_METHODS, PAYMENT_PROVIDERS, PAYMENT_STATES, POLICY_TOPICS } from './order-kinds';
 import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // NOTE: no column here may ever hold cookies, tokens, passwords, 2FA secrets or profile bytes.
@@ -501,6 +501,10 @@ export const orderDrafts = sqliteTable(
     npStatusCode: text('np_status_code'),
     npStatusText: text('np_status_text'),
     npStatusAt: text('np_status_at'),
+    /** P5: an `awaiting_payment` order is cancelled with restock at this time (set on entering the state, per-shop timeout). */
+    paymentDueAt: text('payment_due_at'),
+    /** P5: the one payment reminder (or the shop notice instead of it) was claimed at this time. */
+    paymentReminderAt: text('payment_reminder_at'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
@@ -683,7 +687,7 @@ export const shopDeliverySettings = sqliteTable('shop_delivery_settings', {
   senderWarehouseRef: text('sender_warehouse_ref'),
   senderWarehouseName: text('sender_warehouse_name'),
   codEnabled: integer('cod_enabled', { mode: 'boolean' }).notNull().default(true),
-  /** Prepaid orders wait in `awaiting_payment` until payment links exist (P5). */
+  /** Prepaid is offered only while a payment provider is connected as well (P5). */
   prepaidEnabled: integer('prepaid_enabled', { mode: 'boolean' }).notNull().default(false),
   /** D25: refused COD parcels per customer before COD stops being offered (0 = rule off). */
   refusalLimit: integer('refusal_limit').notNull().default(1),
@@ -712,4 +716,101 @@ export const customerRefusals = sqliteTable(
     createdAt: text('created_at').notNull(),
   },
   (t) => [index('refusals_shop_phone_idx').on(t.shopId, t.phone), index('refusals_shop_customer_idx').on(t.shopId, t.customerId), uniqueIndex('refusals_draft_uq').on(t.draftId)],
+);
+
+/**
+ * Payment settings of a shop (P5, D24). The provider token itself is in `shop_credentials` (kind `monobank`). The
+ * webhook id is the opaque path segment of this shop's webhook URL; the public key verifies Monobank's `x-sign`.
+ */
+export const shopPaymentSettings = sqliteTable(
+  'shop_payment_settings',
+  {
+    shopId: text('shop_id')
+      .primaryKey()
+      .references(() => shops.id),
+    webhookId: text('webhook_id'),
+    /** Monobank merchant identity from `/api/merchant/details` (not secret). */
+    merchantId: text('merchant_id'),
+    merchantName: text('merchant_name'),
+    /** Monobank's ECDSA public key as the API returned it (base64 of a PEM block). Public, cached until a signature fails. */
+    providerPubKey: text('provider_pub_key'),
+    providerPubKeyAt: text('provider_pub_key_at'),
+    /** D25: an unpaid order is cancelled after this many hours; one reminder this many hours before (0 = none). */
+    paymentTimeoutHours: integer('payment_timeout_hours').notNull().default(24),
+    reminderHoursBefore: integer('reminder_hours_before').notNull().default(6),
+    /** Short code only (never provider text). */
+    lastError: text('last_error'),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('shop_payment_settings_webhook_uq').on(t.webhookId)],
+);
+
+/**
+ * Payment link attempts of an order (P5). At most one active attempt per order (partial unique index); amounts are the
+ * order total in minor units as sent to the provider. Status changes only from a verified webhook or a status call.
+ */
+export const orderPayments = sqliteTable(
+  'order_payments',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    draftId: text('draft_id')
+      .notNull()
+      .references(() => orderDrafts.id),
+    provider: text('provider', { enum: PAYMENT_PROVIDERS }).notNull(),
+    state: text('state', { enum: PAYMENT_STATES }).notNull(),
+    /** 1 while this attempt can still be paid or is paid; 0 once it failed, expired or was removed. */
+    active: integer('active', { mode: 'boolean' }).notNull(),
+    invoiceId: text('invoice_id'),
+    pageUrl: text('page_url'),
+    amountMinor: integer('amount_minor').notNull(),
+    currency: text('currency').notNull(),
+    /** Provider `modifiedDate` of the last applied status; older events are ignored. */
+    providerModifiedAt: text('provider_modified_at'),
+    finalAmountMinor: integer('final_amount_minor'),
+    /** Provider failure code (digits/short code only). */
+    providerErrCode: text('provider_err_code'),
+    /** Hepson's own short code: why creation failed, `AMOUNT_MISMATCH`, `PAID_AFTER_CANCEL`. */
+    flag: text('flag'),
+    expiresAt: text('expires_at').notNull(),
+    /** The fixed-template link message was claimed for sending (once per attempt). */
+    linkSentAt: text('link_sent_at'),
+    linkDelivery: text('link_delivery'),
+    lastCheckedAt: text('last_checked_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [
+    index('order_payments_draft_idx').on(t.shopId, t.draftId, t.createdAt),
+    uniqueIndex('order_payments_invoice_uq').on(t.provider, t.invoiceId),
+    uniqueIndex('order_payments_active_uq').on(t.draftId).where(sql`${t.active} = 1`),
+    index('order_payments_state_idx').on(t.state, t.lastCheckedAt),
+  ],
+);
+
+/**
+ * Every provider status Hepson received for a payment (P5), verified or not applied. The unique key makes a replayed
+ * webhook (same invoice, status and modifiedDate) a no-op. `verdict` says what Hepson did with it.
+ */
+export const paymentEvents = sqliteTable(
+  'payment_events',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    paymentId: text('payment_id').references(() => orderPayments.id),
+    provider: text('provider', { enum: PAYMENT_PROVIDERS }).notNull(),
+    invoiceId: text('invoice_id').notNull(),
+    status: text('status').notNull(),
+    providerModifiedAt: text('provider_modified_at').notNull(),
+    amountMinor: integer('amount_minor'),
+    ccy: integer('ccy'),
+    source: text('source', { enum: ['webhook', 'status'] }).notNull(),
+    verdict: text('verdict', { enum: ['applied', 'stale', 'mismatch', 'unknown_invoice'] }).notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => [uniqueIndex('payment_events_uq').on(t.shopId, t.provider, t.invoiceId, t.status, t.providerModifiedAt), index('payment_events_payment_idx').on(t.paymentId, t.createdAt)],
 );

@@ -6,9 +6,27 @@ export type Notification =
   | { kind: 'escalation'; shopId: string; conversationId: string; reason: string }
   | { kind: 'order_draft'; shopId: string; conversationId: string; draftId: string; currency: string; totalMinor: number; itemCount: number }
   /** A channel stopped working and needs the owner (for example the Instagram token was rejected). Fixed text, no provider output. */
-  | { kind: 'channel_issue'; shopId: string; channel: 'instagram' | 'telegram' | 'nova_poshta'; issue: 'needs_reconnect' }
-  /** An order needs a person (P4): the parcel is coming back, or the TTN could not be created (or may exist). Fixed text. */
-  | { kind: 'order_update'; shopId: string; conversationId: string; draftId: string; event: 'returning' | 'ttn_failed' | 'ttn_uncertain' | 'auto_confirmed'; ttn: string | null };
+  | { kind: 'channel_issue'; shopId: string; channel: 'instagram' | 'telegram' | 'nova_poshta' | 'monobank'; issue: 'needs_reconnect' }
+  /**
+   * An order needs a person or moved on its own (P4, P5): the parcel is coming back, the TTN could not be created (or may
+   * exist), the order was paid, a payment link failed or could not reach the customer (`link` is the page to pass on),
+   * the payment deadline passed, a payment was reversed, a refund was requested. Fixed text.
+   */
+  | { kind: 'order_update'; shopId: string; conversationId: string; draftId: string; event: OrderEvent; ttn: string | null; link?: string | null };
+
+export type OrderEvent =
+  | 'returning'
+  | 'ttn_failed'
+  | 'ttn_uncertain'
+  | 'auto_confirmed'
+  | 'paid'
+  | 'payment_failed'
+  | 'payment_link_failed'
+  | 'payment_link_undeliverable'
+  | 'payment_reminder_undeliverable'
+  | 'payment_expired'
+  | 'payment_reversed'
+  | 'refund_requested';
 
 /** Tells a shop's people that something needs them (Feature 8). Fire and forget: never throws, never blocks the caller. */
 export interface Notifier {
@@ -32,8 +50,14 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
       ? `[${ctx.shopName}] Нова Пошта не приймає API-ключ. Введіть ключ знову в панелі; поки цього не зроблено, ТТН не створюються, статуси не оновлюються.`
       : `[${ctx.shopName}] Nova Poshta rejects the API key. Enter the key again in the dashboard; no TTNs are created and no statuses are updated until then.`;
   }
+  if (n.kind === 'channel_issue' && n.channel === 'monobank') {
+    return uk
+      ? `[${ctx.shopName}] monobank не приймає токен еквайрингу. Введіть токен знову в панелі; поки цього не зроблено, посилання на оплату не створюються.`
+      : `[${ctx.shopName}] monobank rejects the acquiring token. Enter the token again in the dashboard; no payment links are created until then.`;
+  }
   if (n.kind === 'order_update') {
     const id = n.draftId.slice(0, 8);
+    const link = n.link ?? '';
     const ttn = n.ttn ? ` ТТН ${n.ttn}` : '';
     const ttnEn = n.ttn ? ` TTN ${n.ttn}` : '';
     const uks: Record<typeof n.event, string> = {
@@ -41,12 +65,28 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
       ttn_failed: `Не вдалося створити ТТН для замовлення ${id} (клієнт: ${ctx.customer}). Перевірте дані відправника й спробуйте ще раз у панелі.`,
       ttn_uncertain: `Нова Пошта не відповіла під час створення ТТН для замовлення ${id} (клієнт: ${ctx.customer}). Перевірте кабінет НП, перш ніж пробувати знову.`,
       auto_confirmed: `ШІ-замовлення ${id} підтверджено автоматично (клієнт: ${ctx.customer}).`,
+      paid: `Замовлення ${id} оплачено через monobank (клієнт: ${ctx.customer}).`,
+      payment_failed: `Оплата замовлення ${id} не пройшла (клієнт: ${ctx.customer}). За потреби створіть нове посилання в панелі.`,
+      payment_link_failed: `Не вдалося створити посилання на оплату замовлення ${id} (клієнт: ${ctx.customer}). Спробуйте ще раз у панелі.`,
+      payment_link_undeliverable: `Посилання на оплату замовлення ${id} не дійшло до клієнта (${ctx.customer}). Передайте його інакше: ${link}`,
+      payment_reminder_undeliverable: `Нагадування про оплату замовлення ${id} не дійшло до клієнта (${ctx.customer}). Посилання: ${link}`,
+      payment_expired: `Замовлення ${id} скасовано: оплата не надійшла вчасно (клієнт: ${ctx.customer}). Товар повернуто на склад.`,
+      payment_reversed: `Оплату замовлення ${id} повернуто клієнту в monobank (клієнт: ${ctx.customer}). Перевірте замовлення в панелі.`,
+      refund_requested: `Для замовлення ${id} записано запит на повернення коштів (клієнт: ${ctx.customer}). Поверніть кошти в кабінеті monobank.`,
     };
     const ens: Record<typeof n.event, string> = {
       returning: `Parcel${ttnEn} is coming back (customer: ${ctx.customer}, order ${id}). Mark it "Returned" in the dashboard once it is with you.`,
       ttn_failed: `Could not create a TTN for order ${id} (customer: ${ctx.customer}). Check the sender settings and retry in the dashboard.`,
       ttn_uncertain: `Nova Poshta did not answer while creating the TTN for order ${id} (customer: ${ctx.customer}). Check the NP cabinet before retrying.`,
       auto_confirmed: `AI order ${id} was confirmed automatically (customer: ${ctx.customer}).`,
+      paid: `Order ${id} was paid via monobank (customer: ${ctx.customer}).`,
+      payment_failed: `The payment for order ${id} failed (customer: ${ctx.customer}). Create a new link in the dashboard if needed.`,
+      payment_link_failed: `Could not create the payment link for order ${id} (customer: ${ctx.customer}). Retry in the dashboard.`,
+      payment_link_undeliverable: `The payment link for order ${id} did not reach the customer (${ctx.customer}). Pass it on another way: ${link}`,
+      payment_reminder_undeliverable: `The payment reminder for order ${id} did not reach the customer (${ctx.customer}). Link: ${link}`,
+      payment_expired: `Order ${id} was cancelled: no payment in time (customer: ${ctx.customer}). Its stock is back.`,
+      payment_reversed: `The payment for order ${id} was reversed in monobank (customer: ${ctx.customer}). Check the order in the dashboard.`,
+      refund_requested: `A refund request was recorded for order ${id} (customer: ${ctx.customer}). Make the refund in the monobank cabinet.`,
     };
     return `[${ctx.shopName}] ${uk ? uks[n.event] : ens[n.event]}`;
   }

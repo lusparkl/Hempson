@@ -11,6 +11,7 @@ import {
   type OrderQuote,
   type OrderRepository,
   type PaymentMethod,
+  type PaymentRepository,
   type PolicyRepository,
   type PolicyTopic,
   type ProductWithVariants,
@@ -18,6 +19,7 @@ import {
 } from '@hepson/database';
 import type { DeliveryService } from '../services/delivery';
 import type { Notifier } from '../services/notifier';
+import type { PaymentService } from '../services/payments';
 import type { ToolSpec } from './llm';
 
 export const formatMoney = (minor: number, currency: string) => `${(minor / 100).toFixed(2)} ${currency}`;
@@ -41,6 +43,10 @@ export class RunFacts {
   paymentMethods: PaymentMethod[] | null = null;
   orderStatusLookups = 0;
   ttns = new Set<string>();
+  /** `get_order_status` returned an order that a verified provider event marked paid (P5). */
+  paidSeen = false;
+  /** Payment page URLs `get_order_status` returned in this run; no other payment link may appear in a reply. */
+  paymentLinks = new Set<string>();
 }
 
 export type ToolContext = {
@@ -56,6 +62,9 @@ export type ToolContext = {
   deliveryRepo: DeliveryRepository;
   /** Absent when this server has no credential store; NP lookups then answer with an error. */
   delivery?: DeliveryService;
+  /** Payment links (P5): read here for the order status, created only by server code after an approval. */
+  paymentRepo?: PaymentRepository;
+  payments?: PaymentService;
   notify?: Notifier;
 };
 
@@ -193,7 +202,7 @@ const PRICE_IN_TEXT = /(\d{1,3}(?:[\s\u00a0]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d
 const STATUS_LABEL: Record<string, string> = {
   pending_approval: 'waiting for the shop to confirm',
   approved: 'confirmed by the shop',
-  awaiting_payment: 'confirmed, waiting for payment',
+  awaiting_payment: 'confirmed, waiting for the online payment (the shop system sent a monobank payment link in this chat)',
   cod_confirmed: 'confirmed, cash on delivery, being prepared for Nova Poshta',
   paid: 'paid',
   shipped: 'handed to Nova Poshta',
@@ -205,15 +214,24 @@ const STATUS_LABEL: Record<string, string> = {
   refund_requested: 'refund requested',
 };
 
-const orderView = ({ draft: d }: OrderDraft, facts: RunFacts) => {
+/** Order states reached only through a verified payment, for a prepaid order (D24). */
+const PAID_STATES = new Set(['paid', 'shipped', 'delivered', 'returning', 'returned', 'refund_requested']);
+
+const orderView = ({ draft: d }: OrderDraft, facts: RunFacts, paymentRepo?: PaymentRepository) => {
   facts.prices.add(d.totalMinor);
   if (d.ttn) facts.ttns.add(d.ttn);
+  const pay = d.paymentMethod === 'prepaid' ? paymentRepo?.latestFor(d.shopId, [d.id]).get(d.id) : undefined;
+  const paid = d.paymentMethod === 'prepaid' && PAID_STATES.has(d.status);
+  if (paid) facts.paidSeen = true;
+  const link = d.status === 'awaiting_payment' && pay?.state === 'created' && pay.pageUrl ? pay.pageUrl : null;
+  if (link) facts.paymentLinks.add(link);
   return {
     orderId: d.id.slice(0, 8),
     status: d.status,
     meaning: STATUS_LABEL[d.status] ?? d.status,
     total: formatMoney(d.totalMinor, d.currency),
     paymentMethod: d.paymentMethod,
+    ...(d.paymentMethod === 'prepaid' ? { payment: { paid, paymentLink: link, payBefore: d.status === 'awaiting_payment' ? d.paymentDueAt : null } } : {}),
     novaPoshta: d.ttn ? { ttn: d.ttn, status: d.npStatusText || null, statusAt: d.npStatusAt } : null,
     branch: d.npCityName && d.npWarehouseName ? `${d.npCityName}, ${d.npWarehouseName}` : null,
     createdAt: d.createdAt,
@@ -299,7 +317,7 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         const phone = a.data.phone ? normalizeUaPhone(a.data.phone) : null;
         const pm = ctx.deliveryRepo.paymentMethods(ctx.shopId, { phone, customerId: ctx.customerId });
         ctx.facts.paymentMethods = pm.methods;
-        const labels: Record<PaymentMethod, string> = { cod: 'cash on delivery at the Nova Poshta branch (накладений платіж)', prepaid: 'prepayment; the shop sends payment details after confirming' };
+        const labels: Record<PaymentMethod, string> = { cod: 'cash on delivery at the Nova Poshta branch (накладений платіж)', prepaid: 'online card payment via monobank; the payment link is sent automatically in this chat once the order is confirmed' };
         return out({
           paymentMethods: pm.methods.map((m) => ({ method: m, description: labels[m] })),
           ...(a.data.phone && !phone ? { phoneProblem: 'not a valid Ukrainian phone number; ask the customer to check it' } : {}),
@@ -328,6 +346,7 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         const auto = settings.autonomy === 'auto_confirm' ? ctx.orders.autoConfirm(ctx.shopId, draft.id, { maxTotalMinor: settings.autoConfirmMaxMinor }) : null;
         if (auto?.approved) {
           ctx.delivery?.afterApproval(ctx.shopId, auto.draft);
+          ctx.payments?.afterApproval(ctx.shopId, auto.draft);
           ctx.notify?.notify({ kind: 'order_update', shopId: ctx.shopId, conversationId: ctx.conversationId, draftId: draft.id, event: 'auto_confirmed', ttn: null });
         } else ctx.notify?.notify({ kind: 'order_draft', shopId: ctx.shopId, conversationId: ctx.conversationId, draftId: draft.id, currency: draft.currency, totalMinor: draft.totalMinor, itemCount: lines.length });
         const q: OrderQuote = {
@@ -336,6 +355,8 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
           lines: lines.map((l) => ({ ...l, lineTotalMinor: l.unitPriceMinor * l.quantity, stock: -1 })),
         };
         const view = quoteView(q, ctx.facts);
+        if (auto?.approved && auto.draft.draft.status === 'awaiting_payment')
+          return out({ draftId: draft.id, status: 'awaiting_payment', confirmed: true, note: 'The shop confirmed this order automatically. The shop system sends the payment link in this chat by itself; the parcel is sent by Nova Poshta after payment. Do not write a link, card or account details yourself.', ...view });
         if (auto?.approved)
           return out({ draftId: draft.id, status: auto.draft.draft.status, confirmed: true, note: 'The shop confirmed this order automatically. You may say it is confirmed and will be sent by Nova Poshta. Do not promise a delivery date.', ...view });
         return out({ draftId: draft.id, status: 'pending_approval', confirmed: false, note: 'NOT a confirmed order. The shop must confirm it first; tell the customer exactly that.', ...view });
@@ -345,7 +366,7 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         if (!a.success) return bad(a.error);
         ctx.facts.orderStatusLookups++;
         const list = ctx.orders.listDrafts(ctx.shopId, { conversationId: ctx.conversationId, limit: 3 }).items;
-        return out({ orders: list.map((d) => orderView(d, ctx.facts)), ...(list.length ? {} : { note: 'This customer has no orders in this conversation.' }) });
+        return out({ orders: list.map((d) => orderView(d, ctx.facts, ctx.paymentRepo)), ...(list.length ? {} : { note: 'This customer has no orders in this conversation.' }) });
       }
       case 'escalate': {
         const a = escalateArgs.safeParse(json);

@@ -17,6 +17,7 @@ type Np = {
   parcelDescription: string;
   lastError: string | null;
 };
+type Mono = { available: boolean; status: 'not_connected' | 'connected' | 'needs_reconnect'; merchantName: string | null; webhookReady: boolean; paymentTimeoutHours: number; reminderHoursBefore: number; lastError: string | null };
 type NpCity = { ref: string; name: string; area: string | null };
 type NpBranch = { ref: string; number: string | null; name: string };
 type Notify = { telegram: { available: boolean; chatId: string | null } };
@@ -52,6 +53,7 @@ export function Settings({ shop }: { shop: Shop }) {
       <AiCard base={base} owner={owner} />
       <PoliciesCard base={base} owner={owner} />
       <NovaPoshtaCard base={base} owner={owner} />
+      <MonobankCard base={base} owner={owner} />
       <WebCard base={base} owner={owner} />
       <TelegramCard base={base} owner={owner} />
       <TeamCard base={base} owner={owner} />
@@ -303,7 +305,7 @@ function NovaPoshtaCard({ base, owner }: { base: string; owner: boolean }) {
       )}
       <form onSubmit={saveSettings} key={JSON.stringify(d)}>
         <label className="check"><input type="checkbox" name="cod" defaultChecked={d.codEnabled} disabled={!owner} /> Накладений платіж</label>
-        <label className="check"><input type="checkbox" name="prepaid" defaultChecked={d.prepaidEnabled} disabled={!owner} /> Передоплата (реквізити надсилає менеджер; посилання на оплату з'являться пізніше)</label>
+        <label className="check"><input type="checkbox" name="prepaid" defaultChecked={d.prepaidEnabled} disabled={!owner} /> Передоплата карткою (пропонується, лише коли підключено monobank)</label>
         <label>
           Відмов від посилок, після яких клієнту не пропонується накладений платіж
           <select name="refusalLimit" defaultValue={String(d.refusalLimit)} disabled={!owner}>
@@ -315,6 +317,61 @@ function NovaPoshtaCard({ base, owner }: { base: string; owner: boolean }) {
         </label>
         <label>Вага посилки, кг <input name="weight" defaultValue={d.parcelWeightKg} disabled={!owner} /></label>
         <label>Опис вмісту для ТТН <input name="description" maxLength={100} defaultValue={d.parcelDescription} disabled={!owner} /></label>
+        {owner && <button type="submit">Зберегти</button>}
+      </form>
+      <Note m={s.msg} />
+    </section>
+  );
+}
+
+function MonobankCard({ base, owner }: { base: string; owner: boolean }) {
+  const mono = useLoad(() => api<Mono>('GET', `${base}/monobank`), [base]);
+  const s = useSave();
+  if (!mono.data) return <section className="card">{mono.error ?? '…'}</section>;
+  const d = mono.data;
+  const connect = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const token = String(new FormData(form).get('token') ?? '');
+    void s.run(async () => {
+      await api('PUT', `${base}/monobank/token`, { token });
+      form.reset();
+      await mono.reload();
+    });
+  };
+  const disconnect = () =>
+    window.confirm('Видалити токен monobank? Передоплата перестане пропонуватися; уже здійснені оплати буде зараховано.') &&
+    void s.run(async () => {
+      await api('DELETE', `${base}/monobank/token`);
+      await mono.reload();
+    });
+  const saveSettings = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    void s.run(async () => {
+      await api('PUT', `${base}/monobank/settings`, { paymentTimeoutHours: Number(f.get('timeout')), reminderHoursBefore: Number(f.get('reminder')) });
+      await mono.reload();
+    });
+  };
+  return (
+    <section className="card">
+      <h2>Оплата карткою (monobank)</h2>
+      <p className="muted">Кошти надходять напряму на ваш рахунок monobank. Hepson створює посилання на оплату з суми замовлення і зараховує оплату лише після підтвердження від monobank.</p>
+      {!d.available && <p className="error">Сервер не налаштований для збереження ключів (HEPSON_MASTER_KEY).</p>}
+      {d.status === 'connected' && <p>Підключено{d.merchantName ? `: ${d.merchantName}` : ''}.</p>}
+      {d.status === 'connected' && !d.webhookReady && <p className="muted">Без HTTPS-адреси HEPSON_PUBLIC_URL оплати перевіряються періодичним запитом до monobank, тому зарахування може затримуватися на кілька хвилин.</p>}
+      {d.status === 'needs_reconnect' && <p className="error">Потрібно підключити знову: monobank не приймає токен. Посилання на оплату не створюються.</p>}
+      {d.status === 'not_connected' && <p className="muted">Не підключено. Токен еквайрингу є в кабінеті web.monobank.ua (розділ «Інтернет-еквайринг»).</p>}
+      {owner && d.available && (
+        <form className="row" onSubmit={connect}>
+          <input name="token" type="password" autoComplete="off" placeholder="X-Token еквайрингу monobank" required />
+          <button type="submit">{d.status === 'not_connected' ? 'Підключити' : 'Замінити токен'}</button>
+          {d.status !== 'not_connected' && <button type="button" onClick={disconnect}>Відключити</button>}
+        </form>
+      )}
+      <form onSubmit={saveSettings} key={JSON.stringify(d)}>
+        <label>Скасувати неоплачене замовлення через, годин <input name="timeout" type="number" min={1} max={720} defaultValue={d.paymentTimeoutHours} disabled={!owner} /></label>
+        <label>Нагадати клієнту за, годин до скасування (0 = не нагадувати) <input name="reminder" type="number" min={0} max={719} defaultValue={d.reminderHoursBefore} disabled={!owner} /></label>
         {owner && <button type="submit">Зберегти</button>}
       </form>
       <Note m={s.msg} />

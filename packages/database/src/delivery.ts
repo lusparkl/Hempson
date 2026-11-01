@@ -139,15 +139,27 @@ export class DeliveryRepository {
     return where ? this.db.select().from(t.customerRefusals).where(where).orderBy(desc(t.customerRefusals.createdAt)).all() : [];
   }
 
-  /** Payment methods this customer may use now. COD disappears at the shop's refusal limit (0 = rule off). */
+  /**
+   * Payment methods this customer may use now. COD disappears at the shop's refusal limit (0 = rule off). Prepaid needs
+   * the owner's switch and an active payment provider credential (P5): without one no link could ever be sent.
+   */
   paymentMethods(shopId: string, who: { phone?: string | null; customerId?: string | null }): { methods: PaymentMethod[]; refusals: number; codBlocked: boolean } {
     const s = this.getSettings(shopId);
     const refusals = this.countRefusals(shopId, who);
     const codBlocked = s.refusalLimit > 0 && refusals >= s.refusalLimit;
     const methods: PaymentMethod[] = [];
     if (s.codEnabled && !codBlocked) methods.push('cod');
-    if (s.prepaidEnabled) methods.push('prepaid');
+    if (s.prepaidEnabled && this.paymentProviderReady(shopId)) methods.push('prepaid');
     return { methods, refusals, codBlocked };
+  }
+
+  /** An active payment provider credential exists (checked by row status only; the secret is never read here). */
+  paymentProviderReady(shopId: string): boolean {
+    return !!this.db
+      .select({ id: t.shopCredentials.id })
+      .from(t.shopCredentials)
+      .where(and(eq(t.shopCredentials.shopId, shopId), eq(t.shopCredentials.kind, 'monobank'), eq(t.shopCredentials.status, 'active')))
+      .get();
   }
 
   /** One refusal per order from Nova Poshta tracking; returns false when that order was already counted. */

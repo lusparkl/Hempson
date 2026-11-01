@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { ConnectorError } from '@hepson/connector-core';
-import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, DeliveryRepository, InstagramRepository, Keyring, OrderRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
+import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, DeliveryRepository, InstagramRepository, Keyring, OrderRepository, PaymentRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
 import { MockAdapter } from '@hepson/mock-adapter';
 import { BrowserInstagramAdapter } from '@hepson/instagram-browser';
 import { loadConfig, type Config } from './config';
@@ -24,6 +24,10 @@ import { registerPolicyRoutes } from './routes/policies';
 import { registerDeliveryRoutes } from './routes/delivery';
 import { DeliveryService } from './services/delivery';
 import { NovaPoshtaApi } from './services/nova-poshta';
+import { MonobankApi } from './services/monobank';
+import { PaymentService } from './services/payments';
+import { registerPaymentRoutes } from './routes/payments';
+import { sendSystemMessage } from './services/shop-sender';
 import { createEgress, hostOf } from './services/egress';
 import { InstagramService } from './services/instagram';
 import { InstagramGraph } from './services/instagram-graph';
@@ -58,6 +62,8 @@ export type App = {
   policies: PolicyRepository;
   deliveryRepo: DeliveryRepository;
   delivery: DeliveryService;
+  paymentRepo: PaymentRepository;
+  payments: PaymentService;
   notifier: Notifier | null;
   salesAgent: SalesAgent | null;
   mock: MockAdapter;
@@ -92,6 +98,8 @@ export const REDACT_PATHS = [
   '*.secret',
   'req.headers["x-hub-signature-256"]',
   'req.headers["x-telegram-bot-api-secret-token"]',
+  'req.headers["x-token"]',
+  'req.headers["x-sign"]',
   '*.apiKey',
   '*.key',
   '*.text',
@@ -117,9 +125,10 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   const tgRepo = new TelegramRepository(handle);
   const policies = new PolicyRepository(handle);
   const deliveryRepo = new DeliveryRepository(handle);
+  const paymentRepo = new PaymentRepository(handle);
   // The only outbound transport (D22): configured provider hosts are added to the built-in allow-list.
   const egress = createEgress({
-    extraHosts: [...cfg.egressExtraHosts, cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl, cfg.novaPoshtaBaseUrl].flatMap((u) => (u ? [hostOf(u) ?? ''] : [])).filter(Boolean),
+    extraHosts: [...cfg.egressExtraHosts, cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl, cfg.novaPoshtaBaseUrl, cfg.monobankBaseUrl].flatMap((u) => (u ? [hostOf(u) ?? ''] : [])).filter(Boolean),
     fetchImpl: overrides.fetchImpl,
   });
   const bus = new EventBus(store);
@@ -184,8 +193,21 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     notifier: notifier ?? undefined,
   });
   const delivery = new DeliveryService({ api: new NovaPoshtaApi(egress, cfg.novaPoshtaBaseUrl), vault, repo: deliveryRepo, orders, log, notifier: notifier ?? undefined });
+  const payments = new PaymentService({
+    api: new MonobankApi(egress, cfg.monobankBaseUrl),
+    vault,
+    repo: paymentRepo,
+    orders,
+    agent: agentRepo,
+    shops,
+    delivery,
+    send: (shopId, conversationId, text, key) => sendSystemMessage({ store, svc, conversations, ig, tg }, shopId, conversationId, text, key),
+    log,
+    publicUrl: cfg.publicUrl,
+    notifier: notifier ?? undefined,
+  });
   const salesAgent = llm
-    ? new SalesAgent({ store, bus, svc, shops, conversations, catalog, orders, agent: agentRepo, policies, deliveryRepo, delivery, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg })
+    ? new SalesAgent({ store, bus, svc, shops, conversations, catalog, orders, agent: agentRepo, policies, deliveryRepo, delivery, paymentRepo, payments, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg })
     : null;
 
   const webChatSvc = new WebChatService(
@@ -260,10 +282,11 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   registerAiRoutes(app, { shops, auth, agent: agentRepo, aiAvailable: salesAgent !== null, telegramAvailable: notifier !== null });
   registerStatsRoutes(app, { shops, auth, stats });
   registerWebChatRoutes(app, { shops, auth, webChat, svc: webChatSvc, publicUrl: cfg.publicUrl });
-  registerOrderRoutes(app, { shops, auth, orders, delivery });
+  registerOrderRoutes(app, { shops, auth, orders, delivery, payments, paymentRepo });
   registerPolicyRoutes(app, { shops, auth, policies });
   registerDeliveryRoutes(app, { shops, auth, delivery, deliveryRepo, orders, conversations });
   registerTelegramRoutes(app, { shops, auth, tg });
+  await registerPaymentRoutes(app, { shops, auth, payments, paymentRepo });
   await registerInstagramRoutes(app, { shops, auth, ig, appSecret: cfg.metaAppSecret, verifyToken: cfg.metaVerifyToken, dashboardUrl: cfg.dashboardUrl });
   const spec = buildOpenApi(registry);
   app.get('/v1/openapi.json', async () => spec);
@@ -285,6 +308,8 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   pollTimer?.unref();
   const npTimer = cfg.novaPoshtaPollMinutes > 0 ? setInterval(() => void delivery.pollOnce().catch(() => undefined), cfg.novaPoshtaPollMinutes * 60_000) : null;
   npTimer?.unref();
+  const payTimer = cfg.paymentCheckMinutes > 0 ? setInterval(() => void payments.reconcileOnce().catch(() => undefined), cfg.paymentCheckMinutes * 60_000) : null;
+  payTimer?.unref();
 
   let closed = false;
   return {
@@ -307,6 +332,8 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     policies,
     deliveryRepo,
     delivery,
+    paymentRepo,
+    payments,
     notifier,
     salesAgent,
     mock,
@@ -318,9 +345,11 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
       clearInterval(timer);
       if (pollTimer) clearInterval(pollTimer);
       if (npTimer) clearInterval(npTimer);
+      if (payTimer) clearInterval(payTimer);
       salesAgent?.stop();
       await salesAgent?.whenIdle();
       await ig.whenIdle();
+      await payments.whenIdle();
       await delivery.whenIdle();
       await notifier?.whenIdle();
       await svc.shutdown();
