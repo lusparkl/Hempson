@@ -1,83 +1,80 @@
 # AI Handoff
 
-Updated: 2026-11-01T11:06:51Z
-Base commit: 039c56e3841ef7691ce6c66071d812528c88fdd2
-Branch: feat/p3-p4-policies-nova-poshta
-Working tree: uncommitted P5 (Monobank).
-- Modified: `apps/api/src/{server,config}.ts`, `apps/api/src/agent/{guard,prompt,sales-agent,tools}.ts`, `apps/api/src/routes/orders.ts`, `apps/api/src/services/{delivery,notifier,shop-sender}.ts`, `apps/dashboard/src/views/{Orders,Settings}.tsx`, `packages/database/src/{delivery,index,order-kinds,orders,schema}.ts`, migrations `meta/_journal.json`, `tests/unit/{guard,orders}.test.ts`, `.env.example`, `docs/{API,DECISIONS,LIMITATIONS,OVERVIEW,ROADMAP}.md`, `docs/openapi.json`.
-- New: `apps/api/src/routes/payments.ts`, `apps/api/src/services/{monobank,payments}.ts`, `packages/database/src/payments.ts`, migration `0013_payments` (+ snapshot), `tests/fixtures/fake-monobank.ts`, `tests/integration/payments.test.ts`, `tests/unit/monobank.test.ts`.
+Updated: 2026-11-01T18:17:32Z
+Base commit: d2e2d441721b2aaac3c4d5aa60bcc16a3c32b46c
+Branch: feat/p9-suggestions
+Working tree: clean (only this handoff changes once it is saved).
 
-This is a snapshot; the commit hash alone cannot prove it is current. Nothing is pushed. Local `main` is 17 commits ahead of `origin/main`. The P3/P4 branch is not merged.
+This is a snapshot: if the tree later has uncommitted changes, the commit hash alone cannot prove this file is current. Nothing is pushed. `main` is at `4ed5fc1`, 21 commits ahead of `origin/main`. `feat/p9-suggestions` is one commit ahead of `main` and not merged yet. The old `feat/p3-p4-policies-nova-poshta` branch is fully merged and still exists.
 
 ## Purpose and architecture
 
-Hepson is a Ukrainian-first multi-shop AI sales assistant. Its customer channels are official Instagram, Telegram (one bot per shop) and website chat. Each channel writes into the shop tables and calls `SalesAgent.trigger`. Replies pass the guard (`agent/guard.ts`) and are sent through `services/shop-sender.ts`.
+Hepson is a Ukrainian-first multi-shop AI sales assistant that uses official APIs only (D22). Customer channels: official Instagram, Telegram (one bot per shop) and website chat. Each channel writes into the shop tables and calls `SalesAgent.trigger`. Replies pass the guard (`agent/guard.ts`) and go out through `services/shop-sender.ts`.
 
-Shop secrets live only in `CredentialVault`, with kinds `telegram_bot`, `nova_poshta` and `monobank`. All outbound HTTP goes through `createEgress`.
+Agent tools are in `apps/api/src/agent/tools.ts` and the prompt in `agent/prompt.ts`. Shop secrets live only in `CredentialVault` (kinds `telegram_bot`, `nova_poshta`, `monobank`). All outbound HTTP goes through `createEgress`.
 
-Code map: `docs/OVERVIEW.md`. Decisions: `docs/DECISIONS.md` D1–D32.
+Code map: `docs/OVERVIEW.md`. Decisions: `docs/DECISIONS.md` D1–D36. Roadmap: `docs/ROADMAP.md`.
 
 ## Implemented state
 
-F1–F12 and P1–P5 (Monobank only) are built. P3–P5 are tested only against mocks. Not built: WayForPay, P6–P9, D16 auto-pause.
+F1–F12 and P1–P8 are built (P5 Monobank, P6 customer notices, P7 plans, P8 Sheets import, Excel export and funnel; details in D32–D35). Not built: WayForPay, XLSX import, D16 auto-pause.
 
-**P5:**
-- **Connect.** The owner pastes the acquiring token. Hepson calls `details`, then `pubkey`, then stores the token in the vault. Each connection gets a fresh opaque webhook id. Prepaid is offered only when `prepaidEnabled` is on and a `monobank` credential is active (`DeliveryRepository.paymentProviderReady`).
-- **Link.** Approval into `awaiting_payment` sets `payment_due_at` (timeout default 24 h). `PaymentService.createLink` claims an `order_payments` row (one active row per order), creates the invoice for the stored total in UAH, and sends a fixed-template `system` message. If the link can't be delivered, the shop is notified with it. If invoice creation fails, the row becomes `create_failed` and a member can retry via `POST .../payment-link`.
-- **Webhook** `POST /webhooks/monobank/:webhookId`:
-  - Signature: `x-sign` ECDSA over the raw body. On failure the public key is refreshed, at most every 10 min.
-  - Dedupe and ordering: `payment_events` unique key plus `modifiedDate`/rank ordering.
-  - Amount/currency mismatch: escalation, nothing applied.
-  - `success`: order to `paid`, then `DeliveryService.afterPaid` starts the TTN.
-  - Payment after cancel: flagged and escalated.
-  - `failure`: frees the slot. `reversed`: shop is notified.
-- **Job** `reconcileOnce` (every `HEPSON_PAYMENT_CHECK_MINUTES`):
-  - Status check of open invoices older than 2 min.
-  - One reminder 6 h before the deadline.
-  - At the deadline: `invoice/remove`, then cancel with restock (`system:timeout`). An invoice still `processing` gets 1 h of grace.
-  - A member's cancel also removes the invoice.
-- **Agent.** `get_order_status` returns the paid flag and the current link. The guard blocks "paid" claims and payment URLs the tool did not return. The supersede check now ignores server (non-incoming) messages.
-- **Refunds.** `POST .../refund-requested` (from `paid` onward) records the request and notifies the shop; the refund itself happens in the Monobank cabinet.
-- **Dashboard.** Monobank settings card, plus payment status and actions in Orders.
+**P9, suggestions (commit `d2e2d44`, D36).**
+- The agent tool `suggest_products(sku, kind, limit ≤ 3)` uses `CatalogRepository.similarProducts` and `boughtTogether` in `packages/database/src/catalog.ts`.
+- `alternatives`: other in-stock variants of the same product, plus in-stock products sharing a name word of 3+ letters, ranked by shared words, then by price closeness.
+- `complements`: in-stock products that appeared in the same order drafts. Rejected and cancelled drafts don't count.
+- Prompt rule 6a: alternatives when a variant is out of stock; at most one complement offer per conversation.
+
+**P9 still to build, in this order:** photo search, forwarded Instagram posts, storefront. The scope decisions are recorded in D36:
+- Photo search matches against an index of catalog photos (option B).
+- A photo message counts as 1 AI reply.
+- Customer images are downloaded, used for that run and deleted; the dashboard shows a placeholder.
+- Meta CDN hosts may be added to egress, but only after confirming them from Meta's docs.
+- Product images come from the existing `products.media` URLs.
+- The storefront is read-only at `HEPSON_PUBLIC_URL/s/<slug>`, and ordering goes through the chat checkout.
 
 ## Decisions and environment
 
-Runtime: Node >=22 (dev 24), pnpm, TypeScript, Fastify, SQLite/Drizzle.
-
-- New variables: `HEPSON_PAYMENT_CHECK_MINUTES` (default 5, 0 = off) and `HEPSON_MONOBANK_BASE_URL`.
-- Webhooks need an https `HEPSON_PUBLIC_URL`; without it, only the status job finds payments. P2, P4 and P5 need `HEPSON_MASTER_KEY`.
-- `buildApp` runs migrations on startup. I earlier claimed it did not; that was wrong.
-- `~/.config/hepson/run-api.sh` loads `.env`, `api.env` and `tunnel.env`, and is started with output redirected to `~/.config/hepson/api.log`.
-- Dev DB `~/.hepson/hepson.db` has migrations through `0012`; there is a backup at `hepson.db.bak-20261101-pre0012`. `0013` applies on the next API start.
-- The API started on 2026-11-01 runs pre-P5 code. No tunnel is running.
-- Prettier is not clean at HEAD, so changed files were not reformatted.
+- Runtime: Node >=22 (dev 24), pnpm, TypeScript, Fastify, SQLite/Drizzle.
+- Variables: `HEPSON_DEFAULT_PLAN`, `HEPSON_PAYMENT_CHECK_MINUTES`, `HEPSON_MONOBANK_BASE_URL`. Webhooks need an https `HEPSON_PUBLIC_URL`. P2, P4 and P5 need `HEPSON_MASTER_KEY`.
+- `buildApp` runs migrations on startup. The latest is `0015`. P9 added no migration.
+- Dev DB `~/.hepson/hepson.db` is at `0015`, verified 2026-11-01 (16 rows in `__drizzle_migrations`, new tables present). The pre-migration copy is `hepson.db.bak-20261101-pre0013`.
+- Start the API with `~/.config/hepson/run-api.sh`, which loads `.env`, `api.env` and `tunnel.env`. Last start: 2026-11-01 from `d2e2d44`, port 8787, `/health` ok, as a background task of the Claude session; it may not outlive that session. Its log is in the session scratchpad and may contain secrets.
+- Prettier was not clean at HEAD in `catalog.ts`, `tools.ts` and `sales-agent.test.ts` before P9, so I left those files unformatted.
 
 ## Validation
 
-Run 2026-11-01, after the P5 changes:
+Run 2026-11-01 on `d2e2d44`:
 - `pnpm typecheck`: passed.
-- `pnpm test`: passed, 443 tests in 33 files.
-- `pnpm build`: passed.
-- `pnpm openapi`: regenerated.
+- `pnpm test`: 476 tests passed in 38 files, including 3 new suggestion tests in `tests/integration/sales-agent.test.ts`.
+
+Earlier (P8): console and dashboard builds passed, and `pnpm openapi` was regenerated.
 
 Not run:
 - `pnpm test:browser`.
 - A visual check of the dashboard.
-- Any live NP or Monobank call.
-- Migration `0013` on the dev DB.
+- Any live check of Nova Poshta, Monobank or Google Sheets.
+- Microsoft Excel.
+- Suggestions with a real LLM. They are tested only with the scripted model.
 
 ## Known issues and uncertainties
 
-- **Monobank, from docs only.** Unconfirmed: the `merchantPaymInfo` schema (Hepson sends only `reference` and `destination`), the API error body, status meanings, rate limits, and whether a `failure` invoice can still be paid. No fiscal receipts (`basketOrder`/ПРРО) are sent. UAH only.
-- **NP.** Response shapes are unverified, and an `uncertain` TTN needs a person to resolve.
-- **Guard.** It is a phrase-list heuristic for prices, policies, delivery and paid claims.
-- **Telegram and Instagram live gaps** are unchanged; Instagram webhooks still don't arrive.
-- **Queues and logs.** There is no durable dispatch queue. `api.log` may contain secrets.
+- **Photo search option B.** OpenAI has no known image-embedding endpoint. The candidates are a local open-source image model (a new dependency) or vision captions of catalog images plus text embeddings. Check the current OpenAI docs first. Any non-OpenAI paid service needs owner approval.
+- **Built from documentation only, not live-checked:** Monobank, Nova Poshta response shapes, and the Google Sheets redirect.
+- **Instagram.** Webhooks don't arrive (polling is used, D30). Shipping and delivery notices mostly fall outside the 24-hour window.
+- **Heuristics and limits.** The guard is a phrase list and does not check product names. The P7 cap counts replies, not cost. Similar-product matching is by name words only (there is no category field).
+- **Operations.** There is no durable reply queue. `api.log` may contain secrets.
 
 ## Next actions
 
-1. Review and commit P5 (suggested: `feat: Monobank payment links (P5)`), then decide whether to merge the branch into `main` or open a PR.
-2. Restart the API and confirm `0013` applies.
-3. Live Monobank test with a test token from api.monobank.ua: start the tunnel with an https `HEPSON_PUBLIC_URL`, connect, approve one prepaid order, pay with a Luhn-valid card. Confirm the webhook moves the order to `paid` and the TTN is created. Then replace `tests/fixtures/fake-monobank.ts` with captured responses.
-4. Live NP check (from P4), the dashboard browser check, and `pnpm test:browser`.
-5. Next feature: P6 customer notifications (payment received, shipped), or WayForPay.
+1. Merge `feat/p9-suggestions` into `main` with `git merge --ff-only`. Then decide whether to push `main` (22 commits) and delete the merged branches.
+2. Check the dashboard Stats, Orders and Catalog views in a browser. Assign plans if needed: `PUT /v1/shops/:id/plan` with the admin key.
+3. Try one real-LLM conversation with an out-of-stock variant, and confirm the suggestion behaviour and the guard.
+4. P9 photo search:
+   - Choose the index source (see the first known issue).
+   - Download Telegram photos through egress, in memory only.
+   - Index from the `products.media` URLs.
+   - Count the run as 1 reply.
+   - Show a dashboard placeholder for the image.
+   - Done when: tests cover a photo match, no image file is written, and egress refuses unknown hosts.
+5. Then forwarded Instagram posts (Meta CDN hosts from the docs), the storefront, and the live checks: Monobank test token, Nova Poshta key, one Google Sheet, `pnpm test:browser`.
