@@ -12,6 +12,8 @@
     "start:api": "tsx apps/api/src/index.ts",
     "dev:console": "pnpm --filter @hepson/dev-console dev",
     "dev:dashboard": "pnpm --filter @hepson/dashboard dev",
+    "dev:website": "pnpm --filter @hepson/website dev",
+    "build:website": "pnpm --filter @hepson/website build",
     "build": "pnpm --filter @hepson/dev-console build && pnpm --filter @hepson/dashboard build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",

@@ -1,0 +1,11 @@
+{
+  "name": "@hepson/website",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && vite build --ssr src/entry-server.tsx --outDir .tmp/ssr && tsx scripts/prerender.ts",
+    "preview": "vite preview"
+  }
+}

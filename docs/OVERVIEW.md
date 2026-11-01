@@ -27,6 +27,7 @@ Node 22+ (dev on 24), TypeScript strict, pnpm workspace, Fastify 5, Zod 4, SQLit
 | `apps/api` | Fastify server: `routes/`, `services/` (`instagram*.ts`, `telegram*.ts`, `nova-poshta.ts` + `delivery.ts` (P4), `monobank.ts` + `payments.ts` (P5), `customer-notices.ts` (P6), `google-sheets.ts` + `xlsx.ts` (P8), `egress.ts`, `shop-sender.ts`, `web-chat.ts`, `notifier.ts`, Phase 1 `connector-service.ts`/`channel-bridge.ts`), `auth/`, `agent/`, `widget/` |
 | `apps/dev-console` | Admin-key tool for Phase 1 connector accounts |
 | `apps/dashboard` | Shop-owner UI (user sessions, port 5174) |
+| `apps/website` | Public marketing site (D37): prerendered static pages, `uk` at `/` and `ru` under `/ru/`; copy in `src/i18n/`, page list in `src/routes.ts`, owner-supplied facts in `src/site.ts`, animation slots in `src/animations.ts`; dev port 5175 |
 | `scripts/` | `migrate`, `bootstrap-key`, `backup`, `gen-openapi`, `gen-master-key`, `rewrap-credentials`; browser-only `calibrate-selectors`, `live-smoke` |
 | `tests/` | `unit/`, `integration/` (mock, `app.inject`), `e2e/` (real Chromium against a local fake Instagram) |
 

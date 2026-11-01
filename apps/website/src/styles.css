@@ -1,0 +1,110 @@
+/*
+ * Structural styles only: readable defaults, accessibility helpers and visible outlines for the
+ * animation and illustration slots. All visual design (colours, type, spacing, motion) is TODO(design).
+ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+main,
+.site-header header,
+.site-footer {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+img {
+  max-width: 100%;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+.skip-link:focus {
+  left: 16px;
+  top: 16px;
+  z-index: 10;
+}
+
+.site-header header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+#site-nav,
+#site-nav ul,
+.lang-switch ul {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.menu-toggle {
+  display: none;
+}
+@media (max-width: 760px) {
+  .js .menu-toggle {
+    display: block;
+  }
+  .js #site-nav:not([data-open]) {
+    display: none;
+  }
+  #site-nav,
+  #site-nav ul {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+.lang-switch a[aria-current] {
+  font-weight: 700;
+}
+
+.site-footer {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 24px;
+}
+.footer-bottom {
+  grid-column: 1 / -1;
+}
+
+/* Wireframe placeholders: replaced in the design pass. */
+[data-anim-placeholder],
+.feature-visual {
+  min-height: 240px;
+  border: 2px dashed currentColor;
+  opacity: 0.3;
+}
+.draft-notice {
+  border: 1px solid currentColor;
+  padding: 8px 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

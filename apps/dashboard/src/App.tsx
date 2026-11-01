@@ -16,7 +16,8 @@ const TABS = [
 type Tab = (typeof TABS)[number][0];
 
 function Login({ onDone }: { onDone: () => void }) {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  // The public website's "start" buttons link here with `?mode=register`.
+  const [mode, setMode] = useState<'login' | 'register'>(() => (new URLSearchParams(location.search).get('mode') === 'register' ? 'register' : 'login'));
   const [err, setErr] = useState<string | null>(null);
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();

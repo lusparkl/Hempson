@@ -252,3 +252,17 @@ Real Instagram message webhooks were not delivered in repeated live tests (Live 
 - Suggested products pass through the same view as `search_products`, so their prices and stock join the run's facts and the reply guard accepts them. Out-of-stock variants are not shown.
 - Prompt rule 6a: alternatives when a variant is out of stock or the customer asks for something similar; at most one complement offer per conversation after the customer has chosen, dropped if declined; only products the tool returned in this turn. Owner notes may restrict this further. There is no on/off setting.
 **Not taken:** owner-curated "related products" links, a category field, stock-weighted or margin-weighted ranking, suggestion analytics.
+
+## D37 (2026-11-01): public website structure
+**Context.** Hepson had no public site. Production needs one for selling, and Meta App Review, payment acquirers and Ukrainian consumer law need public privacy, offer/terms, refund and data-deletion pages and company details.
+
+**Decision.**
+- New workspace app `apps/website`: Vite + React like the dashboard, no new dependencies. `pnpm build:website` builds the client, then an SSR bundle, then `scripts/prerender.ts` writes one static `index.html` per page and locale, `404.html` per locale, `sitemap.xml` and `robots.txt`. Pages hydrate from an inline JSON context; navigation is plain links, so every page works and is indexable without JS. Hosting is not chosen; the output is plain static files.
+- Locales: Ukrainian is the default at `/`; Russian is under `/ru/`. The switcher (UA / RU) links to the same page in the other locale. Each page carries `lang`, a canonical URL, `hreflang` for both locales and `x-default` pointing at Ukrainian. Paths end with `/`. The Russian draft notice says the Ukrainian version is authoritative; keep that sentence on the Russian legal pages after review.
+- Pages: home, features, pricing, about, security, contact, legal (privacy, public offer/terms, payment and refunds, cookies, data deletion), 404. No contact form: it would need a public endpoint and spam protection; contacts are links.
+- Copy describes only built features; unbuilt ones (photo search, storefront, WayForPay) carry a "soon" badge. Pricing caps mirror `PLANS` (a unit test keeps them equal); prices, contacts and the legal entity are `null` in `src/site.ts` and render as "to be announced", never invented. Legal texts are drafts with TODOs and show a draft notice until `SITE.legalReviewed` is set after a lawyer's review.
+- No cookies and no analytics, so no consent banner. Adding analytics requires consent first and an update of the cookie page.
+- Animations: none are implemented. `src/animations.ts` lists every slot (trigger, description, duration, reduced-motion result); `<AnimSlot id>` marks the element with `data-anim`/`data-anim-trigger`, and `in-view` slots get `data-anim-state="visible"` on entering the viewport. A test keeps the catalogue and the rendered slots identical. Reduced motion must still show the content.
+- "Start" buttons go to the dashboard with `?mode=register`, which now opens the sign-up form.
+
+**Not taken.** A separate framework (Astro, Next.js): a new dependency for ten pages. Client-side routing: worse for SEO and no-JS visitors. Auto-detecting the browser language: the default must stay Ukrainian, and the switch is one click.

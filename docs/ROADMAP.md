@@ -72,6 +72,7 @@ Goal: a working MVP of the core loop, message to paid order to TTN, on official 
 | P7 | Plans and quotas | DONE (2026-11-01, D34) | no | - |
 | P8 | Catalog and analytics | DONE except XLSX import (2026-11-01, D35); Google Sheets fetch **not live-checked** | no | P4, P5 for the funnel |
 | P9 | Matching their extras | Suggestions DONE (2026-11-01, D36); photo search, forwarded posts, storefront TODO (decisions in D36) | no | P1, P8 |
+| W1 | Public website | Structure DONE (2026-11-01, D37): all pages, `uk`/`ru`, legal drafts, animation slots; **design, real contacts, legal entity, prices, lawyer review and hosting TODO** | yes (contacts, prices, legal texts, domain) | - |
 | Later | Meta Business Verification, App Review (Advanced Access), Tech Provider status, Hepson subscription billing | BLOCKED on FOP | yes | - |
 
 Ordering note: the brief puts P4 (TTN) before P5 (payments), but a prepaid order may only get a TTN after `paid` (D25). So P4 creates TTNs for cash-on-delivery orders (from `cod_confirmed`) and for any order a member marks shippable by hand; the prepaid path is wired in P5 when `paid` exists.
@@ -143,6 +144,10 @@ Scope: everything needed for one shop to connect its own professional account an
 
 ## P9 Matching their extras
 - Photo-based product search, reading a forwarded Instagram post (shared-media attachments from webhooks), upsell and alternative suggestions from catalog data (never invented products), public storefront. Each is its own session; image handling needs a decision on cost and image storage first.
+
+## W1 Public website (D37)
+- Built: `apps/website`, every production page (home, features, pricing, about, security, contact, privacy, offer/terms, payment and refunds, cookies, data deletion, 404) in Ukrainian (default) and Russian, canonical/hreflang/Open Graph tags, sitemap and robots, catalogued animation slots without motion.
+- Next: visual design pass (owner, design mode); fill `src/site.ts` (domain, contacts, FOP details, prices); lawyer review of the legal texts, then `legalReviewed: true`; choose hosting. The privacy policy and data-deletion URLs are what Meta App Review asks for ("Later").
 
 ## Later (needs a registered business)
 Meta Business Verification; App Review for Advanced Access (privacy policy URL, data-deletion callback, screencast); Tech Provider status; Hepson's own subscription billing; Human Agent feature approval. Moving from Development mode to Advanced Access is configuration, not a rewrite (D22).
