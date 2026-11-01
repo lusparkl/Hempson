@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { CREDENTIAL_KINDS, CREDENTIAL_STATUSES } from './credential-kinds';
-import { ORDER_STATUSES, PAYMENT_METHODS, PAYMENT_PROVIDERS, PAYMENT_STATES, POLICY_TOPICS } from './order-kinds';
+import { CUSTOMER_NOTICE_EVENTS, CUSTOMER_NOTICE_STATES, ORDER_STATUSES, PAYMENT_METHODS, PAYMENT_PROVIDERS, PAYMENT_STATES, PLAN_NAMES, POLICY_TOPICS } from './order-kinds';
 import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // NOTE: no column here may ever hold cookies, tokens, passwords, 2FA secrets or profile bytes.
@@ -814,3 +814,41 @@ export const paymentEvents = sqliteTable(
   },
   (t) => [uniqueIndex('payment_events_uq').on(t.shopId, t.provider, t.invoiceId, t.status, t.providerModifiedAt), index('payment_events_payment_idx').on(t.paymentId, t.createdAt)],
 );
+
+/**
+ * Customer notices (P6): fixed server texts about an order sent to its customer. The unique key makes each (order,
+ * event) one row, written in the same transaction as the status change, so retries and restarts cannot send twice.
+ */
+export const customerNotices = sqliteTable(
+  'customer_notices',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    draftId: text('draft_id')
+      .notNull()
+      .references(() => orderDrafts.id),
+    event: text('event', { enum: CUSTOMER_NOTICE_EVENTS }).notNull(),
+    state: text('state', { enum: CUSTOMER_NOTICE_STATES }).notNull(),
+    /** Short code: why it failed, was skipped or is uncertain (`OUTSIDE_MESSAGING_WINDOW`, `STALE`, ...). */
+    code: text('code'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('customer_notices_uq').on(t.draftId, t.event), index('customer_notices_state_idx').on(t.state, t.createdAt), index('customer_notices_shop_idx').on(t.shopId, t.draftId)],
+);
+
+/**
+ * A shop's Hepson plan (P7), set by the operator. No row means the server's default plan. `customCap` overrides the
+ * plan's cap. `capNoticeMonth` is the UTC month (`YYYY-MM`) whose cap notice the owner already got (once per month).
+ */
+export const shopPlans = sqliteTable('shop_plans', {
+  shopId: text('shop_id')
+    .primaryKey()
+    .references(() => shops.id),
+  plan: text('plan', { enum: PLAN_NAMES as [string, ...string[]] }).notNull(),
+  customCap: integer('custom_cap'),
+  capNoticeMonth: text('cap_notice_month'),
+  updatedAt: text('updated_at').notNull(),
+});

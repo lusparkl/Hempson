@@ -9,6 +9,7 @@ type Stats = {
   escalations: { opened: number; resolved: number; openNow: number; avgResolutionSeconds: number | null };
   orderDrafts: { byStatus: Record<string, number>; approved: Array<{ currency: string; count: number; totalMinor: number }> };
   daily: Array<{ date: string; runs: number; replied: number; escalated: number; inputTokens: number; outputTokens: number }>;
+  usage: { plan: string; aiReplyCap: number | null; month: string; aiReplies: number; remaining: number | null; capReached: boolean };
 };
 
 export function Stats({ shop }: { shop: Shop }) {
@@ -28,8 +29,21 @@ export function Stats({ shop }: { shop: Shop }) {
         ))}
       </p>
       {s.error && <p className="error">{s.error}</p>}
+      {d?.usage.capReached && (
+        <p className="error">
+          Ліміт відповідей ШІ на {d.usage.month} вичерпано. До кінця місяця ШІ не відповідає: нові розмови передаються людям. Щоб збільшити ліміт, зверніться до Hepson.
+        </p>
+      )}
       {d && (
         <div className="grid">
+          <table>
+            <caption>План (місяць за UTC)</caption>
+            <tbody>
+              {row('План', d.usage.plan)}
+              {row(`Відповіді ШІ за ${d.usage.month}`, d.usage.aiReplyCap === null ? `${d.usage.aiReplies} (без ліміту)` : `${d.usage.aiReplies} / ${d.usage.aiReplyCap}`)}
+              {d.usage.remaining !== null && row('Залишилось', d.usage.remaining)}
+            </tbody>
+          </table>
           <table>
             <caption>Повідомлення</caption>
             <tbody>

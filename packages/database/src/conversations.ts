@@ -417,7 +417,7 @@ export class ConversationRepository {
     text: string,
     extId: string,
     status: 'sent' | 'uncertain',
-    senderType: 'ai' | 'human' = 'ai',
+    senderType: 'ai' | 'human' | 'system' = 'ai',
   ): ShopMessageRow | undefined {
     return this.handle.raw.transaction(() => {
       if (this.findMessageByExternal(shopId, conversationId, extId)) return undefined;

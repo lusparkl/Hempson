@@ -1,10 +1,16 @@
 import os from 'node:os';
 import path from 'node:path';
+import { PLAN_NAMES, type PlanName } from '@hepson/database';
 
 export type Config = ReturnType<typeof loadConfig>;
 
 const bool = (v: string | undefined, d: boolean) => (v === undefined ? d : ['1', 'true', 'yes'].includes(v.toLowerCase()));
 const int = (v: string | undefined, d: number) => (v && Number.isFinite(Number(v)) ? Number(v) : d);
+function planName(v: string | undefined): PlanName {
+  if (!v) return 'starter';
+  if (!(PLAN_NAMES as string[]).includes(v)) throw new Error(`HEPSON_DEFAULT_PLAN must be one of ${PLAN_NAMES.join(', ')}`);
+  return v as PlanName;
+}
 
 /** `~` and `~/x` mean the home directory, as in .env.example. Env files are not shell-expanded, so `~` would otherwise become a folder in the working directory. */
 const expandHome = (p: string) => (p === '~' || p.startsWith('~/') ? path.join(os.homedir(), p.slice(1)) : p);
@@ -69,6 +75,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     /** Monobank acquiring (P5): API base URL (override for a local mock) and how often open invoices, payment deadlines and reminders are checked (0 = off). */
     monobankBaseUrl: (env.HEPSON_MONOBANK_BASE_URL || 'https://api.monobank.ua').replace(/\/+$/, ''),
     paymentCheckMinutes: int(env.HEPSON_PAYMENT_CHECK_MINUTES, 5),
+    /** Plan of a shop the operator has not assigned one (P7): its monthly AI-reply cap. */
+    defaultPlan: planName(env.HEPSON_DEFAULT_PLAN),
     /** Where the browser is sent after the connect flow (the dashboard). */
     dashboardUrl: (env.HEPSON_DASHBOARD_URL || env.HEPSON_PUBLIC_URL || `http://${env.HEPSON_HOST ?? '127.0.0.1'}:${int(env.HEPSON_PORT, 8787)}`).replace(/\/+$/, ''),
     loginWaitMs: int(env.HEPSON_LOGIN_WAIT_MS, 10 * 60_000),

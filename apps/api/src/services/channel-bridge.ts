@@ -84,8 +84,8 @@ export class ChannelBridge {
     if (!status) return; // queued/sending/failed are never stored as messages by the connector
     const { conversation } = this.conversations.ensureConversation(shopId, thread);
     // A reply the sales agent queued shows up here once the connector sends it: adopt that row instead of adding a `human` duplicate.
-    // Same for a reply a dashboard member sent through the shop API (Feature 8).
-    if (m.text && (this.conversations.adoptPendingOutbound(shopId, conversation.id, m.text, m.id, status) || this.conversations.adoptPendingOutbound(shopId, conversation.id, m.text, m.id, status, 'human'))) return;
+    // Same for a reply a dashboard member sent through the shop API (Feature 8), and a fixed server text (payment link, customer notice).
+    if (m.text && (['ai', 'human', 'system'] as const).some((who) => this.conversations.adoptPendingOutbound(shopId, conversation.id, m.text!, m.id, status, who))) return;
     const r = this.conversations.recordOutbound(shopId, conversation.id, {
       senderType: 'human',
       externalId: m.id,

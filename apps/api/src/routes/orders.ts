@@ -9,6 +9,8 @@ import {
   OrderValidationError,
   checkoutMissing,
   type AuthRepository,
+  type CustomerNoticeRepository,
+  type CustomerNoticeRow,
   type OrderDraft,
   type OrderEventRow,
   type OrderPaymentRow,
@@ -49,7 +51,7 @@ const paymentView = (p: OrderPaymentRow) => ({
   updatedAt: p.updatedAt,
 });
 
-const draftView = ({ draft: d, items }: OrderDraft, pay?: OrderPaymentRow) => ({
+const draftView = ({ draft: d, items }: OrderDraft, pay?: OrderPaymentRow, notices: CustomerNoticeRow[] = []) => ({
   draftId: d.id,
   conversationId: d.conversationId,
   customerId: d.customerId,
@@ -79,6 +81,7 @@ const draftView = ({ draft: d, items }: OrderDraft, pay?: OrderPaymentRow) => ({
   },
   payment: d.paymentMethod === 'prepaid' ? { dueAt: d.paymentDueAt, reminderAt: d.paymentReminderAt, latest: pay ? paymentView(pay) : null } : null,
   delivery: { ttnState: d.ttnState, ttnError: d.ttnError, ttn: d.ttn, statusCode: d.npStatusCode, statusText: d.npStatusText, statusAt: d.npStatusAt },
+  customerNotices: notices.map((n) => ({ event: n.event, state: n.state, code: n.code, at: n.updatedAt })),
   createdAt: d.createdAt,
   updatedAt: d.updatedAt,
   items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, sku: i.sku, productName: i.productName, options: i.options, quantity: i.quantity, unitPriceMinor: i.unitPriceMinor })),
@@ -99,11 +102,11 @@ function translate(e: unknown): never {
  */
 export function registerOrderRoutes(
   app: FastifyInstance,
-  deps: { shops: ShopRepository; auth: AuthRepository; orders: OrderRepository; delivery: DeliveryService; payments: PaymentService; paymentRepo: PaymentRepository },
+  deps: { shops: ShopRepository; auth: AuthRepository; orders: OrderRepository; delivery: DeliveryService; payments: PaymentService; paymentRepo: PaymentRepository; noticeRepo: CustomerNoticeRepository },
 ) {
-  const { shops, auth, orders, delivery, payments, paymentRepo } = deps;
+  const { shops, auth, orders, delivery, payments, paymentRepo, noticeRepo } = deps;
   const requireRole = makeRequireRole(shops, auth);
-  const view = (d: OrderDraft) => draftView(d, paymentRepo.latestFor(d.draft.shopId, [d.draft.id]).get(d.draft.id));
+  const view = (d: OrderDraft) => draftView(d, paymentRepo.latestFor(d.draft.shopId, [d.draft.id]).get(d.draft.id), noticeRepo.listFor(d.draft.shopId, d.draft.id));
 
   route(app, {
     method: 'GET',
@@ -116,8 +119,10 @@ export function registerOrderRoutes(
     handler: ({ req, params, query }) => {
       requireRole(req, params.shopId, 'manager');
       const r = orders.listDrafts(params.shopId, query);
-      const pays = paymentRepo.latestFor(params.shopId, r.items.map((d) => d.draft.id));
-      return { total: r.total, items: r.items.map((d) => draftView(d, pays.get(d.draft.id))) };
+      const ids = r.items.map((d) => d.draft.id);
+      const pays = paymentRepo.latestFor(params.shopId, ids);
+      const notices = noticeRepo.listForDrafts(params.shopId, ids);
+      return { total: r.total, items: r.items.map((d) => draftView(d, pays.get(d.draft.id), notices.get(d.draft.id))) };
     },
   });
 

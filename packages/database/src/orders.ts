@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, DbHandle } from './db';
 import { DeliveryRepository, normalizeUaPhone } from './delivery';
+import { CustomerNoticeRepository, type CustomerNoticeEvent } from './notices';
 import { PAYMENT_METHODS } from './order-kinds';
 import * as t from './schema';
 
@@ -78,6 +79,8 @@ export type CheckoutInput = z.input<typeof checkoutInput>;
 const STOCK_HELD: OrderStatus[] = ['approved', 'awaiting_payment', 'cod_confirmed', 'paid'];
 /** D25: a member may record `refund_requested` from these (refunds themselves happen in the provider's cabinet, D24). */
 const REFUNDABLE: OrderStatus[] = ['paid', 'shipped', 'delivered', 'returning', 'returned'];
+/** P6: the customer notice queued with a move into this status (prepaid approval is announced by the payment link). */
+const NOTICE_ON: Partial<Record<OrderStatus, CustomerNoticeEvent>> = { cod_confirmed: 'confirmed', rejected: 'rejected', paid: 'paid', shipped: 'shipped', delivered: 'delivered' };
 
 /** What is still missing before a draft may be approved. */
 export function checkoutMissing(d: OrderDraftRow): string[] {
@@ -106,12 +109,14 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
 export class OrderRepository {
   readonly db: Db;
   private readonly delivery: DeliveryRepository;
+  private readonly notices: CustomerNoticeRepository;
   constructor(
     private readonly handle: DbHandle,
     private readonly clock: () => Date = () => new Date(),
   ) {
     this.db = handle.db;
     this.delivery = new DeliveryRepository(handle, clock);
+    this.notices = new CustomerNoticeRepository(handle, clock);
   }
   private now() {
     return this.clock().toISOString();
@@ -311,7 +316,10 @@ export class OrderRepository {
       .all();
   }
 
-  /** Moves the order only if it is still in `from` (compare-and-set). Returns false when another writer got there first. */
+  /**
+   * Moves the order only if it is still in `from` (compare-and-set). Returns false when another writer got there first.
+   * A move that the customer hears about queues its notice in the same transaction (P6).
+   */
   private move(shopId: string, draftId: string, from: OrderStatus, to: OrderStatus, actor: OrderActor, note: string | null, set: Partial<OrderDraftRow> = {}): boolean {
     const r = this.db
       .update(t.orderDrafts)
@@ -320,6 +328,8 @@ export class OrderRepository {
       .run();
     if (!r.changes) return false;
     this.event(shopId, draftId, from, to, actor, note);
+    const notice = NOTICE_ON[to];
+    if (notice) this.notices.enqueue(shopId, draftId, notice);
     return true;
   }
 

@@ -1,4 +1,4 @@
-import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, AiRunStatus, CatalogRepository, ConversationRepository, DeliveryRepository, OrderRepository, type PaymentRepository, PolicyRepository, RunPatch, ShopMessageRow, ShopRepository, Store } from '@hepson/database';
+import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, type AiUsage, AiRunStatus, CatalogRepository, ConversationRepository, DeliveryRepository, OrderRepository, type PaymentRepository, type PlanRepository, PolicyRepository, RunPatch, ShopMessageRow, ShopRepository, Store } from '@hepson/database';
 import type { DeliveryService } from '../services/delivery';
 import type { PaymentService } from '../services/payments';
 import { channelOf } from '../services/channel-bridge';
@@ -7,7 +7,7 @@ import type { EventBus, PublicEvent } from '../services/event-bus';
 import type { InstagramService } from '../services/instagram';
 import type { Notifier } from '../services/notifier';
 import type { TelegramService } from '../services/telegram';
-import { deliverPending } from '../services/shop-sender';
+import { deliverPending, sendSystemMessage } from '../services/shop-sender';
 import { checkReply } from './guard';
 import { LlmError, type ChatMessage, type LlmClient } from './llm';
 import { buildSystemPrompt } from './prompt';
@@ -31,6 +31,8 @@ export type SalesAgentDeps = {
   orders: OrderRepository;
   agent: AgentRepository;
   policies: PolicyRepository;
+  /** P7: the monthly AI-reply cap is checked before any model call. */
+  plans: PlanRepository;
   deliveryRepo: DeliveryRepository;
   delivery?: DeliveryService;
   paymentRepo?: PaymentRepository;
@@ -131,6 +133,8 @@ export class SalesAgent {
       const recent = conversations.listMessages(t.shopId, t.shopConversationId, { limit: HISTORY }).items;
       const newest = recent.at(-1);
       if (newest?.id !== t.trigger.id) return void finish(newest?.direction === 'incoming' ? 'superseded' : 'skipped', newest?.direction === 'incoming' ? 'NEWER_MESSAGE' : 'ALREADY_ANSWERED');
+      const quota = this.d.plans.usage(t.shopId, run.id);
+      if (quota.capReached) return void (await this.atCap(t, run.id, quota, shop.defaultLanguage));
 
       const conv = conversations.getConversation(t.shopId, t.shopConversationId)!;
       const facts = new RunFacts();
@@ -208,6 +212,24 @@ export class SalesAgent {
       log.warn({ shopId: t.shopId, runId: run.id, detail, err: e instanceof Error ? e.message : String(e) }, 'agent run failed');
       finish('failed', detail);
     }
+  }
+
+  /**
+   * P7: this month's AI-reply cap is reached. No model call: the conversation goes to a person, the customer gets one
+   * fixed holding text (never silence), and the owner gets one notice per shop and month instead of one per escalation.
+   */
+  private async atCap(t: Target, runId: string, u: AiUsage, language: string): Promise<void> {
+    const { agent, conversations, svc, store } = this.d;
+    const uk = language.toLowerCase().startsWith('uk');
+    const reason = uk ? 'Ліміт відповідей ШІ на цей місяць вичерпано: дайте відповідь клієнту.' : 'The monthly AI reply limit is reached: please answer the customer.';
+    const e = agent.escalate(t.shopId, t.shopConversationId, reason, runId);
+    if (e.created) {
+      const text = uk ? 'Дякуємо за повідомлення! Менеджер відповість вам найближчим часом.' : 'Thank you for your message! A manager will reply to you shortly.';
+      await sendSystemMessage({ store, svc, conversations, ig: this.d.instagram, tg: this.d.telegram }, t.shopId, t.shopConversationId, text, `ai-cap:${runId}`);
+    }
+    if (u.aiReplyCap !== null && this.d.plans.claimCapNotice(t.shopId, u.month)) this.d.notifier?.notify({ kind: 'ai_quota', shopId: t.shopId, month: u.month, cap: u.aiReplyCap });
+    this.d.log.info({ shopId: t.shopId, runId, month: u.month, cap: u.aiReplyCap }, 'ai reply cap reached');
+    agent.updateRun(t.shopId, runId, { status: 'escalated', detail: 'AI_REPLY_CAP' });
   }
 
   private async send(t: Target, runId: string, text: string, escalated: boolean, usage: { model: string; modelRequests: number; inputTokens: number; outputTokens: number }): Promise<void> {

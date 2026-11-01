@@ -18,6 +18,7 @@ type Draft = {
   checkout: { paymentMethod: 'cod' | 'prepaid' | null; missing: string[] };
   payment: { dueAt: string | null; latest: { state: string; pageUrl: string | null; linkDelivery: string | null; providerErrCode: string | null; flag: string | null } | null } | null;
   delivery: { ttnState: 'creating' | 'created' | 'failed' | 'uncertain' | null; ttnError: string | null; ttn: string | null; statusText: string | null; statusAt: string | null };
+  customerNotices: Array<{ event: string; state: string; code: string | null; at: string }>;
   items: Item[];
 };
 type Esc = { escalationId: string; conversationId: string; reason: string; createdAt: string };
@@ -46,6 +47,8 @@ const PAY_STATE: Record<string, string> = {
   expired: 'посилання прострочене',
   removed: 'посилання деактивоване',
 };
+const NOTICE: Record<string, string> = { confirmed: 'підтвердження', rejected: 'відхилення', paid: 'оплату отримано', shipped: 'відправлення (ТТН)', delivered: 'отримання' };
+const NOTICE_WHY: Record<string, string> = { OUTSIDE_MESSAGING_WINDOW: '24-годинне вікно Instagram закрите', ACCOUNT_NOT_CONNECTED: 'канал не підключений' };
 const PAID = ['paid', 'shipped', 'delivered', 'returning', 'returned'];
 const PAY: Record<string, string> = { cod: 'накладений платіж', prepaid: 'передоплата' };
 const HELD = ['approved', 'awaiting_payment', 'cod_confirmed', 'paid'];
@@ -128,6 +131,14 @@ export function Orders({ shop }: { shop: Shop }) {
                 {d.payment.latest?.flag === 'PAID_AFTER_CANCEL' && <><br /><span className="error">Оплата надійшла після скасування. Поверніть кошти в кабінеті monobank, якщо потрібно.</span></>}
               </p>
             )}
+            {d.customerNotices
+              .filter((n) => n.state === 'failed' || n.state === 'uncertain')
+              .map((n) => (
+                <p key={n.event} className="error">
+                  {n.state === 'failed' ? 'Повідомлення клієнту не дійшло' : 'Невідомо, чи дійшло повідомлення клієнту'}: {NOTICE[n.event] ?? n.event}
+                  {n.code && <> ({NOTICE_WHY[n.code] ?? n.code})</>}. Повідомте клієнта інакше, якщо потрібно.
+                </p>
+              ))}
             {d.delivery.ttnState === 'creating' && <p className="muted">ТТН створюється…</p>}
             {d.delivery.ttnState === 'failed' && <p className="error">ТТН не створено ({d.delivery.ttnError}).</p>}
             {d.delivery.ttnState === 'uncertain' && <p className="error">Нова Пошта не відповіла під час створення ТТН. Перевірте кабінет НП: якщо накладної немає, дозвольте нову спробу.</p>}

@@ -22,3 +22,19 @@ export const PAYMENT_PROVIDERS = ['monobank'] as const;
  * member may create a new link. `removed`: Hepson deactivated the unpaid invoice. The rest mirror the provider status.
  */
 export const PAYMENT_STATES = ['creating', 'create_failed', 'created', 'processing', 'hold', 'success', 'failure', 'reversed', 'expired', 'removed'] as const;
+/**
+ * Customer notices (P6): one fixed server text to the customer per (order, event). Prepaid approval has no `confirmed`
+ * notice: its payment link message (P5) is the confirmation; the payment reminder is also P5's.
+ */
+export const CUSTOMER_NOTICE_EVENTS = ['confirmed', 'rejected', 'paid', 'shipped', 'delivered'] as const;
+/**
+ * `pending`: queued in the transaction of the status change. `sending`: claimed by one sender (left there by a crash, it
+ * becomes `uncertain` at startup; never retried). `skipped`: deliberately not sent (stale, or the order was cancelled).
+ */
+export const CUSTOMER_NOTICE_STATES = ['pending', 'sending', 'sent', 'uncertain', 'failed', 'skipped'] as const;
+/**
+ * Hepson plans (P7): monthly AI-reply caps, enforced without billing (no FOP yet). `null` = no cap. The numbers are
+ * starting values for pilots, not prices; the operator assigns a plan per shop (or a custom cap).
+ */
+export const PLANS = { trial: 100, starter: 1000, growth: 3000, business: 10000, unlimited: null } as const satisfies Record<string, number | null>;
+export const PLAN_NAMES = Object.keys(PLANS) as Array<keyof typeof PLANS>;

@@ -58,7 +58,7 @@ Migration `0008_web_chat`: `web_chat_configs` (enabled, public `hwk_` widget key
 
 # Pivot roadmap (P-series)
 
-Goal: a working MVP of the core loop, message to paid order to TTN, on official APIs only (D22), then beat NovaSale on trust and price. P1 is built (mock Graph API tests; live polling intake on one tester account, D30); P2 is built and live-checked on one test bot (connect, inbound, AI reply; 2026-10-31); P3 and P4 are built against mocks (2026-10-31; P4 not live-checked); P5 is built for Monobank against a fake API (2026-11-01, not live-checked; WayForPay not built); P6-P9 are not implemented as of 2026-11-01. "Live check" means a run against the real platform with an authorized account; until it is done the item is not described as verified. Test fixtures for external platforms are written from the platforms' public documentation (labelled as such) until a live capture replaces them.
+Goal: a working MVP of the core loop, message to paid order to TTN, on official APIs only (D22), then beat NovaSale on trust and price. P1 is built (mock Graph API tests; live polling intake on one tester account, D30); P2 is built and live-checked on one test bot (connect, inbound, AI reply; 2026-10-31); P3 and P4 are built against mocks (2026-10-31; P4 not live-checked); P5 is built for Monobank against a fake API (2026-11-01, not live-checked; WayForPay not built); P6 is built against fakes (2026-11-01, D33); P7 is built (2026-11-01, D34); P8-P9 are not implemented as of 2026-11-01. "Live check" means a run against the real platform with an authorized account; until it is done the item is not described as verified. Test fixtures for external platforms are written from the platforms' public documentation (labelled as such) until a live capture replaces them.
 
 | # | Feature | Status | Needs owner | Depends on |
 |---|---------|--------|-------------|-----------|
@@ -68,8 +68,8 @@ Goal: a working MVP of the core loop, message to paid order to TTN, on official 
 | P3 | Policies and FAQ tool | DONE (2026-10-31, scripted-LLM tests) | no | - |
 | P4 | Checkout data and Nova Poshta | DONE in code against a fake NP API (2026-10-31); **live check TODO** | yes (NP API key) | P1, P3 optional |
 | P5 | Payment links | Monobank DONE in code against a fake API (2026-11-01); **live check with a test token TODO**; WayForPay TODO | yes (Monobank test token, then the pilot's merchant token) | P4 |
-| P6 | Customer notifications | TODO | no | P1, P2, P5 |
-| P7 | Plans and quotas | TODO | no | - |
+| P6 | Customer notifications | DONE in code against fakes (2026-11-01, D33); live sends ride on the P1/P2/P5 live checks | no | P1, P2, P5 |
+| P7 | Plans and quotas | DONE (2026-11-01, D34) | no | - |
 | P8 | Catalog and analytics | TODO | no | P4, P5 for the funnel |
 | P9 | Matching their extras | TODO | no | P1, P8 |
 | Later | Meta Business Verification, App Review (Advanced Access), Tech Provider status, Hepson subscription billing | BLOCKED on FOP | yes | - |
@@ -127,11 +127,13 @@ Scope: everything needed for one shop to connect its own professional account an
 - On approve, reject, paid, shipped, delivered, payment-link reminder, send the customer a server-templated message through the original channel; idempotent per (order, event); Instagram 24-hour window respected, else "notify the shop" (D23).
 - Acceptance: each event sends at most one message even with retries and restarts; a closed Instagram window sends nothing and notifies the shop; wording is server text, not model text.
 - Tests: integration across the three channels with fakes.
+- Built (D33): events `confirmed` (COD), `rejected`, `paid`, `shipped`, `delivered`; prepaid approval is announced by the P5 link and the reminder stays P5's. Queue `customer_notices` written in the transition's transaction, one attempt, `uncertain` never resent, failed notices reach the shop and the order card. Tests: `tests/integration/customer-notices.test.ts` (Telegram, Instagram open and closed window, website chat, connector mirror, restart).
 
 ## P7 Plans and quotas
 - AI-reply cap per shop per month, usage counters derived from `ai_runs`, dashboard usage display. At the cap: escalate to a human and notify the owner; never stay silent. No billing (FOP).
 - Acceptance: at the cap no model call is made, the customer's conversation is escalated, the owner is notified once, the stats show the cap state; owner can see usage.
 - Tests: boundary tests around the cap, month rollover (UTC), isolation between shops.
+- Built (D34): plans `trial` 100, `starter` 1000, `growth` 3000, `business` 10000, `unlimited` (starting values, not prices), optional custom cap, assigned by the operator with the admin key. Tests: `tests/integration/plans.test.ts`.
 
 ## P8 Catalog and analytics
 - XLSX import; Google Sheets import by fixed-host fetch (prefer the Sheets CSV export path first, which reuses the CSV importer and avoids an XLSX parser; add XLSX only with a vetted parser and size/row limits, revisiting D21); Excel export of orders; funnel stats (conversation, draft, approved, paid, shipped) and AI vs human order counts from order events (D25).

@@ -1,4 +1,4 @@
-import type { AgentRepository, ConversationRepository, ShopRepository } from '@hepson/database';
+import type { AgentRepository, ConversationRepository, CustomerNoticeEvent, ShopRepository } from '@hepson/database';
 
 type Logger = { warn(o: object, m?: string): void };
 
@@ -7,12 +7,25 @@ export type Notification =
   | { kind: 'order_draft'; shopId: string; conversationId: string; draftId: string; currency: string; totalMinor: number; itemCount: number }
   /** A channel stopped working and needs the owner (for example the Instagram token was rejected). Fixed text, no provider output. */
   | { kind: 'channel_issue'; shopId: string; channel: 'instagram' | 'telegram' | 'nova_poshta' | 'monobank'; issue: 'needs_reconnect' }
+  /** The shop used up this UTC month's AI replies (P7): new conversations go to people until the month ends. Once per month. */
+  | { kind: 'ai_quota'; shopId: string; month: string; cap: number }
   /**
    * An order needs a person or moved on its own (P4, P5): the parcel is coming back, the TTN could not be created (or may
    * exist), the order was paid, a payment link failed or could not reach the customer (`link` is the page to pass on),
-   * the payment deadline passed, a payment was reversed, a refund was requested. Fixed text.
+   * the payment deadline passed, a payment was reversed, a refund was requested, a customer notice (P6, `notice`) could
+   * not reach the customer (`reason` is the short send code). Fixed text.
    */
-  | { kind: 'order_update'; shopId: string; conversationId: string; draftId: string; event: OrderEvent; ttn: string | null; link?: string | null };
+  | {
+      kind: 'order_update';
+      shopId: string;
+      conversationId: string;
+      draftId: string;
+      event: OrderEvent;
+      ttn: string | null;
+      link?: string | null;
+      notice?: CustomerNoticeEvent;
+      reason?: string | null;
+    };
 
 export type OrderEvent =
   | 'returning'
@@ -26,7 +39,8 @@ export type OrderEvent =
   | 'payment_reminder_undeliverable'
   | 'payment_expired'
   | 'payment_reversed'
-  | 'refund_requested';
+  | 'refund_requested'
+  | 'customer_notice_undeliverable';
 
 /** Tells a shop's people that something needs them (Feature 8). Fire and forget: never throws, never blocks the caller. */
 export interface Notifier {
@@ -55,11 +69,41 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
       ? `[${ctx.shopName}] monobank не приймає токен еквайрингу. Введіть токен знову в панелі; поки цього не зроблено, посилання на оплату не створюються.`
       : `[${ctx.shopName}] monobank rejects the acquiring token. Enter the token again in the dashboard; no payment links are created until then.`;
   }
+  if (n.kind === 'ai_quota') {
+    return uk
+      ? `[${ctx.shopName}] Ліміт відповідей ШІ на ${n.month} вичерпано (${n.cap}). До кінця місяця ШІ не відповідає: нові розмови передаються людям (розділ «Потрібна людина»). Щоб збільшити ліміт, зверніться до Hepson.`
+      : `[${ctx.shopName}] The AI reply limit for ${n.month} is used up (${n.cap}). Until the month ends the AI does not answer: new conversations go to people ("Needs a human"). Contact Hepson to raise the limit.`;
+  }
   if (n.kind === 'order_update') {
     const id = n.draftId.slice(0, 8);
     const link = n.link ?? '';
     const ttn = n.ttn ? ` ТТН ${n.ttn}` : '';
     const ttnEn = n.ttn ? ` TTN ${n.ttn}` : '';
+    const noticeUk = {
+      confirmed: 'замовлення підтверджено',
+      rejected: 'замовлення відхилено',
+      paid: 'оплату отримано',
+      shipped: `замовлення відправлено${n.ttn ? `, ТТН ${n.ttn}` : ''}`,
+      delivered: 'замовлення отримано',
+    };
+    const noticeEn = {
+      confirmed: 'order confirmed',
+      rejected: 'order rejected',
+      paid: 'payment received',
+      shipped: `order shipped${n.ttn ? `, TTN ${n.ttn}` : ''}`,
+      delivered: 'order received',
+    };
+    const why =
+      n.reason === 'OUTSIDE_MESSAGING_WINDOW'
+        ? uk
+          ? ' (24-годинне вікно Instagram закрите)'
+          : ' (the 24-hour Instagram window is closed)'
+        : n.reason === 'ACCOUNT_NOT_CONNECTED'
+          ? uk
+            ? ' (канал не підключений)'
+            : ' (the channel is not connected)'
+          : '';
+    const notice = n.notice ?? 'confirmed';
     const uks: Record<typeof n.event, string> = {
       returning: `Посилка${ttn} повертається (клієнт: ${ctx.customer}, замовлення ${id}). Коли вона буде у вас, позначте «Повернено» в панелі.`,
       ttn_failed: `Не вдалося створити ТТН для замовлення ${id} (клієнт: ${ctx.customer}). Перевірте дані відправника й спробуйте ще раз у панелі.`,
@@ -73,6 +117,7 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
       payment_expired: `Замовлення ${id} скасовано: оплата не надійшла вчасно (клієнт: ${ctx.customer}). Товар повернуто на склад.`,
       payment_reversed: `Оплату замовлення ${id} повернуто клієнту в monobank (клієнт: ${ctx.customer}). Перевірте замовлення в панелі.`,
       refund_requested: `Для замовлення ${id} записано запит на повернення коштів (клієнт: ${ctx.customer}). Поверніть кошти в кабінеті monobank.`,
+      customer_notice_undeliverable: `Повідомлення клієнту (${ctx.customer}) про замовлення ${id} не дійшло${why}: «${noticeUk[notice]}». Повідомте клієнта інакше.`,
     };
     const ens: Record<typeof n.event, string> = {
       returning: `Parcel${ttnEn} is coming back (customer: ${ctx.customer}, order ${id}). Mark it "Returned" in the dashboard once it is with you.`,
@@ -87,6 +132,7 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
       payment_expired: `Order ${id} was cancelled: no payment in time (customer: ${ctx.customer}). Its stock is back.`,
       payment_reversed: `The payment for order ${id} was reversed in monobank (customer: ${ctx.customer}). Check the order in the dashboard.`,
       refund_requested: `A refund request was recorded for order ${id} (customer: ${ctx.customer}). Make the refund in the monobank cabinet.`,
+      customer_notice_undeliverable: `The message to the customer (${ctx.customer}) about order ${id} did not reach them${why}: "${noticeEn[notice]}". Tell the customer another way.`,
     };
     return `[${ctx.shopName}] ${uk ? uks[n.event] : ens[n.event]}`;
   }
@@ -143,7 +189,7 @@ export class TelegramNotifier implements Notifier {
     if (!chatId) return;
     const shop = this.d.shops.get(n.shopId);
     if (!shop) return;
-    const conv = n.kind === 'channel_issue' ? undefined : this.d.conversations.getConversation(n.shopId, n.conversationId);
+    const conv = 'conversationId' in n ? this.d.conversations.getConversation(n.shopId, n.conversationId) : undefined;
     const customer = conv?.customer.displayName || conv?.customer.handle || '?';
     const text = renderNotification(n, { shopName: shop.name, language: shop.defaultLanguage, customer });
     const res = await (this.d.fetchImpl ?? fetch)(`${this.d.baseUrl ?? 'https://api.telegram.org'}/bot${this.d.token}/sendMessage`, {

@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { ConnectorError } from '@hepson/connector-core';
-import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, DeliveryRepository, InstagramRepository, Keyring, OrderRepository, PaymentRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
+import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, CustomerNoticeRepository, onCustomerNoticeQueued, PlanRepository, DeliveryRepository, InstagramRepository, Keyring, OrderRepository, PaymentRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
 import { MockAdapter } from '@hepson/mock-adapter';
 import { BrowserInstagramAdapter } from '@hepson/instagram-browser';
 import { loadConfig, type Config } from './config';
@@ -26,6 +26,8 @@ import { DeliveryService } from './services/delivery';
 import { NovaPoshtaApi } from './services/nova-poshta';
 import { MonobankApi } from './services/monobank';
 import { PaymentService } from './services/payments';
+import { CustomerNoticeService } from './services/customer-notices';
+import { registerPlanRoutes } from './routes/plans';
 import { registerPaymentRoutes } from './routes/payments';
 import { sendSystemMessage } from './services/shop-sender';
 import { createEgress, hostOf } from './services/egress';
@@ -64,6 +66,9 @@ export type App = {
   delivery: DeliveryService;
   paymentRepo: PaymentRepository;
   payments: PaymentService;
+  noticeRepo: CustomerNoticeRepository;
+  notices: CustomerNoticeService;
+  plans: PlanRepository;
   notifier: Notifier | null;
   salesAgent: SalesAgent | null;
   mock: MockAdapter;
@@ -126,6 +131,8 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   const policies = new PolicyRepository(handle);
   const deliveryRepo = new DeliveryRepository(handle);
   const paymentRepo = new PaymentRepository(handle);
+  const noticeRepo = new CustomerNoticeRepository(handle);
+  const plans = new PlanRepository(handle, cfg.defaultPlan);
   // The only outbound transport (D22): configured provider hosts are added to the built-in allow-list.
   const egress = createEgress({
     extraHosts: [...cfg.egressExtraHosts, cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl, cfg.novaPoshtaBaseUrl, cfg.monobankBaseUrl].flatMap((u) => (u ? [hostOf(u) ?? ''] : [])).filter(Boolean),
@@ -206,8 +213,18 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     publicUrl: cfg.publicUrl,
     notifier: notifier ?? undefined,
   });
+  const notices = new CustomerNoticeService({
+    repo: noticeRepo,
+    orders,
+    shops,
+    send: (shopId, conversationId, text, key) => sendSystemMessage({ store, svc, conversations, ig, tg }, shopId, conversationId, text, key),
+    log,
+    notifier: notifier ?? undefined,
+  });
+  // Any repository instance on this database may queue a notice (P6); the sender wakes after the transition commits.
+  const stopNoticeListener = onCustomerNoticeQueued(handle, () => notices.kick());
   const salesAgent = llm
-    ? new SalesAgent({ store, bus, svc, shops, conversations, catalog, orders, agent: agentRepo, policies, deliveryRepo, delivery, paymentRepo, payments, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg })
+    ? new SalesAgent({ store, bus, svc, shops, conversations, catalog, orders, agent: agentRepo, policies, plans, deliveryRepo, delivery, paymentRepo, payments, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg })
     : null;
 
   const webChatSvc = new WebChatService(
@@ -280,9 +297,10 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   registerConversationRoutes(app, { shops, auth, conversations, store, svc, maxMessageLength: cfg.maxMessageLength, ig, tg });
   registerChannelRoutes(app, { store, shops, auth, bridge });
   registerAiRoutes(app, { shops, auth, agent: agentRepo, aiAvailable: salesAgent !== null, telegramAvailable: notifier !== null });
-  registerStatsRoutes(app, { shops, auth, stats });
+  registerStatsRoutes(app, { shops, auth, stats, plans });
+  registerPlanRoutes(app, { shops, auth, plans });
   registerWebChatRoutes(app, { shops, auth, webChat, svc: webChatSvc, publicUrl: cfg.publicUrl });
-  registerOrderRoutes(app, { shops, auth, orders, delivery, payments, paymentRepo });
+  registerOrderRoutes(app, { shops, auth, orders, delivery, payments, paymentRepo, noticeRepo });
   registerPolicyRoutes(app, { shops, auth, policies });
   registerDeliveryRoutes(app, { shops, auth, delivery, deliveryRepo, orders, conversations });
   registerTelegramRoutes(app, { shops, auth, tg });
@@ -292,6 +310,7 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   app.get('/v1/openapi.json', async () => spec);
 
   svc.recoverInterruptedSends();
+  notices.start();
   agentRepo.failInterruptedRuns();
   salesAgent?.start();
   bridge.backfillAll();
@@ -334,6 +353,9 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     delivery,
     paymentRepo,
     payments,
+    noticeRepo,
+    notices,
+    plans,
     notifier,
     salesAgent,
     mock,
@@ -351,6 +373,9 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
       await ig.whenIdle();
       await payments.whenIdle();
       await delivery.whenIdle();
+      stopNoticeListener();
+      await notices.whenIdle();
+      notices.stop();
       await notifier?.whenIdle();
       await svc.shutdown();
       await app.close();
