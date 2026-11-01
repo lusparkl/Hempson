@@ -58,7 +58,7 @@ Migration `0008_web_chat`: `web_chat_configs` (enabled, public `hwk_` widget key
 
 # Pivot roadmap (P-series)
 
-Goal: a working MVP of the core loop, message to paid order to TTN, on official APIs only (D22), then beat NovaSale on trust and price. P1 is built (mock Graph API tests; live polling intake on one tester account, D30); P2 is built and live-checked on one test bot (connect, inbound, AI reply; 2026-10-31); P3 and P4 are built against mocks (2026-10-31; P4 not live-checked); P5 is built for Monobank against a fake API (2026-11-01, not live-checked; WayForPay not built); P6 is built against fakes (2026-11-01, D33); P7 is built (2026-11-01, D34); P8 is built except XLSX import (2026-11-01, D35; Google Sheets not live-checked); P9 is not implemented as of 2026-11-01. "Live check" means a run against the real platform with an authorized account; until it is done the item is not described as verified. Test fixtures for external platforms are written from the platforms' public documentation (labelled as such) until a live capture replaces them.
+Goal: a working MVP of the core loop, message to paid order to TTN, on official APIs only (D22), then beat NovaSale on trust and price. P1 is built (mock Graph API tests; live polling intake on one tester account, D30); P2 is built and live-checked on one test bot (connect, inbound, AI reply; 2026-10-31); P3 and P4 are built against mocks (2026-10-31; P4 not live-checked); P5 is built for Monobank against a fake API (2026-11-01, not live-checked; WayForPay not built); P6 is built against fakes (2026-11-01, D33); P7 is built (2026-11-01, D34); P8 is built except XLSX import (2026-11-01, D35; Google Sheets not live-checked); P9 suggestions are built (2026-11-01, D36); photo search, forwarded posts and the storefront are not. "Live check" means a run against the real platform with an authorized account; until it is done the item is not described as verified. Test fixtures for external platforms are written from the platforms' public documentation (labelled as such) until a live capture replaces them.
 
 | # | Feature | Status | Needs owner | Depends on |
 |---|---------|--------|-------------|-----------|
@@ -71,7 +71,7 @@ Goal: a working MVP of the core loop, message to paid order to TTN, on official 
 | P6 | Customer notifications | DONE in code against fakes (2026-11-01, D33); live sends ride on the P1/P2/P5 live checks | no | P1, P2, P5 |
 | P7 | Plans and quotas | DONE (2026-11-01, D34) | no | - |
 | P8 | Catalog and analytics | DONE except XLSX import (2026-11-01, D35); Google Sheets fetch **not live-checked** | no | P4, P5 for the funnel |
-| P9 | Matching their extras | TODO | no | P1, P8 |
+| P9 | Matching their extras | Suggestions DONE (2026-11-01, D36); photo search, forwarded posts, storefront TODO (decisions in D36) | no | P1, P8 |
 | Later | Meta Business Verification, App Review (Advanced Access), Tech Provider status, Hepson subscription billing | BLOCKED on FOP | yes | - |
 
 Ordering note: the brief puts P4 (TTN) before P5 (payments), but a prepaid order may only get a TTN after `paid` (D25). So P4 creates TTNs for cash-on-delivery orders (from `cod_confirmed`) and for any order a member marks shippable by hand; the prepaid path is wired in P5 when `paid` exists.

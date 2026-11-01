@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, notInArray, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
 import { z } from 'zod';
 import type { Db, DbHandle } from './db';
 import * as t from './schema';
@@ -189,6 +190,68 @@ export class CatalogRepository {
     const rows = this.db.select().from(t.products).where(where).orderBy(desc(t.products.createdAt), asc(t.products.name)).limit(limit).offset(offset).all();
     const vs = this.variantsOf(shopId, rows.map((r) => r.id));
     return { total, items: rows.map((product) => ({ product, variants: vs.filter((v) => v.productId === product.id) })) };
+  }
+
+  private withStock(shopId: string, rows: ProductRow[]): ProductWithVariants[] {
+    const vs = this.variantsOf(shopId, rows.map((r) => r.id));
+    return rows
+      .map((product) => ({ product, variants: vs.filter((v) => v.productId === product.id && v.active && v.stock > 0) }))
+      .filter((pw) => pw.product.active && pw.variants.length);
+  }
+
+  /**
+   * Other active, in-stock products sharing at least one name word with `productId` (P9 alternatives). Ranked by the number
+   * of shared words, then by price closeness. No shared word means no suggestion: unrelated products are never offered.
+   */
+  similarProducts(shopId: string, productId: string, limit = 3): ProductWithVariants[] {
+    const src = this.db.select().from(t.products).where(and(eq(t.products.shopId, shopId), eq(t.products.id, productId))).get();
+    if (!src) return [];
+    const words = [...new Set(src.name.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3))].slice(0, 6);
+    const hits = new Map<string, { p: ProductRow; n: number }>();
+    for (const w of words) {
+      const rows = this.db
+        .select()
+        .from(t.products)
+        .where(and(eq(t.products.shopId, shopId), eq(t.products.active, true), sql`${t.products.id} <> ${productId}`, sql`${t.products.searchText} like ${`%${likeEscape(w)}%`} escape '\\'`))
+        .limit(50)
+        .all();
+      for (const p of rows) hits.set(p.id, { p, n: (hits.get(p.id)?.n ?? 0) + 1 });
+    }
+    const ranked = [...hits.values()].sort((x, y) => y.n - x.n || Math.abs(x.p.priceMinor - src.priceMinor) - Math.abs(y.p.priceMinor - src.priceMinor));
+    return this.withStock(
+      shopId,
+      ranked.map((h) => h.p),
+    ).slice(0, limit);
+  }
+
+  /**
+   * Active, in-stock products that appeared in the same order drafts as `productId` (P9 complements), most shared drafts
+   * first. Rejected and cancelled drafts (including superseded ones) do not count.
+   */
+  boughtTogether(shopId: string, productId: string, limit = 3): ProductWithVariants[] {
+    const other = alias(t.orderDraftItems, 'other');
+    const n = sql<number>`count(distinct ${other.draftId})`;
+    const rows = this.db
+      .select({ productId: other.productId, n })
+      .from(t.orderDraftItems)
+      .innerJoin(other, and(eq(other.draftId, t.orderDraftItems.draftId), sql`${other.productId} <> ${t.orderDraftItems.productId}`))
+      .innerJoin(t.orderDrafts, eq(t.orderDrafts.id, t.orderDraftItems.draftId))
+      .where(and(eq(t.orderDraftItems.shopId, shopId), eq(t.orderDraftItems.productId, productId), eq(t.orderDrafts.shopId, shopId), notInArray(t.orderDrafts.status, ['rejected', 'cancelled'])))
+      .groupBy(other.productId)
+      .orderBy(desc(n), asc(other.productId))
+      .limit(20)
+      .all();
+    if (!rows.length) return [];
+    const products = this.db
+      .select()
+      .from(t.products)
+      .where(and(eq(t.products.shopId, shopId), inArray(t.products.id, rows.map((r) => r.productId))))
+      .all();
+    const byId = new Map(products.map((p) => [p.id, p]));
+    return this.withStock(
+      shopId,
+      rows.map((r) => byId.get(r.productId)).filter((p): p is ProductRow => !!p),
+    ).slice(0, limit);
   }
 
   updateProduct(shopId: string, productId: string, input: UpdateProductInput): ProductWithVariants {

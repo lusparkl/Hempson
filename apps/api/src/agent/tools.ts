@@ -72,6 +72,7 @@ const items = z.array(z.strictObject({ sku: z.string().trim().min(1).max(64), qu
 const searchArgs = z.strictObject({ query: z.string().trim().max(200).default(''), limit: z.number().int().min(1).max(5).default(5) });
 const skuArgs = z.strictObject({ sku: z.string().trim().min(1).max(64) });
 const quoteArgs = z.strictObject({ items });
+const suggestArgs = z.strictObject({ sku: z.string().trim().min(1).max(64), kind: z.enum(['alternatives', 'complements']), limit: z.number().int().min(1).max(3).default(3) });
 const escalateArgs = z.strictObject({ reason: z.string().trim().min(1).max(500) });
 const policyArgs = z.strictObject({ topic: z.enum(POLICY_TOPICS) });
 const cityArgs = z.strictObject({ query: z.string().trim().min(2).max(100) });
@@ -111,6 +112,17 @@ export const TOOLS: ToolSpec[] = [
     name: 'get_variant',
     description: 'Exact price and stock of one variant by SKU.',
     parameters: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'], additionalProperties: false },
+  },
+  {
+    name: 'suggest_products',
+    description:
+      'Catalog suggestions for a SKU the customer looked at. kind "alternatives": in-stock options of the same product and similar products (use when the wanted variant is out of stock or the customer asks for something similar). kind "complements": in-stock products other customers of this shop ordered together with it (an upsell after the customer chose). Suggest only what this returns.',
+    parameters: {
+      type: 'object',
+      properties: { sku: { type: 'string', description: 'Variant SKU exactly as returned by a product tool' }, kind: { type: 'string', enum: ['alternatives', 'complements'] }, limit: { type: 'integer', minimum: 1, maximum: 3 } },
+      required: ['sku', 'kind'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'quote_order',
@@ -277,6 +289,22 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         ctx.facts.productLookups++;
         const { variants, ...p } = productView({ product: v.product, variants: [v] }, ctx.facts);
         return out({ ...p, variant: variants[0] });
+      }
+      case 'suggest_products': {
+        const a = suggestArgs.safeParse(json);
+        if (!a.success) return bad(a.error);
+        const v = ctx.catalog.findVariantBySku(ctx.shopId, a.data.sku);
+        if (!v) return out({ error: 'no such SKU' });
+        ctx.facts.productLookups++;
+        const none = { note: 'Nothing suitable in the catalog. Do not suggest anything else.' };
+        if (a.data.kind === 'complements') {
+          const products = ctx.catalog.boughtTogether(ctx.shopId, v.productId, a.data.limit).map((p) => productView(p, ctx.facts));
+          return out({ products, ...(products.length ? {} : none) });
+        }
+        const same = v.product.active ? ctx.catalog.getProduct(ctx.shopId, v.productId)!.variants.filter((x) => x.id !== v.id && x.active && x.stock > 0) : [];
+        const sameProduct = same.length ? productView({ product: v.product, variants: same }, ctx.facts) : null;
+        const products = ctx.catalog.similarProducts(ctx.shopId, v.productId, a.data.limit).map((p) => productView(p, ctx.facts));
+        return out({ sameProduct, products, ...(sameProduct || products.length ? {} : none) });
       }
       case 'quote_order': {
         const a = quoteArgs.safeParse(json);

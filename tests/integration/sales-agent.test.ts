@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { makeApp, call, mockAccount, type TestApp } from '../helpers';
 import { LlmError } from '../../apps/api/src/agent/llm';
 import { randomBytes } from 'node:crypto';
-import { Keyring } from '@hepson/database';
+import { Keyring, WEB_CHANNEL } from '@hepson/database';
 import { ScriptedLlm, lastToolResult, say, useTool } from '../fixtures/scripted-llm';
 import { NP, NP_KEY, fakeNovaPoshta, npLookups, type FakeNp } from '../fixtures/fake-nova-poshta';
 
@@ -221,6 +221,7 @@ describe('sales agent', () => {
       'get_variant',
       'quote_order',
       'search_products',
+      'suggest_products',
     ]);
   });
 
@@ -409,5 +410,72 @@ describe('search_products fallback', () => {
     const s = await setup(llm);
     await customerWrites(s, 'Є чорне худі?');
     expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Є Худі Classic.' }]);
+  });
+});
+
+describe('suggest_products (P9)', () => {
+  const ask = (sku: string, kind: string) => useTool('suggest_products', { sku, kind });
+  const names = (ps: any[]) => ps.map((p) => p.name);
+
+  it('alternatives: in-stock options of the same product, then similar in-stock products of this shop only', async () => {
+    const llm = new ScriptedLlm([
+      ask('HOODIE-L', 'alternatives'),
+      (req) => {
+        const r = lastToolResult(req);
+        expect(r.sameProduct.variants.map((v: any) => v.sku)).toEqual(['HOODIE-M']);
+        expect(names(r.products)).toEqual(['Худі Oversize']);
+        expect(r.products[0].variants.map((v: any) => v.sku)).toEqual(['OVER-M']);
+        return say('L закінчився. Є M за 1299 грн або Худі Oversize за 1499 грн.');
+      },
+    ]);
+    const s = await setup(llm);
+    const add = (shopId: string, name: string, sku: string, stock: number, priceMinor = 149_900, active = true) => a!.catalog.createProduct(shopId, { name, priceMinor, currency: 'UAH', sku, stock, active });
+    add(s.shopId, 'Худі Oversize', 'OVER-M', 2);
+    add(s.shopId, 'Худі Zip', 'ZIP-M', 0);
+    add(s.shopId, 'Худі Archive', 'ARCH-M', 5, 99_900, false);
+    add(s.shopId, 'Кепка', 'CAP-1', 9);
+    const other = (await a!.shops.create({ name: 'Other', slug: 'other-shop' })).id;
+    add(other, 'Худі Чуже', 'ALIEN-1', 9);
+    await customerWrites(s, 'Худі L є?');
+    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'L закінчився. Є M за 1299 грн або Худі Oversize за 1499 грн.' }]);
+  });
+
+  it('complements: products ordered together in live drafts, most often first; rejected, cancelled and out-of-stock ones are left out', async () => {
+    const llm = new ScriptedLlm([
+      ask('HOODIE-M', 'complements'),
+      (req) => {
+        expect(names(lastToolResult(req).products)).toEqual(['Кепка', 'Шкарпетки']);
+        return say('До худі часто беруть кепку за 399 грн.');
+      },
+    ]);
+    const s = await setup(llm);
+    for (const [name, sku, stock] of [['Кепка', 'CAP-1', 5], ['Шкарпетки', 'SOCK-1', 5], ['Шарф', 'SCARF-1', 5], ['Рукавички', 'GLOVE-1', 5], ['Пояс', 'BELT-1', 5]] as const)
+      a!.catalog.createProduct(s.shopId, { name, priceMinor: 39_900, currency: 'UAH', sku, stock });
+    const conversationId = a!.conversations.ensureConversation(s.shopId, { channel: WEB_CHANNEL, conversationExternalId: 'w1', customer: { externalId: 'w1', displayName: 'W' } }).conversation.id;
+    const draft = (...skus: string[]) => a!.orders.createDraft(s.shopId, { conversationId, createdBy: 'user', items: skus.map((sku) => ({ sku, quantity: 1 })) }).draft.id;
+    // an AI draft superseded by a newer one is cancelled
+    a!.orders.createDraft(s.shopId, { conversationId, createdBy: 'ai', items: [{ sku: 'HOODIE-M', quantity: 1 }, { sku: 'BELT-1', quantity: 1 }] });
+    a!.orders.createDraft(s.shopId, { conversationId, createdBy: 'ai', items: [{ sku: 'HOODIE-M', quantity: 1 }] });
+    draft('HOODIE-M', 'CAP-1');
+    draft('HOODIE-M', 'CAP-1', 'GLOVE-1');
+    draft('HOODIE-M', 'SOCK-1');
+    const owner = (await call(a!, s.token, 'GET', '/v1/auth/me')).body.user.id as string;
+    a!.orders.reject(s.shopId, draft('HOODIE-M', 'SCARF-1'), owner);
+    draft('SOCK-1', 'SCARF-1');
+    const glove = a!.catalog.findVariantBySku(s.shopId, 'GLOVE-1')!;
+    a!.catalog.adjustStock(s.shopId, glove.productId, glove.id, -5);
+    await customerWrites(s, 'Беру худі M');
+    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'До худі часто беруть кепку за 399 грн.' }]);
+  });
+
+  it('says there is nothing to suggest, and refuses an unknown SKU', async () => {
+    const llm = new ScriptedLlm([
+      ask('HOODIE-M', 'complements'),
+      (req) => (expect(lastToolResult(req)).toMatchObject({ products: [], note: expect.stringContaining('Do not suggest') }), useTool('suggest_products', { sku: 'NOPE-1', kind: 'alternatives' })),
+      (req) => (expect(lastToolResult(req)).toEqual({ error: 'no such SKU' }), say('Гарний вибір!')),
+    ]);
+    const s = await setup(llm);
+    await customerWrites(s, 'Беру худі M');
+    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Гарний вибір!' }]);
   });
 });
