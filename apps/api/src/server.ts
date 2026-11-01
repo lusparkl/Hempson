@@ -293,7 +293,7 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   registerAccountRoutes(app, svc, profiles, { retentionDays: cfg.retentionDays, enableDev: cfg.enableDevRoutes, maxMessageLength: cfg.maxMessageLength, browserAdapter: cfg.enableBrowserAdapter });
   registerAuthRoutes(app, auth, { allowRegistration: cfg.allowRegistration, sessionTtlMs: cfg.sessionTtlDays * 86_400_000, throttle: new LoginThrottle() });
   registerShopRoutes(app, { shops, auth, handle });
-  registerCatalogRoutes(app, { shops, auth, catalog });
+  registerCatalogRoutes(app, { shops, auth, catalog, egress });
   registerConversationRoutes(app, { shops, auth, conversations, store, svc, maxMessageLength: cfg.maxMessageLength, ig, tg });
   registerChannelRoutes(app, { store, shops, auth, bridge });
   registerAiRoutes(app, { shops, auth, agent: agentRepo, aiAvailable: salesAgent !== null, telegramAvailable: notifier !== null });

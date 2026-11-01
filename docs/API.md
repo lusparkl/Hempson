@@ -8,17 +8,17 @@ Dashboard users authenticate with `Authorization: Bearer hsu_…` from `POST /v1
 GET    /health · /ready
 POST   /v1/auth/register|login|logout   GET /v1/auth/me
 GET|POST /v1/shops   GET|PATCH /v1/shops/:shopId   members: GET|POST .../members, PATCH|DELETE .../members/:userId
-catalog: .../products[/:productId[/variants[/:variantId[/stock]]]], POST .../products/import {csv, dryRun}
+catalog: .../products[/:productId[/variants[/:variantId[/stock]]]], POST .../products/import {csv, dryRun}, POST .../products/import-sheet {url, dryRun} (owner)
 chats:   GET .../customers, GET .../conversations[/:id], GET|POST .../conversations/:id/messages, PUT .../conversations/:id/ai {paused}
 agent:   GET|PUT .../ai {enabled, instructions, autonomy, autoConfirmMaxMinor}, GET .../ai/runs, GET .../escalations, POST .../escalations/:id/resolve
-orders:  GET .../order-drafts[/:draftId] (each with `customerNotices`: event, state, code, at), GET .../order-drafts/:draftId/events|payments,
+orders:  GET .../order-drafts[/:draftId] (each with `customerNotices`: event, state, code, at), GET .../order-drafts/export.xlsx?from&to&status, GET .../order-drafts/:draftId/events|payments,
          POST .../order-drafts/:draftId/approve|reject|cancel|returned {restock?}|ttn|ttn/release|payment-link|refund-requested
 policies (P3): GET .../policies, PUT .../policies/:topic {text}   topic = delivery|returns|payment|hours (owner writes)
 nova poshta (P4): GET .../nova-poshta, PUT|DELETE .../nova-poshta/key {apiKey}, PUT .../nova-poshta/settings,
          GET .../nova-poshta/cities?q, GET .../nova-poshta/branches?cityRef&q,
          GET|POST .../customers/:customerId/refusals, DELETE .../customers/:customerId/refusals/:refusalId
 monobank (P5): GET .../monobank, PUT|DELETE .../monobank/token {token}, PUT .../monobank/settings {paymentTimeoutHours, reminderHoursBefore}
-other:   GET .../channels, GET|PUT .../notifications, GET .../stats?from&to (includes `usage`), GET .../usage, PUT .../plan {plan, customCap?} (admin key), GET|PUT .../web-chat, POST .../web-chat/rotate-key
+other:   GET .../channels, GET|PUT .../notifications, GET .../stats?from&to (includes `usage`, `funnel`, `orderSources`), GET .../usage, PUT .../plan {plan, customCap?} (admin key), GET|PUT .../web-chat, POST .../web-chat/rotate-key
 instagram (official, D29): GET|DELETE .../instagram, POST .../instagram/connect
 telegram (shop bot, D27): GET|PUT {token}|DELETE .../telegram
 public:  POST /public/web-chat/:widgetKey/session, POST|GET /public/web-chat/:widgetKey/messages, GET /widget/web-chat.js

@@ -20,6 +20,7 @@ import {
 } from '@hepson/database';
 import type { DeliveryService } from '../services/delivery';
 import type { PaymentService } from '../services/payments';
+import { buildXlsx, type Cell } from '../services/xlsx';
 import { route } from './define';
 import { makeRequireRole } from './shops';
 
@@ -31,6 +32,27 @@ const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
+const exportQuery = z.object({ status: z.enum(ORDER_STATUSES).optional(), from: z.iso.datetime({ offset: true }).optional(), to: z.iso.datetime({ offset: true }).optional() });
+/** P8: rows per export file; a longer period is split by the caller. */
+const EXPORT_LIMIT = 5000;
+const EXPORT_MAX_DAYS = 366;
+
+/** Kyiv wall-clock time as `dd.mm.yyyy HH:MM` (export cells are text, readable without a date style). */
+function kyivDateTime(iso: string | null): string | null {
+  if (!iso) return null;
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date(iso))
+      .map((x) => [x.type, x.value]),
+  );
+  return `${p.day}.${p.month}.${p.year} ${p.hour}:${p.minute}`;
+}
+
+const EXPORT_HEADERS = {
+  uk: ['Замовлення', 'ID', 'Створено', 'Статус', 'Створив', 'Підтверджено', 'Оплата', 'Оплачено', 'Сума', 'Валюта', 'Товари', 'Одержувач', 'Телефон', 'Місто', 'Відділення', 'ТТН', 'Статус НП'],
+  en: ['Order', 'ID', 'Created', 'Status', 'Created by', 'Approved', 'Payment', 'Paid', 'Total', 'Currency', 'Items', 'Recipient', 'Phone', 'City', 'Branch', 'TTN', 'NP status'],
+};
+
 const decisionBody = z.strictObject({ note: z.string().max(500).optional() });
 const returnedBody = z.strictObject({ restock: z.boolean().optional(), note: z.string().max(500).optional() });
 
@@ -123,6 +145,50 @@ export function registerOrderRoutes(
       const pays = paymentRepo.latestFor(params.shopId, ids);
       const notices = noticeRepo.listForDrafts(params.shopId, ids);
       return { total: r.total, items: r.items.map((d) => draftView(d, pays.get(d.draft.id), notices.get(d.draft.id))) };
+    },
+  });
+
+  route(app, {
+    method: 'GET',
+    url: '/v1/shops/:shopId/order-drafts/export.xlsx',
+    summary: `Excel workbook of orders created in [from, to) (default the last 30 days, at most ${EXPORT_MAX_DAYS} days, ${EXPORT_LIMIT} rows), optionally one status (any member)`,
+    tag: 'orders',
+    auth: 'user',
+    params: shopP,
+    query: exportQuery,
+    handler: ({ req, reply, params, query }) => {
+      const { shop } = requireRole(req, params.shopId, 'manager');
+      const to = query.to ? new Date(query.to) : new Date();
+      const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 86_400_000);
+      if (from >= to) throw new ConnectorError('VALIDATION_ERROR', 'from must be before to');
+      if (to.getTime() - from.getTime() > EXPORT_MAX_DAYS * 86_400_000) throw new ConnectorError('VALIDATION_ERROR', `the period is at most ${EXPORT_MAX_DAYS} days`);
+      const list = orders.listForExport(params.shopId, { from: from.toISOString(), to: to.toISOString(), status: query.status, limit: EXPORT_LIMIT + 1 });
+      if (list.length > EXPORT_LIMIT) throw new ConnectorError('VALIDATION_ERROR', `more than ${EXPORT_LIMIT} orders in this period: choose a shorter one`);
+      const uk = shop.defaultLanguage.toLowerCase().startsWith('uk');
+      const rows: Cell[][] = [uk ? EXPORT_HEADERS.uk : EXPORT_HEADERS.en];
+      for (const { draft: d, items, paidAt } of list)
+        rows.push([
+          d.id.slice(0, 8),
+          d.id,
+          kyivDateTime(d.createdAt),
+          d.status,
+          d.createdBy === 'ai' ? (uk ? 'ШІ' : 'AI') : uk ? 'менеджер' : 'manager',
+          kyivDateTime(d.approvedAt),
+          d.paymentMethod === 'cod' ? (uk ? 'накладений платіж' : 'cash on delivery') : d.paymentMethod === 'prepaid' ? (uk ? 'передоплата' : 'prepaid') : null,
+          kyivDateTime(paidAt),
+          d.totalMinor / 100,
+          d.currency,
+          items.map((i) => `${i.sku} ${i.productName}${Object.keys(i.options).length ? ` (${Object.values(i.options).join(' / ')})` : ''} × ${i.quantity}`).join('; '),
+          d.recipientFirstName ? `${d.recipientFirstName} ${d.recipientLastName ?? ''}`.trim() : d.contactName,
+          d.recipientPhone ?? d.contactPhone,
+          d.npCityName,
+          d.npWarehouseName,
+          d.ttn,
+          d.npStatusText,
+        ]);
+      reply.header('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      reply.header('content-disposition', `attachment; filename="orders-${from.toISOString().slice(0, 10)}-${to.toISOString().slice(0, 10)}.xlsx"`);
+      return buildXlsx(uk ? 'Замовлення' : 'Orders', rows);
     },
   });
 

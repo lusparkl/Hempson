@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, errText, money, useLoad, when, type Shop } from '../api';
+import { api, errText, money, token, useLoad, when, type Shop } from '../api';
 
 type Item = { sku: string; productName: string; options: Record<string, string>; quantity: number; unitPriceMinor: number };
 type Draft = {
@@ -71,6 +71,24 @@ export function Orders({ shop }: { shop: Shop }) {
     }
   };
 
+  /** Downloads the Excel export of the last `days` days (the session token cannot ride on a plain link). */
+  const exportXlsx = async (days: number) => {
+    setErr(null);
+    const from = new Date(Date.now() - days * 86_400_000).toISOString();
+    try {
+      const res = await fetch(`${base}/order-drafts/export.xlsx?from=${encodeURIComponent(from)}`, { headers: { authorization: `Bearer ${token.get() ?? ''}` } });
+      if (!res.ok) throw new Error(((await res.json().catch(() => null)) as { error?: { message?: string } } | null)?.error?.message ?? res.statusText);
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'orders.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setErr(errText(e));
+    }
+  };
+
   return (
     <>
       {err && <p className="error">{err}</p>}
@@ -87,6 +105,13 @@ export function Orders({ shop }: { shop: Shop }) {
       </ul>
 
       <h2>Замовлення</h2>
+      <p className="row">
+        {[30, 90, 365].map((n) => (
+          <button key={n} onClick={() => void exportXlsx(n)}>
+            Excel за {n} днів
+          </button>
+        ))}
+      </p>
       <p className="row">
         {Object.entries(STATUS).map(([k, label]) => (
           <button key={k} className={status === k ? 'active' : ''} onClick={() => setStatus(k)}>

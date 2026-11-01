@@ -29,6 +29,16 @@ describe('egress guard (D22)', () => {
     expect(() => egress('http://localhost:9999/v1')).toThrow(EgressDeniedError);
   });
 
+  it('Google Sheets (D35): docs.google.com and single-label googleusercontent download hosts only', async () => {
+    const f = stub();
+    const egress = createEgress({ fetchImpl: f as never });
+    await egress('https://docs.google.com/spreadsheets/d/x/export?format=csv');
+    await egress('https://doc-0c-1a-sheets.googleusercontent.com/export/x');
+    expect(f).toHaveBeenCalledTimes(2);
+    for (const u of ['https://googleusercontent.com/x', 'https://a.b.googleusercontent.com/x', 'https://evilgoogleusercontent.com/x', 'https://googleusercontent.com.evil.example/x', 'http://doc-0c.googleusercontent.com/x', 'https://sheets.google.com/x'])
+      expect(() => egress(u), u).toThrow(EgressDeniedError);
+  });
+
   it('never follows redirects', async () => {
     const f = stub();
     await createEgress({ fetchImpl: f as never })('https://graph.facebook.com/x', { redirect: 'follow', headers: { authorization: 'Bearer t' } });

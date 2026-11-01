@@ -6,7 +6,13 @@ export const DEFAULT_EGRESS_HOSTS = [
   'api.novaposhta.ua',
   'api.monobank.ua',
   'api.wayforpay.com',
+  // P8: Google Sheets CSV export of a shop's own public sheet (D35). The download is served from a googleusercontent host.
+  'docs.google.com',
 ] as const;
+/** Allowed host families: `<one label>.<suffix>` only (D35: Google's per-file download hosts, e.g. `doc-0c-1a-sheets.googleusercontent.com`). */
+export const DEFAULT_EGRESS_SUFFIXES = ['.googleusercontent.com'] as const;
+const SUFFIX_LABEL = /^[a-z0-9-]{1,63}$/;
+const suffixAllowed = (host: string) => DEFAULT_EGRESS_SUFFIXES.some((s) => host.endsWith(s) && SUFFIX_LABEL.test(host.slice(0, -s.length)));
 
 export class EgressDeniedError extends Error {
   constructor(readonly host: string) {
@@ -54,7 +60,7 @@ export function createEgress(opts: EgressOptions = {}): typeof fetch {
       throw new EgressDeniedError('(invalid url)');
     }
     const host = u.hostname.toLowerCase();
-    if (!allowed.has(host) || u.username || u.password) throw new EgressDeniedError(host);
+    if (!(allowed.has(host) || suffixAllowed(host)) || u.username || u.password) throw new EgressDeniedError(host);
     if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOOPBACK.has(host))) throw new EgressDeniedError(host);
     return base(input, { ...init, redirect: 'manual' });
   }) as typeof fetch;

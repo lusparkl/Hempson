@@ -30,6 +30,13 @@ export type ShopStats = {
   };
   escalations: { opened: number; resolved: number; openNow: number; avgResolutionSeconds: number | null };
   orderDrafts: { byStatus: Record<string, number>; approved: Array<{ currency: string; count: number; totalMinor: number }> };
+  /**
+   * P8 funnel: conversations with a customer message in the period, then distinct orders whose `order_events` show a move
+   * into each status in the period. Cash-on-delivery orders never pass `paid`, so `paid` counts prepaid orders only.
+   */
+  funnel: { conversations: number; drafts: number; approved: number; paid: number; shipped: number; delivered: number };
+  /** P8, from `order_events`: drafts by creator, approvals by the draft's creator and by who approved (member or `auto_confirm`). */
+  orderSources: { drafts: { ai: number; human: number }; approved: { ai: number; human: number }; approvedBy: { human: number; auto: number } };
   /** UTC days with at least one run, oldest first. */
   daily: Array<{ date: string; runs: number; replied: number; escalated: number; inputTokens: number; outputTokens: number }>;
 };
@@ -101,6 +108,25 @@ export class StatsRepository {
        from ai_runs where shop_id = @shop and created_at >= @from and created_at < @to group by d order by d`,
     );
 
+    const stages = Object.fromEntries(
+      all<{ to_status: string; n: number }>(
+        `select to_status, count(distinct draft_id) n from order_events
+         where shop_id = @shop and created_at >= @from and created_at < @to and to_status in ('pending_approval', 'approved', 'paid', 'shipped', 'delivered')
+         group by to_status`,
+      ).map((r) => [r.to_status, r.n]),
+    );
+    const created = all<{ actor: string; n: number }>(
+      `select actor, count(distinct draft_id) n from order_events
+       where shop_id = @shop and created_at >= @from and created_at < @to and from_status is null and to_status = 'pending_approval' group by actor`,
+    );
+    const approvals = all<{ created_by: string; auto: number; n: number }>(
+      `select d.created_by, e.actor = 'system:auto_confirm' auto, count(distinct e.draft_id) n
+       from order_events e join order_drafts d on d.id = e.draft_id and d.shop_id = e.shop_id
+       where e.shop_id = @shop and e.created_at >= @from and e.created_at < @to and e.to_status = 'approved'
+       group by d.created_by, auto`,
+    );
+    const sum = <T extends { n: number }>(rows: T[], pick: (r: T) => boolean) => rows.filter(pick).reduce((a, r) => a + r.n, 0);
+
     return {
       period,
       messages: {
@@ -127,6 +153,21 @@ export class StatsRepository {
       orderDrafts: {
         byStatus: Object.fromEntries(drafts.map((r) => [r.status, r.n])),
         approved: approved.map((r) => ({ currency: r.currency, count: r.n, totalMinor: r.total })),
+      },
+      funnel: {
+        conversations: one<{ n: number }>(
+          `select count(distinct conversation_id) n from shop_messages where shop_id = @shop and direction = 'incoming' and created_at >= @from and created_at < @to`,
+        ).n,
+        drafts: stages.pending_approval ?? 0,
+        approved: stages.approved ?? 0,
+        paid: stages.paid ?? 0,
+        shipped: stages.shipped ?? 0,
+        delivered: stages.delivered ?? 0,
+      },
+      orderSources: {
+        drafts: { ai: sum(created, (r) => r.actor === 'ai'), human: sum(created, (r) => r.actor !== 'ai') },
+        approved: { ai: sum(approvals, (r) => r.created_by === 'ai'), human: sum(approvals, (r) => r.created_by !== 'ai') },
+        approvedBy: { human: sum(approvals, (r) => !r.auto), auto: sum(approvals, (r) => !!r.auto) },
       },
       daily: daily.map((r) => ({ date: r.d, runs: r.runs, replied: r.replied, escalated: r.escalated, inputTokens: r.inp ?? 0, outputTokens: r.out ?? 0 })),
     };

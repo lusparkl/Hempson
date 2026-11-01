@@ -14,19 +14,22 @@ type ImportResult = {
   warnings: string[];
 };
 
-/** Pick a CSV, preview with a dry run, then apply. The server decides; nothing is written until "Імпортувати". */
+type Source = { path: string; body: { csv: string } | { url: string } };
+
+/** Pick a CSV or paste a Google Sheets link, preview with a dry run, then apply. Nothing is written until "Імпортувати". */
 function ImportCsv({ base, onDone }: { base: string; onDone: () => Promise<void> }) {
-  const [csv, setCsv] = useState<string | null>(null);
+  const [csv, setCsv] = useState<Source | null>(null);
+  const [sheet, setSheet] = useState('');
   const [name, setName] = useState('');
   const [res, setRes] = useState<ImportResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const send = async (text: string, dryRun: boolean) => {
+  const send = async (src: Source, dryRun: boolean) => {
     setBusy(true);
     setErr(null);
     try {
-      const r = await api<ImportResult>('POST', `${base}/import`, { csv: text, dryRun });
+      const r = await api<ImportResult>('POST', src.path, { ...src.body, dryRun });
       setRes(r);
       if (r.applied) {
         setCsv(null);
@@ -43,20 +46,33 @@ function ImportCsv({ base, onDone }: { base: string; onDone: () => Promise<void>
     setRes(null);
     setErr(null);
     if (!f) return setCsv(null);
-    const text = await f.text();
+    const src = { path: `${base}/import`, body: { csv: await f.text() } };
     setName(f.name);
-    setCsv(text);
-    await send(text, true);
+    setCsv(src);
+    await send(src, true);
+  };
+  const fromSheet = async (e: FormEvent) => {
+    e.preventDefault();
+    setRes(null);
+    const src = { path: `${base}/import-sheet`, body: { url: sheet.trim() } };
+    setName('Google Sheets');
+    setCsv(src);
+    await send(src, true);
   };
 
   return (
     <div className="card">
-      <h2>Імпорт з CSV</h2>
+      <h2>Імпорт з CSV або Google Sheets</h2>
       <p className="muted">
         Колонки: sku (обов'язково), name, price, stock, description, active, group, options (size=M|color=red), variant_price. Артикул, що вже є, оновлюється; порожні клітинки нічого не змінюють; залишок
         встановлюється, а не додається. Усе або нічого.
       </p>
       <input type="file" accept=".csv,text/csv" onChange={(e) => void pick(e.target.files?.[0])} aria-label="CSV файл" />
+      <form className="row" onSubmit={(e) => void fromSheet(e)}>
+        <input type="url" value={sheet} onChange={(e) => setSheet(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…" aria-label="Посилання на Google Sheets" />
+        <button type="submit" disabled={busy || !sheet.trim()}>Переглянути</button>
+      </form>
+      <p className="muted">Таблиця має бути відкрита за посиланням («Усі, хто має посилання» — читач). Береться вкладка з посилання; при імпорті таблиця читається ще раз.</p>
       {err && <p className="error">{err}</p>}
       {res && (
         <div>

@@ -290,6 +290,36 @@ export class OrderRepository {
     return { total, items: rows.map((draft) => ({ draft, items: items.filter((i) => i.draftId === draft.id) })) };
   }
 
+  /**
+   * Orders created in [from, to), oldest first, with items and the time of their `paid` event (P8 Excel export). At most
+   * `limit` rows; the caller says when the list was cut.
+   */
+  listForExport(shopId: string, f: { from: string; to: string; status?: OrderStatus; limit: number }): Array<OrderDraft & { paidAt: string | null }> {
+    const conds = [eq(t.orderDrafts.shopId, shopId), sql`${t.orderDrafts.createdAt} >= ${f.from}`, sql`${t.orderDrafts.createdAt} < ${f.to}`];
+    if (f.status) conds.push(eq(t.orderDrafts.status, f.status));
+    const rows = this.db
+      .select()
+      .from(t.orderDrafts)
+      .where(and(...conds))
+      .orderBy(asc(t.orderDrafts.createdAt), asc(t.orderDrafts.id))
+      .limit(f.limit)
+      .all();
+    const ids = rows.map((r) => r.id);
+    const items = new Map<string, OrderDraftItemRow[]>();
+    for (const it of this.itemsOf(shopId, ids)) items.set(it.draftId, [...(items.get(it.draftId) ?? []), it]);
+    const paid = new Map<string, string>();
+    for (let i = 0; i < ids.length; i += 500) {
+      const ev = this.db
+        .select({ draftId: t.orderEvents.draftId, at: sql<string>`min(${t.orderEvents.createdAt})` })
+        .from(t.orderEvents)
+        .where(and(eq(t.orderEvents.shopId, shopId), eq(t.orderEvents.toStatus, 'paid'), inArray(t.orderEvents.draftId, ids.slice(i, i + 500))))
+        .groupBy(t.orderEvents.draftId)
+        .all();
+      for (const e of ev) paid.set(e.draftId, e.at);
+    }
+    return rows.map((draft) => ({ draft, items: items.get(draft.id) ?? [], paidAt: paid.get(draft.id) ?? null }));
+  }
+
   /** Validates checkout data against the shop's rules (phone form, payment methods, COD refusal limit). */
   private checkCheckout(shopId: string, customerId: string, c: z.output<typeof checkoutInput>): z.output<typeof checkoutInput> {
     const phone = normalizeUaPhone(c.phone);

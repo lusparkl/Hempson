@@ -1,6 +1,6 @@
 # Hepson: codebase overview
 
-Reader's guide to the code as built (F1-F12, P1-P7). Not a state record: current state lives in `docs/AI_HANDOFF.md`, feature status and plans in `docs/ROADMAP.md`, design reasoning in `docs/DECISIONS.md` (D1-D34). Updated 2026-11-01.
+Reader's guide to the code as built (F1-F12, P1-P8). Not a state record: current state lives in `docs/AI_HANDOFF.md`, feature status and plans in `docs/ROADMAP.md`, design reasoning in `docs/DECISIONS.md` (D1-D35). Updated 2026-11-01.
 
 ## What Hepson is
 
@@ -21,10 +21,10 @@ Node 22+ (dev on 24), TypeScript strict, pnpm workspace, Fastify 5, Zod 4, SQLit
 | Path | Role |
 |---|---|
 | `packages/connector-core` | Shared types, errors, events, message fingerprinting |
-| `packages/database` | Drizzle schema, migrations `0000`-`0010`, `Store` (Phase 1) and one repository per area (`shops`, `auth`, `catalog`, `catalog-import`, `conversations`, `agent`, `orders`, `stats`, `webchat`, `instagram`), `CredentialVault`/`Keyring` (`credentials.ts`) |
+| `packages/database` | Drizzle schema, migrations `0000`-`0015`, `Store` (Phase 1) and one repository per area (`shops`, `auth`, `catalog`, `catalog-import`, `conversations`, `agent`, `orders`, `stats`, `webchat`, `instagram`, `telegram`, `policies`, `delivery`, `payments`, `notices`, `plans`), `CredentialVault`/`Keyring` (`credentials.ts`) |
 | `packages/mock-adapter` | In-memory connector for tests and demos |
 | `packages/instagram-browser` | Frozen browser adapter: all Instagram DOM knowledge (`selectors.ts`, `parsers.ts`), profile, lock, login and sender |
-| `apps/api` | Fastify server: `routes/`, `services/` (`instagram*.ts`, `telegram*.ts`, `nova-poshta.ts` + `delivery.ts` (P4), `monobank.ts` + `payments.ts` (P5), `customer-notices.ts` (P6), `egress.ts`, `shop-sender.ts`, `web-chat.ts`, `notifier.ts`, Phase 1 `connector-service.ts`/`channel-bridge.ts`), `auth/`, `agent/`, `widget/` |
+| `apps/api` | Fastify server: `routes/`, `services/` (`instagram*.ts`, `telegram*.ts`, `nova-poshta.ts` + `delivery.ts` (P4), `monobank.ts` + `payments.ts` (P5), `customer-notices.ts` (P6), `google-sheets.ts` + `xlsx.ts` (P8), `egress.ts`, `shop-sender.ts`, `web-chat.ts`, `notifier.ts`, Phase 1 `connector-service.ts`/`channel-bridge.ts`), `auth/`, `agent/`, `widget/` |
 | `apps/dev-console` | Admin-key tool for Phase 1 connector accounts |
 | `apps/dashboard` | Shop-owner UI (user sessions, port 5174) |
 | `scripts/` | `migrate`, `bootstrap-key`, `backup`, `gen-openapi`, `gen-master-key`, `rewrap-credentials`; browser-only `calibrate-selectors`, `live-smoke` |
@@ -50,13 +50,14 @@ Website visitor ─► /public/web-chat ─► WebChatService ──────
 - **Policies (P3).** `PolicyRepository` (`shop_policies`): one text per topic, versioned; owner edits. No text = the agent escalates.
 - **Checkout and Nova Poshta (P4).** The shop's NP key is in `CredentialVault` (kind `nova_poshta`). `DeliveryService` does lookups, TTN creation (DB claim first, at most one per order, `uncertain` never retried) and tracking (`HEPSON_NOVA_POSHTA_POLL_MINUTES`). `DeliveryRepository` holds sender settings and the per-customer refusal count (D25).
 - **Payment links (P5, D24, D32).** The shop's Monobank acquiring token is in `CredentialVault` (kind `monobank`). Approval into `awaiting_payment` sets the payment deadline; `PaymentService` creates one invoice for the stored total (`PaymentRepository` claim first, one active attempt per order), sends the fixed-template link as a `system` message (`sendSystemMessage`), verifies webhooks (`/webhooks/monobank/:webhookId`, `x-sign`), applies statuses idempotently and in order (`payment_events`), and every `HEPSON_PAYMENT_CHECK_MINUTES` reconciles open invoices, sends the one reminder and cancels expired orders with restock. `paid` starts the prepaid TTN (`DeliveryService.afterPaid`). Prepaid is offered only while a Monobank credential is active.
+- **Analytics and export (P8, D35).** `StatsRepository` adds `funnel` (customer conversations, then distinct orders entering `pending_approval`, `approved`, `paid`, `shipped`, `delivered` per `order_events`) and `orderSources` (drafts and approvals by AI or a person, approvals by a member or `auto_confirm`). `GET .../order-drafts/export.xlsx` writes a one-sheet workbook with `services/xlsx.ts` (no dependency).
 - **Plans and quotas (P7, D34).** `PlanRepository` holds the operator-assigned plan (`shop_plans`, default `HEPSON_DEFAULT_PLAN`) and derives this UTC month's AI replies from `ai_runs`. `SalesAgent` checks the cap before any model call; at the cap it escalates, sends one fixed holding text and notifies the owner once per month (`ai_quota`). Usage is in `GET .../usage`, the stats response and the dashboard Stats view.
 - **Customer notices (P6, D33).** `OrderRepository.move` queues a `customer_notices` row (unique per order and event) with each transition the customer hears about: `cod_confirmed`, `rejected`, `paid`, `shipped`, `delivered`. `CustomerNoticeService` claims each row, sends the fixed text once through `sendSystemMessage` and records the outcome. A failed notice (closed Instagram window, channel disconnected) is passed to the shop. Rows left mid-send by a crash become `uncertain` at startup.
 - **Human takeover.** Per-conversation AI pause. A human reply pauses the AI first. Telegram notifies on new escalations and order drafts.
 - **Orders.** D25 lifecycle in `OrderRepository`, every transition in `order_events`. Approval needs complete checkout data, reduces stock atomically (all or nothing) and moves to `cod_confirmed` (TTN created, then `shipped`) or `awaiting_payment` (waits for P5). Tracking moves `shipped` to `delivered` or `returning`; a member confirms `returned` (restock once). `auto_confirm` (D26) lets the server approve when every check passes.
 - **Auth.** `hsu_` user sessions with owner and manager roles. Phase 1 uses `hep_` API keys. The two never mix: user routes reject API keys.
 - **Website chat.** Public routes protected by a widget key, an exact Origin allow-list, per-visitor tokens and rate limits (D19).
-- **Catalog.** Products and variants, integer minor-unit prices, SKU unique per shop, stock never below zero, Cyrillic-safe search, CSV import with dry run (D21).
+- **Catalog.** Products and variants, integer minor-unit prices, SKU unique per shop, stock never below zero, Cyrillic-safe search, CSV import with dry run (D21), and the same importer fed from a Google Sheet shared by link (`services/google-sheets.ts`, D35).
 
 ## Invariants worth keeping in your head
 

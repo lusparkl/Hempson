@@ -9,6 +9,8 @@ type Stats = {
   escalations: { opened: number; resolved: number; openNow: number; avgResolutionSeconds: number | null };
   orderDrafts: { byStatus: Record<string, number>; approved: Array<{ currency: string; count: number; totalMinor: number }> };
   daily: Array<{ date: string; runs: number; replied: number; escalated: number; inputTokens: number; outputTokens: number }>;
+  funnel: { conversations: number; drafts: number; approved: number; paid: number; shipped: number; delivered: number };
+  orderSources: { drafts: { ai: number; human: number }; approved: { ai: number; human: number }; approvedBy: { human: number; auto: number } };
   usage: { plan: string; aiReplyCap: number | null; month: string; aiReplies: number; remaining: number | null; capReached: boolean };
 };
 
@@ -73,6 +75,25 @@ export function Stats({ shop }: { shop: Shop }) {
               {row('Опрацьовано', d.escalations.resolved)}
               {row('Відкриті зараз', d.escalations.openNow)}
               {row('Середній час опрацювання', d.escalations.avgResolutionSeconds === null ? '—' : `${Math.round(d.escalations.avgResolutionSeconds / 60)} хв`)}
+            </tbody>
+          </table>
+          <table>
+            <caption>Воронка</caption>
+            <tbody>
+              {row('Розмови з повідомленням клієнта', d.funnel.conversations)}
+              {row('Чернетки замовлень', d.funnel.drafts)}
+              {row('Підтверджено', d.funnel.approved)}
+              {row('Оплачено (передоплата)', d.funnel.paid)}
+              {row('Відправлено', d.funnel.shipped)}
+              {row('Отримано', d.funnel.delivered)}
+            </tbody>
+          </table>
+          <table>
+            <caption>ШІ і люди</caption>
+            <tbody>
+              {row('Чернетки: ШІ / менеджер', `${d.orderSources.drafts.ai} / ${d.orderSources.drafts.human}`)}
+              {row('Підтверджені: від ШІ / від менеджера', `${d.orderSources.approved.ai} / ${d.orderSources.approved.human}`)}
+              {row('Підтвердив: людина / автоматично', `${d.orderSources.approvedBy.human} / ${d.orderSources.approvedBy.auto}`)}
             </tbody>
           </table>
           <table>

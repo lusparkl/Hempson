@@ -14,6 +14,7 @@ import {
   type ShopRepository,
   type VariantRow,
 } from '@hepson/database';
+import { SheetsError, fetchSheetCsv, parseSheetUrl } from '../services/google-sheets';
 import { route } from './define';
 import { makeRequireRole } from './shops';
 
@@ -44,6 +45,15 @@ const updateBody = z.strictObject({ name: z.string().optional(), description: z.
 const variantPatchBody = z.strictObject({ sku: z.string().optional(), options: z.record(z.string(), z.string()).optional(), priceMinor: z.number().nullable().optional(), active: z.boolean().optional() });
 const stockBody = z.union([z.strictObject({ delta: z.number() }), z.strictObject({ set: z.number() })]);
 const importBody = z.strictObject({ csv: z.string().min(1).max(2_000_000), dryRun: z.boolean().optional() });
+const sheetBody = z.strictObject({ url: z.string().min(1).max(1000), dryRun: z.boolean().optional() });
+/** Owner-facing reasons a Google Sheet could not be read (P8). */
+const SHEET_ERRORS: Record<SheetsError['kind'], string> = {
+  not_public: 'The sheet is not shared: set "Anyone with the link" to Viewer in Google Sheets',
+  not_found: 'No such sheet or tab: check the link',
+  too_large: 'The sheet is larger than 2 MB as CSV: split it',
+  redirect_refused: 'Google answered from an unexpected address; the sheet was not read',
+  unavailable: 'Google Sheets is not reachable, try again',
+};
 const listQuery = z.object({
   q: z.string().max(200).optional(),
   active: z.enum(['true', 'false']).optional(),
@@ -83,8 +93,8 @@ function translate(e: unknown): never {
 }
 
 /** Owner: create/edit products and variants. Any member: read, and change stock. */
-export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopRepository; auth: AuthRepository; catalog: CatalogRepository }) {
-  const { shops, auth, catalog } = deps;
+export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopRepository; auth: AuthRepository; catalog: CatalogRepository; egress: typeof fetch }) {
+  const { shops, auth, catalog, egress } = deps;
   const requireRole = makeRequireRole(shops, auth);
   const base = '/v1/shops/:shopId/products';
 
@@ -226,6 +236,34 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopR
       const { shop } = requireRole(req, params.shopId, 'owner');
       try {
         return importCatalogCsv(catalog, shop.id, body.csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency });
+      } catch (e) {
+        translate(e);
+      }
+    },
+  });
+
+  route(app, {
+    method: 'POST',
+    url: `${base}/import-sheet`,
+    summary: 'Import products from a Google Sheet shared by link, through the same CSV importer; dryRun (default true) reports without writing (owner)',
+    tag: 'catalog',
+    auth: 'user',
+    params: shopP,
+    body: sheetBody,
+    handler: async ({ req, params, body }) => {
+      const { shop } = requireRole(req, params.shopId, 'owner');
+      const ref = parseSheetUrl(body.url);
+      if (!ref) throw new ConnectorError('VALIDATION_ERROR', 'Paste a Google Sheets link (https://docs.google.com/spreadsheets/d/...)');
+      let csv: string;
+      try {
+        csv = await fetchSheetCsv(egress, ref, { maxBytes: 2_000_000 });
+      } catch (e) {
+        if (e instanceof SheetsError) throw new ConnectorError(e.kind === 'unavailable' ? 'TEMPORARY_FAILURE' : 'VALIDATION_ERROR', SHEET_ERRORS[e.kind]);
+        throw e;
+      }
+      if (!csv.trim()) throw new ConnectorError('VALIDATION_ERROR', 'The sheet is empty');
+      try {
+        return importCatalogCsv(catalog, shop.id, csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency });
       } catch (e) {
         translate(e);
       }
