@@ -2,7 +2,7 @@ import { AnimSlot } from '../components/AnimSlot';
 import { PageHero } from '../components/Layout';
 import { fmt, usePage } from '../context';
 import { PRICING, type PlanId } from '../site';
-import { Faq } from './Home';
+import { Faq } from '../components/Faq';
 
 /** Plan highlighted as recommended. TODO(owner): confirm. */
 const RECOMMENDED: PlanId = 'growth';
@@ -41,7 +41,7 @@ export function Pricing() {
           </p>
         ))}
       </section>
-      <Faq id="pricing-faq" title={d.pages.home.faq.title} items={p.faq} />
+      <Faq id="pricing-faq" title={p.faqTitle} items={p.faq} />
     </>
   );
 }

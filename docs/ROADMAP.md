@@ -72,7 +72,8 @@ Goal: a working MVP of the core loop, message to paid order to TTN, on official 
 | P7 | Plans and quotas | DONE (2026-11-01, D34) | no | - |
 | P8 | Catalog and analytics | DONE except XLSX import (2026-11-01, D35); Google Sheets fetch **not live-checked** | no | P4, P5 for the funnel |
 | P9 | Matching their extras | Suggestions DONE (2026-11-01, D36); photo search, forwarded posts, storefront TODO (decisions in D36) | no | P1, P8 |
-| W1 | Public website | Structure DONE (2026-11-01, D37): all pages, `uk`/`ru`, legal drafts, animation slots; **design, real contacts, legal entity, prices, lawyer review and hosting TODO** | yes (contacts, prices, legal texts, domain) | - |
+| W1 | Public website | Structure DONE (2026-11-01, D37); home page, header and footer redesigned to "Hepson Home v2" (2026-11-02, D38); **inner-page design, real contacts, legal entity, prices, lawyer review and hosting TODO** | yes (contacts, prices, legal texts, domain) | - |
+| P10 | Design parity gaps (dashboard v3, home v2) | TODO; the redesigned UI shows placeholders for these (D38) | no | P8 |
 | Later | Meta Business Verification, App Review (Advanced Access), Tech Provider status, Hepson subscription billing | BLOCKED on FOP | yes | - |
 
 Ordering note: the brief puts P4 (TTN) before P5 (payments), but a prepaid order may only get a TTN after `paid` (D25). So P4 creates TTNs for cash-on-delivery orders (from `cod_confirmed`) and for any order a member marks shippable by hand; the prepaid path is wired in P5 when `paid` exists.
@@ -148,6 +149,19 @@ Scope: everything needed for one shop to connect its own professional account an
 ## W1 Public website (D37)
 - Built: `apps/website`, every production page (home, features, pricing, about, security, contact, privacy, offer/terms, payment and refunds, cookies, data deletion, 404) in Ukrainian (default) and Russian, canonical/hreflang/Open Graph tags, sitemap and robots, catalogued animation slots without motion.
 - Next: visual design pass (owner, design mode); fill `src/site.ts` (domain, contacts, FOP details, prices); lawyer review of the legal texts, then `legalReviewed: true`; choose hosting. The privacy policy and data-deletion URLs are what Meta App Review asks for ("Later").
+
+## P10 Design parity gaps (D38)
+The dashboard was rebuilt to the "Hepson Dashboard v3" design and the home page to "Hepson Home v2" (2026-11-02). These parts of the design have no backend yet; the UI shows a placeholder and a `P10` code comment at each spot.
+- **Last-message preview.** Conversation list API returns no last message text, so the inbox list and the overview "recent conversations" show who handles the chat instead. Add `lastMessage { text, senderType, at }` to `conversationView`.
+- **Unread state.** No per-member read marker; the unread dot and the inbox nav count use open hand-offs only. Needs a `conversation_reads` table (member, conversation, last seen seq).
+- **Customer notes.** The inbox side panel's note box is disabled. Needs a shop-scoped `customer_notes` field or table and an owner/manager PUT.
+- **Customer profile.** Phone and city come from the latest order draft of that conversation; there is no customer-level phone/city or order history across conversations. Add an order-drafts filter by `customerId` and customer contact fields.
+- **Notification centre.** The top-bar bell only signals open hand-offs (goes to Orders) or shows "coming soon". Needs a per-member feed (hand-offs, new orders, payment and TTN problems) with read state.
+- **Per-day series in stats.** `daily` has AI runs/replies only. The overview KPI sparklines for new customers, approved orders and revenue show a dashed placeholder, and the analytics chart has no "Люди" (human replies) bars. Add daily `newCustomers`, `approved`, `revenueMinor`, `outgoingHuman`.
+- **Order numbers.** Orders show `№` + the first 6 characters of the draft id; the design shows sequential numbers (№1048). Add a per-shop sequence.
+- **Fonts.** Geist is loaded from Google Fonts as the design system specifies; this sends visitor IPs to Google, which D37's "no third parties" stance does not cover. Self-host the woff2 files (OFL) and update the cookie/privacy page if anything stays external.
+- **Inner website pages** (features, pricing, about, security, contact, legal, 404) only reuse the tokens; they have no design yet, and their illustration slots are still dashed placeholders.
+- Acceptance: each item removes its placeholder and `P10` comment; tests cover the new API fields; no cross-shop data in any new query.
 
 ## Later (needs a registered business)
 Meta Business Verification; App Review for Advanced Access (privacy policy URL, data-deletion callback, screencast); Tech Provider status; Hepson's own subscription billing; Human Agent feature approval. Moving from Development mode to Advanced Access is configuration, not a rewrite (D22).

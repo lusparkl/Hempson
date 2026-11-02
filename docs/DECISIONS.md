@@ -266,3 +266,14 @@ Real Instagram message webhooks were not delivered in repeated live tests (Live 
 - "Start" buttons go to the dashboard with `?mode=register`, which now opens the sign-up form.
 
 **Not taken.** A separate framework (Astro, Next.js): a new dependency for ten pages. Client-side routing: worse for SEO and no-JS visitors. Auto-detecting the browser language: the default must stay Ukrainian, and the switch is one click.
+
+## D38 (2026-11-02): design system and the redesigned dashboard and home page
+**Context.** The owner designed the dashboard ("Hepson Dashboard v3") and the home page ("Hepson Home v2") in Claude Design with the "hempson-design-system" kit, and asked for the UI to match them exactly; missing features become P10 with placeholders.
+
+**Decision.**
+- New source folder `packages/ui` (no `package.json`, imported by relative path from both apps, so no install or lockfile change): `styles.css` (the design system's tokens and component classes, copied from the design project), `components.tsx` (Button, ButtonLink, Badge, Input, Switch, IconTile, UsageMeter, Icon, Logo), `icons.ts` (the Lucide icons the design uses, inlined from `lucide-static@0.460.0`, ISC, instead of loading them from unpkg), and `embeds/` (the design's animated pieces ported to typed React: HeroEmbed, HowEmbed, CtaBg, LoginFlow). Embeds pause off screen and show a still frame with reduced motion; the clock starts at 0 on server and client so prerendered HTML hydrates cleanly.
+- Dashboard: sidebar shell (shop switcher with "+ Новий магазин", nav with counts, AI-usage meter, user block), top bar with page actions rendered through a portal, AI status and bell; pages Огляд, Розмови, Замовлення, Каталог, Статистика, Налаштування (tabs). All earlier functionality is kept, including actions the design does not draw (payment link, TTN retry, cancel, refund request, returns, Nova Poshta branch picker, COD/prepaid toggles, member role). Data comes only from existing endpoints; where the design shows data the API lacks, the UI shows a placeholder (P10). The page is kept in the URL hash.
+- Website: home page, header and footer follow the design; copy moved to `d.pages.home` in `uk` and `ru` (Russian translated, demo cards stay Ukrainian). The header shows the design's three anchors; inner pages stay reachable from the footer, which also keeps the legal links, contacts and the language switcher required by D37. Brand logos are in `apps/website/public/logos/` (C2PA metadata stripped). Animation slots that are now built say so in `animations.ts`; `header.mobile-menu` and `trust.guard` were dropped with the sections they belonged to.
+
+**Not taken.** A published workspace package `@hepson/ui`: needs `pnpm install`, which is blocked by the build-approval issue. A CSS framework or icon package dependency: the design ships plain CSS and a small icon set.
+

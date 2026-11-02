@@ -1,19 +1,20 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { AnimSlot } from './AnimSlot';
-import { usePage, fmt } from '../context';
+import { usePage } from '../context';
+import { ButtonLink, LogoMark } from '../../../../packages/ui/src/components';
 import { LOCALES, LOCALE_LABEL, localePath } from '../i18n';
 import { ROUTES, pathOf } from '../routes';
 import { SITE } from '../site';
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { d } = usePage();
+  const { d, route } = usePage();
   return (
     <>
       <a className="skip-link" href="#main">
         {d.common.skipToContent}
       </a>
       <Header />
-      <main id="main" tabIndex={-1}>
+      <main id="main" tabIndex={-1} data-route={route}>
         {children}
       </main>
       <Footer />
@@ -22,8 +23,7 @@ export function Layout({ children }: { children: ReactNode }) {
 }
 
 function Header() {
-  const { d, href, dashboard } = usePage();
-  const [open, setOpen] = useState(false);
+  const { d, href, dashboard, route } = usePage();
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
@@ -31,34 +31,29 @@ function Header() {
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
+  // Design: the home sections as anchors (plain `#…` on the home page, `/#…` elsewhere).
+  const n = d.pages.home.nav;
+  const anchor = (id: string) => (route === 'home' ? `#${id}` : href('home', id));
   return (
     <AnimSlot id="header.scroll" as="div" className="site-header">
       <header data-scrolled={scrolled || undefined}>
-        <a className="logo" href={href('home')} aria-label={SITE.name}>
-          {/* TODO(design): logo mark */}
-          {SITE.name}
+        <a className="hs-wordmark logo" href={href('home')} aria-label={SITE.name}>
+          <LogoMark size={30} />
+          <span>hepson</span>
         </a>
-        <button type="button" className="menu-toggle" aria-expanded={open} aria-controls="site-nav" onClick={() => setOpen(!open)}>
-          {open ? d.common.menuClose : d.common.menuOpen}
-        </button>
-        <AnimSlot id="header.mobile-menu" as="div" className="site-nav-wrap">
-          <nav id="site-nav" data-open={open || undefined}>
-            <ul>
-              {ROUTES.filter((r) => r.nav === 'main').map((r) => (
-                <li key={r.id}>
-                  <NavLink id={r.id} label={d.common.nav[r.id]} />
-                </li>
-              ))}
-            </ul>
-            <LanguageSwitcher />
-            <a className="btn btn-secondary" href={dashboard('login')}>
-              {d.common.login}
-            </a>
-            <a className="btn btn-primary" href={dashboard('register')}>
-              {d.common.start}
-            </a>
-          </nav>
-        </AnimSlot>
+        <nav id="site-nav" aria-label={SITE.name}>
+          <a href={anchor('how')}>{n.how}</a>
+          <a href={anchor('features')}>{n.features}</a>
+          <a href={anchor('control')}>{n.control}</a>
+        </nav>
+        <div className="header-actions">
+          <ButtonLink variant="secondary" size="sm" href={dashboard('login')}>
+            {d.common.login}
+          </ButtonLink>
+          <ButtonLink variant="primary" size="sm" arrow href={dashboard('register')}>
+            {d.common.start}
+          </ButtonLink>
+        </div>
       </header>
     </AnimSlot>
   );
@@ -98,54 +93,29 @@ function Footer() {
   const f = d.common.footer;
   return (
     <footer className="site-footer">
-      <div className="footer-brand">
-        <a className="logo" href={href('home')}>
-          {SITE.name}
+      <div className="footer-main">
+        <a className="hs-wordmark logo" href={href('home')} aria-label={SITE.name}>
+          <LogoMark size={24} />
+          <span>hepson</span>
         </a>
-        <p>{f.tagline}</p>
+        <span>{f.tagline}</span>
+        <span className="footer-copy">© {new Date().getFullYear()} Hepson</span>
       </div>
-      <nav aria-label={f.product}>
-        <h2>{f.product}</h2>
-        <ul>
-          <li>
-            <a href={href('features')}>{d.common.nav.features}</a>
-          </li>
-          <li>
-            <a href={href('pricing')}>{d.common.nav.pricing}</a>
-          </li>
-          <li>
-            <a href={href('security')}>{d.common.nav.security}</a>
-          </li>
-        </ul>
-      </nav>
-      <nav aria-label={f.company}>
-        <h2>{f.company}</h2>
-        <ul>
-          <li>
-            <a href={href('about')}>{d.common.nav.about}</a>
-          </li>
-          <li>
-            <a href={href('contact')}>{d.common.nav.contact}</a>
-          </li>
-        </ul>
-      </nav>
-      <nav aria-label={f.legal}>
-        <h2>{f.legal}</h2>
-        <ul>
-          {ROUTES.filter((r) => r.nav === 'legal').map((r) => (
-            <li key={r.id}>
-              <a href={href(r.id)}>{d.pages[r.id].title}</a>
-            </li>
+      <div className="footer-links">
+        <nav aria-label={f.product}>
+          {ROUTES.filter((r) => r.nav === 'main').map((r) => (
+            <NavLink key={r.id} id={r.id} label={d.common.nav[r.id]} />
           ))}
-        </ul>
-      </nav>
-      <div className="footer-contacts">
-        <h2>{f.contacts}</h2>
+        </nav>
+        <nav aria-label={f.legal}>
+          {ROUTES.filter((r) => r.nav === 'legal').map((r) => (
+            <a key={r.id} href={href(r.id)}>
+              {d.pages[r.id].title}
+            </a>
+          ))}
+        </nav>
         <ContactList />
-      </div>
-      <div className="footer-bottom">
         <CompanyDetails compact />
-        <p>{fmt(f.rights, { year: new Date().getFullYear() })}</p>
         <LanguageSwitcher />
       </div>
     </footer>

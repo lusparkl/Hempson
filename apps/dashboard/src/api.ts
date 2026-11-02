@@ -74,8 +74,67 @@ export function useLoad<T>(fn: () => Promise<T>, deps: unknown[], pollMs?: numbe
 }
 
 export const money = (minor: number, currency: string) => `${(minor / 100).toFixed(2)} ${currency}`;
+/** Compact money for lists: `1 280 ₴` for UAH, otherwise `1 280 EUR`. */
+export const moneyShort = (minor: number, currency: string) =>
+  `${Math.round(minor / 100).toLocaleString('uk-UA')} ${currency === 'UAH' ? '₴' : currency}`;
 export const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('uk-UA') : '—');
+const pad = (n: number) => String(n).padStart(2, '0');
+/** `dd.mm, HH:MM` */
+export const shortWhen = (iso: string) => {
+  const d = new Date(iso);
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+export const hhmm = (iso: string) => {
+  const d = new Date(iso);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+export const dateOnly = (iso: string) => new Date(iso).toLocaleDateString('uk-UA');
+/** Relative time like the design: `5 хв`, `3 год`, `вчора`, otherwise `dd.mm`. */
+export const ago = (iso: string | null) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const min = Math.floor((Date.now() - d.getTime()) / 60_000);
+  if (min < 1) return 'щойно';
+  if (min < 60) return `${min} хв`;
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) return `${Math.floor(min / 60)} год`;
+  const y = new Date(today);
+  y.setDate(today.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return 'вчора';
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}`;
+};
 export const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export type Role = 'owner' | 'manager';
 export type Shop = { shopId: string; name: string; slug: string; role: Role; defaultCurrency: string };
+export type Me = { user: { userId: string; email: string; displayName: string } };
+export type Usage = { plan: string; aiReplyCap: number | null; month: string; periodEnd: string; aiReplies: number; remaining: number | null; capReached: boolean };
+const MONTH_IN = ['січні', 'лютому', 'березні', 'квітні', 'травні', 'червні', 'липні', 'серпні', 'вересні', 'жовтні', 'листопаді', 'грудні'];
+const MONTH = ['січень', 'лютий', 'березень', 'квітень', 'травень', 'червень', 'липень', 'серпень', 'вересень', 'жовтень', 'листопад', 'грудень'];
+/** `2026-11` → `листопад` (or `листопаді` with `inside`). */
+export const monthName = (ym: string, inside = false) => (inside ? MONTH_IN : MONTH)[Number(ym.slice(5, 7)) - 1] ?? ym;
+export type AiSettings = { enabled: boolean; instructions: string; available: boolean; autonomy: 'approval_required' | 'auto_confirm'; autoConfirmMaxMinor: number | null; autonomyChangedAt: string | null };
+export type Escalation = { escalationId: string; conversationId: string; reason: string; createdAt: string };
+export type Customer = { customerId: string; channel: string; displayName: string | null; handle: string | null; createdAt: string };
+export type Conv = { conversationId: string; channel: string; lastMessageAt: string | null; aiPaused: boolean; createdAt: string; customer: Customer };
+export const customerName = (c: Pick<Customer, 'displayName' | 'handle'>) => c.displayName ?? (c.handle ? `@${c.handle.replace(/^@/, '')}` : 'Клієнт');
+
+export type StatsData = {
+  period: { from: string; to: string };
+  messages: { incoming: number; outgoingAi: number; outgoingHuman: number; failedOutgoing: number };
+  conversations: { active: number; newCustomers: number; aiPausedNow: number };
+  ai: { runs: number; byStatus: Record<string, number>; modelRequests: number; inputTokens: number; outputTokens: number; replyRate: number | null };
+  escalations: { opened: number; resolved: number; openNow: number; avgResolutionSeconds: number | null };
+  orderDrafts: { byStatus: Record<string, number>; approved: Array<{ currency: string; count: number; totalMinor: number }> };
+  daily: Array<{ date: string; runs: number; replied: number; escalated: number; inputTokens: number; outputTokens: number }>;
+  funnel: { conversations: number; drafts: number; approved: number; paid: number; shipped: number; delivered: number };
+  orderSources: { drafts: { ai: number; human: number }; approved: { ai: number; human: number }; approvedBy: { human: number; auto: number } };
+  usage: Usage;
+};
+export const statsUrl = (shopId: string, days: number, offsetDays = 0) => {
+  const to = Date.now() - offsetDays * 86_400_000;
+  const q = new URLSearchParams({ from: new Date(to - days * 86_400_000).toISOString(), ...(offsetDays ? { to: new Date(to).toISOString() } : {}) });
+  return `/v1/shops/${shopId}/stats?${q}`;
+};
+/** Approved revenue in the shop currency (minor units), or the first currency present. */
+export const revenue = (s: StatsData, currency: string) => s.orderDrafts.approved.find((a) => a.currency === currency) ?? s.orderDrafts.approved[0] ?? { currency, count: 0, totalMinor: 0 };

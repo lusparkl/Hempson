@@ -29,12 +29,7 @@ export const ANIMATIONS = {
     durationMs: 200,
     reducedMotion: 'State changes instantly.',
   },
-  'header.mobile-menu': {
-    trigger: 'interaction',
-    description: 'Mobile menu slides down from the header; links fade in with a 40 ms stagger. Burger icon morphs into a cross.',
-    durationMs: 250,
-    reducedMotion: 'Menu appears instantly, no stagger.',
-  },
+
   'lang.switch': {
     trigger: 'hover',
     description: 'Language switcher (UA / RU): active-language indicator slides under the hovered option.',
@@ -51,36 +46,29 @@ export const ANIMATIONS = {
   },
   'hero.chat-demo': {
     trigger: 'loop',
-    description:
-      'Phone mock-up with a scripted conversation: customer asks for a product in Ukrainian, typing dots, Hepson replies with price and stock from the catalog, customer gives Nova Poshta branch, a payment-link message appears, then an order card with "TTN created". Loops every ~12 s, pauses when off-screen or when the tab is hidden.',
+    description: 'Built (design "Hepson Home v2", packages/ui HeroEmbed): phone with a scripted Instagram chat — question, AI answer from the catalog, Nova Poshta branch, order draft card — over a moving gradient. Loops, pauses off screen.',
     durationMs: 12000,
     reducedMotion: 'Static image of the finished conversation.',
   },
   'channels.icons': {
     trigger: 'in-view',
-    description: 'Instagram, Telegram and website-chat icons pop in, then thin lines draw from each one into a single Hepson inbox.',
+    description: 'Built: logo marquee (Instagram, Telegram, Nova Poshta, monobank, website chat); logos are grey and gain colour on hover; pauses on hover.',
     durationMs: 800,
     reducedMotion: 'Icons and lines shown fully drawn.',
   },
   'how.steps': {
     trigger: 'in-view',
-    description: 'The four steps (message, answer, order, TTN) reveal left to right; a progress line fills between them as the user scrolls.',
+    description: 'Built (HowEmbed): three-step stepper over an order card — client writes, AI drafts the order, owner confirms (stock drops, customer notified, TTN typed in).',
     durationMs: 1200,
     reducedMotion: 'All steps and the full line visible.',
   },
   'features.cards': {
     trigger: 'in-view',
-    description: 'Feature cards fade up with an 80 ms stagger. On hover a card lifts and its icon plays a short one-shot micro-animation.',
+    description: 'Feature cards (inbox, catalog, shop rules, Nova Poshta, monobank) with static sample data; hover effects only.',
     durationMs: 600,
     reducedMotion: 'Cards visible; hover only changes border colour.',
   },
-  'trust.guard': {
-    trigger: 'in-view',
-    description:
-      'Explains the reply guard: a draft AI reply with an invented price appears, the wrong figure is highlighted and struck through, and the reply is replaced by one quoting the catalog price.',
-    durationMs: 2500,
-    reducedMotion: 'Before/after shown side by side, no motion.',
-  },
+
   'pricing.cards': {
     trigger: 'in-view',
     description: 'Plan cards fade up; the recommended plan scales in last with a subtle glow.',
@@ -95,7 +83,7 @@ export const ANIMATIONS = {
   },
   'cta.final': {
     trigger: 'in-view',
-    description: 'Closing call-to-action band: background gradient drifts slowly; button gets a single soft pulse when the band enters view.',
+    description: 'Built (CtaBg): closing call-to-action card over a drifting gradient with flowing strands, 12 s loop.',
     durationMs: 1500,
     reducedMotion: 'Static background, no pulse.',
   },

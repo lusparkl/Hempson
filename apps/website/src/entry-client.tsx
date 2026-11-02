@@ -5,6 +5,7 @@ import type { PageContext } from './context';
 import { headTags } from './head';
 import { splitLocale } from './i18n';
 import { routeByPath } from './routes';
+import '../../../packages/ui/src/styles.css';
 import './styles.css';
 
 document.documentElement.classList.add('js');
