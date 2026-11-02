@@ -74,7 +74,9 @@ export function useLoad<T>(fn: () => Promise<T>, deps: unknown[], pollMs?: numbe
 }
 
 export const money = (minor: number, currency: string) => `${(minor / 100).toFixed(2)} ${currency}`;
-/** Compact money for lists: `1 280 ₴` for UAH, otherwise `1 280 EUR`. */
+/** Money in lists, as in the design: `1280.00 ₴` for UAH, otherwise `1280.00 EUR`. */
+export const moneyList = (minor: number, currency: string) => `${(minor / 100).toFixed(2)} ${currency === 'UAH' ? '₴' : currency}`;
+/** Compact money for KPI totals: `1 280 ₴` for UAH, otherwise `1 280 EUR`. */
 export const moneyShort = (minor: number, currency: string) =>
   `${Math.round(minor / 100).toLocaleString('uk-UA')} ${currency === 'UAH' ? '₴' : currency}`;
 export const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('uk-UA') : '—');

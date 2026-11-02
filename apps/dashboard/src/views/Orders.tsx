@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useShop } from '../App';
-import { api, errText, money, moneyShort, shortWhen, token, useLoad, when } from '../api';
+import { api, errText, money, moneyList, shortWhen, token, useLoad, when } from '../api';
 import { Alert, Avatar, Badge, Button, HeaderActions, Icon, useToast, type Tone } from '../ui';
 
 type Item = { sku: string; productName: string; options: Record<string, string>; quantity: number; unitPriceMinor: number };
@@ -162,7 +162,7 @@ export function Orders() {
                     </span>
                   </span>
                 </span>
-                <span style={{ fontWeight: 500, color: 'var(--ink-900)' }}>{moneyShort(o.totalMinor, o.currency)}</span>
+                <span style={{ fontWeight: 500, color: 'var(--ink-900)' }}>{moneyList(o.totalMinor, o.currency)}</span>
                 <span>
                   <Badge tone={tone}>{label}</Badge>
                 </span>

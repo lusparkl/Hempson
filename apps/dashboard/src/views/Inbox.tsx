@@ -28,6 +28,11 @@ export function Inbox() {
       (!term || `${c.customer.displayName ?? ''} ${c.customer.handle ?? ''}`.toLowerCase().includes(term)),
   );
   const conv = all.find((c) => c.conversationId === sel) ?? null;
+  // As in the design, a wide screen opens on the first conversation; on phones the list stays first.
+  const first = all[0]?.conversationId;
+  useEffect(() => {
+    if (!sel && first && window.matchMedia('(min-width: 721px)').matches) setSel(first);
+  }, [sel, first]);
   const filters: Array<[Filter, string, number]> = [
     ['all', 'Усі', all.length],
     ['needs', 'Потрібна людина', all.filter((c) => needs.has(c.conversationId)).length],
