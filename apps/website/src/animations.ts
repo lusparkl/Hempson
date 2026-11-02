@@ -30,13 +30,6 @@ export const ANIMATIONS = {
     reducedMotion: 'State changes instantly.',
   },
 
-  'lang.switch': {
-    trigger: 'hover',
-    description: 'Language switcher (UA / RU): active-language indicator slides under the hovered option.',
-    durationMs: 150,
-    reducedMotion: 'Indicator does not move; hover only changes colour.',
-  },
-
   // Home
   'hero.intro': {
     trigger: 'load',

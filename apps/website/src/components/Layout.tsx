@@ -2,7 +2,6 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { AnimSlot } from './AnimSlot';
 import { usePage } from '../context';
 import { ButtonLink, LogoMark } from '../../../../packages/ui/src/components';
-import { LOCALES, LOCALE_LABEL, localePath } from '../i18n';
 import { ROUTES, pathOf } from '../routes';
 import { SITE } from '../site';
 
@@ -68,26 +67,6 @@ function NavLink({ id, label }: { id: (typeof ROUTES)[number]['id']; label: stri
   );
 }
 
-/** Links to the same page in every locale. Plain links, so it works without JS and search engines follow it. */
-export function LanguageSwitcher() {
-  const { d, locale, route } = usePage();
-  const path = route === 'notFound' ? '/' : pathOf(route);
-  return (
-    <AnimSlot id="lang.switch" as="div" className="lang-switch">
-      <span className="visually-hidden">{d.common.language}</span>
-      <ul>
-        {LOCALES.map((l) => (
-          <li key={l}>
-            <a href={localePath(l, path)} hrefLang={l} lang={l} aria-current={l === locale ? 'true' : undefined}>
-              {LOCALE_LABEL[l]}
-            </a>
-          </li>
-        ))}
-      </ul>
-    </AnimSlot>
-  );
-}
-
 function Footer() {
   const { d, href } = usePage();
   const f = d.common.footer;
@@ -116,7 +95,6 @@ function Footer() {
         </nav>
         <ContactList />
         <CompanyDetails compact />
-        <LanguageSwitcher />
       </div>
     </footer>
   );

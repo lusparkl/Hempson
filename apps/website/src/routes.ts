@@ -1,8 +1,8 @@
 import type { Dict } from './i18n';
 
 /**
- * Every page of the site. Paths are locale-neutral and end with `/` (each is prerendered to
- * `<path>index.html`); the `ru` copy lives under `/ru`. `notFound` has no path: it is written to `404.html`.
+ * Every page of the site. Paths end with `/` (each is prerendered to
+ * `<path>index.html`). `notFound` has no path: it is written to `404.html`.
  */
 export const ROUTES = [
   { id: 'home', path: '/', nav: null },

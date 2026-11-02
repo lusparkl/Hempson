@@ -1,14 +1,14 @@
 import { createContext, useContext } from 'react';
-import { localePath, t, type Dict, type Locale } from './i18n';
+import { uk, type Dict } from './i18n';
 import { pathOf, type RouteId } from './routes';
 import { SITE } from './site';
 
-export type PageContext = { locale: Locale; route: RouteId };
+export type PageContext = { route: RouteId };
 
-const Ctx = createContext<PageContext>({ locale: 'uk', route: 'home' });
+const Ctx = createContext<PageContext>({ route: 'home' });
 export const PageProvider = Ctx.Provider;
 
-/** Current locale, route and dictionary, plus helpers that build locale-aware links. */
+/** Current route and dictionary, plus link helpers. */
 export function usePage(): PageContext & {
   d: Dict;
   href: (id: Exclude<RouteId, 'notFound'>, hash?: string) => string;
@@ -17,8 +17,8 @@ export function usePage(): PageContext & {
   const ctx = useContext(Ctx);
   return {
     ...ctx,
-    d: t(ctx.locale),
-    href: (id, hash) => localePath(ctx.locale, pathOf(id)) + (hash ? `#${hash}` : ''),
+    d: uk,
+    href: (id, hash) => pathOf(id) + (hash ? `#${hash}` : ''),
     dashboard: (mode) => (mode === 'register' ? `${SITE.dashboardUrl}/?mode=register` : `${SITE.dashboardUrl}/`),
   };
 }

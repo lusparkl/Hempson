@@ -1,5 +1,5 @@
 /**
- * Ukrainian copy: the default locale and the source of the `Dict` shape every other locale must match.
+ * Site copy (Ukrainian only, D39). Its type is `Dict`.
  * Copy describes only what is built; unbuilt features carry `soon: true`. `{name}`-style tokens are
  * filled by `fmt`. Legal texts are drafts until a lawyer reviews them (`SITE.legalReviewed`).
  */
@@ -11,7 +11,6 @@ export const uk = {
     start: 'Почати',
     menuOpen: 'Відкрити меню',
     menuClose: 'Закрити меню',
-    language: 'Мова',
     tbd: 'Буде оголошено',
     soon: 'Скоро',
     draftNotice: 'Чернетка документа. Текст ще не перевірений юристом і може змінитися.',

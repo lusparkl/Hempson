@@ -8,9 +8,9 @@ import { Faq } from '../components/Faq';
 const RECOMMENDED: PlanId = 'growth';
 
 export function Pricing() {
-  const { d, locale, dashboard } = usePage();
+  const { d, dashboard } = usePage();
   const p = d.pages.pricing;
-  const num = new Intl.NumberFormat(locale === 'uk' ? 'uk-UA' : 'ru-UA');
+  const num = new Intl.NumberFormat('uk-UA');
   return (
     <>
       <PageHero title={p.title} intro={p.intro} />

@@ -147,7 +147,7 @@ Scope: everything needed for one shop to connect its own professional account an
 - Photo-based product search, reading a forwarded Instagram post (shared-media attachments from webhooks), upsell and alternative suggestions from catalog data (never invented products), public storefront. Each is its own session; image handling needs a decision on cost and image storage first.
 
 ## W1 Public website (D37)
-- Built: `apps/website`, every production page (home, features, pricing, about, security, contact, privacy, offer/terms, payment and refunds, cookies, data deletion, 404) in Ukrainian (default) and Russian, canonical/hreflang/Open Graph tags, sitemap and robots, catalogued animation slots without motion.
+- Built: `apps/website`, every production page (home, features, pricing, about, security, contact, privacy, offer/terms, payment and refunds, cookies, data deletion, 404) in Ukrainian (the Russian copy was removed, D39), canonical/Open Graph tags, sitemap and robots, catalogued animation slots without motion.
 - Next: visual design pass (owner, design mode); fill `src/site.ts` (domain, contacts, FOP details, prices); lawyer review of the legal texts, then `legalReviewed: true`; choose hosting. The privacy policy and data-deletion URLs are what Meta App Review asks for ("Later").
 
 ## P10 Design parity gaps (D38)

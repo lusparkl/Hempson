@@ -277,3 +277,12 @@ Real Instagram message webhooks were not delivered in repeated live tests (Live 
 
 **Not taken.** A published workspace package `@hepson/ui`: needs `pnpm install`, which is blocked by the build-approval issue. A CSS framework or icon package dependency: the design ships plain CSS and a small icon set.
 
+## D39 (2026-11-02): Ukrainian only, Russian version removed
+**Context.** The owner asked to remove the Russian version from the website and the project.
+
+**Decision.**
+- Website: `src/i18n/ru.ts`, the `/ru/` pages, the UA / RU switcher, `hreflang` alternates and the locale plumbing (`LOCALES`, `localePath`, `splitLocale`, the `locale` field of the page context) are gone. Every page is prerendered once at its path; `/ru/...` now gets the 404 page. Copy stays in `src/i18n/uk.ts` (`Dict`). This replaces the locale part of D37 and the `ru` part of D38.
+- Dashboard and API were already Ukrainian only.
+- Kept on purpose: the agent still replies in the customer's language (customers may write in Russian), so the reply guard keeps its Russian phrasings, and Nova Poshta city search still matches Russian spellings. These handle customer input; they are not a Russian version of the product.
+
+**Not taken.** Keeping the locale plumbing for one language: dead code with nothing to switch to; adding a locale later means restoring it from git.

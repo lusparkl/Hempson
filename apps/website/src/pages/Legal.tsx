@@ -5,9 +5,9 @@ import { SITE } from '../site';
 
 /** Shared layout of every legal document: title, date, draft notice, numbered sections, company and contacts. */
 export function Legal({ doc }: { doc: LegalRouteId }) {
-  const { d, locale } = usePage();
+  const { d } = usePage();
   const p = d.pages[doc];
-  const date = new Intl.DateTimeFormat(locale === 'uk' ? 'uk-UA' : 'ru-UA', { dateStyle: 'long', timeZone: 'UTC' }).format(new Date(SITE.legalUpdatedAt));
+  const date = new Intl.DateTimeFormat('uk-UA', { dateStyle: 'long', timeZone: 'UTC' }).format(new Date(SITE.legalUpdatedAt));
   return (
     <article className="legal">
       <header>

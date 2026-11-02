@@ -3,7 +3,6 @@ import { App } from './App';
 import { observeAnimations } from './animations';
 import type { PageContext } from './context';
 import { headTags } from './head';
-import { splitLocale } from './i18n';
 import { routeByPath } from './routes';
 import '../../../packages/ui/src/styles.css';
 import './styles.css';
@@ -19,11 +18,9 @@ if (ctxNode) {
   hydrateRoot(root, <App {...ctx} />);
 } else {
   // `vite dev`: no prerendered HTML, so resolve the route from the URL and render from scratch.
-  const { locale, path } = splitLocale(location.pathname);
-  const route = routeByPath(path);
-  document.documentElement.lang = locale;
-  document.head.insertAdjacentHTML('beforeend', headTags(locale, route));
-  createRoot(root).render(<App locale={locale} route={route} />);
+  const route = routeByPath(location.pathname);
+  document.head.insertAdjacentHTML('beforeend', headTags(route));
+  createRoot(root).render(<App route={route} />);
 }
 
 requestAnimationFrame(() => observeAnimations());

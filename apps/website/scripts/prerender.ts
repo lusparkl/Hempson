@@ -1,6 +1,6 @@
 /**
  * Turns the client build (`dist/`) and the SSR build (`.tmp/ssr/`) into static pages:
- * one `index.html` per route and locale, `404.html` per locale, `sitemap.xml` and `robots.txt`.
+ * one `index.html` per route, `404.html`, `sitemap.xml` and `robots.txt`.
  * Run by `pnpm --filter @hepson/website build`.
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -17,10 +17,9 @@ const template = readFileSync(join(dist, 'index.html'), 'utf8');
 // JSON in a <script> must not be able to close the tag.
 const safeJson = (s: string) => s.replace(/</g, '\\u003c');
 
-for (const { file, locale, route } of server.targets()) {
-  const page = server.render(locale, route);
+for (const { file, route } of server.targets()) {
+  const page = server.render(route);
   const html = template
-    .replace('<html lang="uk">', `<html lang="${locale}">`)
     .replace('<!--head-->', page.head)
     .replace('<!--app-->', page.html)
     .replace('</body>', `  <script id="page-ctx" type="application/json">${safeJson(page.ctx)}</script>\n  </body>`);
