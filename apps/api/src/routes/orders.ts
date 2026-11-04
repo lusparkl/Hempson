@@ -29,6 +29,7 @@ const draftP = z.object({ shopId: z.uuid(), draftId: z.uuid() });
 const listQuery = z.object({
   status: z.enum(ORDER_STATUSES).optional(),
   conversationId: z.uuid().optional(),
+  customerId: z.uuid().optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
@@ -75,6 +76,8 @@ const paymentView = (p: OrderPaymentRow) => ({
 
 const draftView = ({ draft: d, items }: OrderDraft, pay?: OrderPaymentRow, notices: CustomerNoticeRow[] = []) => ({
   draftId: d.id,
+  /** Per-shop sequential number shown as №. */
+  number: d.number,
   conversationId: d.conversationId,
   customerId: d.customerId,
   status: d.status,
@@ -168,7 +171,7 @@ export function registerOrderRoutes(
       const rows: Cell[][] = [uk ? EXPORT_HEADERS.uk : EXPORT_HEADERS.en];
       for (const { draft: d, items, paidAt } of list)
         rows.push([
-          d.id.slice(0, 8),
+          d.number,
           d.id,
           kyivDateTime(d.createdAt),
           d.status,

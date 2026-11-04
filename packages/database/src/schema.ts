@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { CREDENTIAL_KINDS, CREDENTIAL_STATUSES } from './credential-kinds';
 import { CUSTOMER_NOTICE_EVENTS, CUSTOMER_NOTICE_STATES, ORDER_STATUSES, PAYMENT_METHODS, PAYMENT_PROVIDERS, PAYMENT_STATES, PLAN_NAMES, POLICY_TOPICS } from './order-kinds';
-import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // NOTE: no column here may ever hold cookies, tokens, passwords, 2FA secrets or profile bytes.
 // Browser auth state lives only in the protected per-account user-data directory.
@@ -263,6 +263,10 @@ export const customers = sqliteTable(
     externalId: text('external_id').notNull(),
     displayName: text('display_name'),
     handle: text('handle'),
+    /** P10: the shop's private note about this customer (members only; never shown to the AI or the customer). */
+    note: text('note'),
+    noteUpdatedAt: text('note_updated_at'),
+    noteUpdatedByUserId: text('note_updated_by_user_id').references(() => users.id),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
@@ -336,6 +340,28 @@ export const shopMessages = sqliteTable(
     check('shop_msg_sender_dir', sql`(${t.direction} = 'incoming' and ${t.senderType} = 'customer') or (${t.direction} = 'outgoing' and ${t.senderType} <> 'customer')`),
     check('shop_msg_human_user', sql`${t.senderUserId} is null or ${t.senderType} = 'human'`),
   ],
+);
+
+/**
+ * P10 read marker: the highest message `seq` a member has seen in a conversation. A conversation is unread for that
+ * member while it has a customer message with a higher seq (no row = nothing seen yet).
+ */
+export const conversationReads = sqliteTable(
+  'conversation_reads',
+  {
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    conversationId: text('conversation_id')
+      .notNull()
+      .references(() => shopConversations.id),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    lastSeenSeq: integer('last_seen_seq').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.conversationId, t.userId] }), index('conversation_reads_user_idx').on(t.shopId, t.userId)],
 );
 
 /** Per-shop AI switch and extra instructions (Feature 6). Absent row = AI off. */
@@ -465,6 +491,8 @@ export const orderDrafts = sqliteTable(
     customerId: text('customer_id')
       .notNull()
       .references(() => customers.id),
+    /** P10: per-shop sequential order number (1, 2, 3, ...), assigned on insert; what members and customers see as №. */
+    number: integer('number').notNull().default(0),
     status: text('status', { enum: ORDER_STATUSES }).notNull(),
     createdBy: text('created_by', { enum: ['ai', 'user'] }).notNull(),
     runId: text('run_id').references(() => aiRuns.id),
@@ -512,6 +540,7 @@ export const orderDrafts = sqliteTable(
     index('order_drafts_shop_idx').on(t.shopId, t.status, t.createdAt),
     index('order_drafts_conv_idx').on(t.conversationId, t.status),
     uniqueIndex('order_drafts_ttn_uq').on(t.shopId, t.ttn),
+    uniqueIndex('order_drafts_number_uq').on(t.shopId, t.number),
     check('order_drafts_total_nonneg', sql`${t.totalMinor} >= 0`),
   ],
 );
@@ -852,3 +881,21 @@ export const shopPlans = sqliteTable('shop_plans', {
   capNoticeMonth: text('cap_notice_month'),
   updatedAt: text('updated_at').notNull(),
 });
+
+/**
+ * P10 notification centre: up to when a member has seen the shop's notification feed. The feed itself is computed from
+ * escalations, order events, payments and TTN state; items newer than `seenAt` are unread (no row = all unread).
+ */
+export const notificationReads = sqliteTable(
+  'notification_reads',
+  {
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    seenAt: text('seen_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.shopId, t.userId] })],
+);

@@ -6,6 +6,7 @@ import {
   CredentialMissingError,
   CredentialsUnavailableError,
   PaymentStateError,
+  orderLabel,
   type AgentRepository,
   type CredentialVault,
   type OrderDraft,
@@ -65,9 +66,9 @@ function kyivTime(iso: string): string {
  * Fixed customer texts (D24: the link is never model-composed). Ukrainian for `uk` shops, English otherwise. The amount is
  * the order total stored by the server, the URL is the payment page Monobank returned.
  */
-export function paymentText(kind: 'link' | 'reminder', p: { language: string; orderId: string; amountMinor: number; url: string; expiresAt: string }): string {
+export function paymentText(kind: 'link' | 'reminder', p: { language: string; order: string; amountMinor: number; url: string; expiresAt: string }): string {
   const uk = p.language.toLowerCase().startsWith('uk');
-  const id = p.orderId.slice(0, 8);
+  const id = p.order;
   const until = kyivTime(p.expiresAt);
   if (kind === 'link')
     return uk
@@ -232,7 +233,7 @@ export class PaymentService {
           amountMinor: pay.amountMinor,
           ccy: CURRENCY_NUMERIC[pay.currency]!,
           reference: draftId,
-          destination: `Замовлення ${draftId.slice(0, 8)}`,
+          destination: `Замовлення ${orderLabel(d)}`,
           validitySec: Math.floor(left / 1000),
           webHookUrl: this.webhookUrl(repo.getSettings(shopId).webhookId),
           redirectUrl: null,
@@ -254,7 +255,7 @@ export class PaymentService {
     const d = this.d.orders.getDraft(shopId, pay.draftId)?.draft;
     if (!d || !pay.pageUrl) return;
     if (kind === 'link' && !this.d.repo.claimLinkMessage(shopId, pay.id)) return;
-    const text = paymentText(kind, { language: this.d.shops.get(shopId)?.defaultLanguage ?? 'uk', orderId: d.id, amountMinor: pay.amountMinor, url: pay.pageUrl, expiresAt: pay.expiresAt });
+    const text = paymentText(kind, { language: this.d.shops.get(shopId)?.defaultLanguage ?? 'uk', order: orderLabel(d), amountMinor: pay.amountMinor, url: pay.pageUrl, expiresAt: pay.expiresAt });
     let r: { status: string; code: string | null };
     try {
       r = await this.d.send(shopId, d.conversationId, text, `payment-${kind}:${pay.id}`);
@@ -345,7 +346,8 @@ export class PaymentService {
       const e = this.d.agent.escalate(shopId, c, reason);
       if (e.created) this.d.notifier?.notify({ kind: 'escalation', shopId, conversationId: c, reason });
     };
-    const id = p.draftId.slice(0, 8);
+    const dr = this.d.orders.getDraft(shopId, p.draftId)?.draft;
+    const id = dr ? orderLabel(dr) : p.draftId.slice(0, 8);
     if (r.outcome === 'paid') {
       this.notifyOrder(shopId, p.draftId, 'paid');
       this.d.delivery.afterPaid(shopId, p.draftId);

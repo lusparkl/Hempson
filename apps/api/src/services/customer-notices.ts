@@ -1,4 +1,12 @@
-import type { CustomerNoticeEvent, CustomerNoticeRepository, CustomerNoticeRow, OrderDraftRow, OrderRepository, ShopRepository } from '@hepson/database';
+import {
+  orderLabel,
+  type CustomerNoticeEvent,
+  type CustomerNoticeRepository,
+  type CustomerNoticeRow,
+  type OrderDraftRow,
+  type OrderRepository,
+  type ShopRepository,
+} from '@hepson/database';
 import type { Notifier } from './notifier';
 import type { CustomerSender } from './payments';
 
@@ -29,7 +37,7 @@ const money = (minor: number, currency: string, uk: boolean) => {
  */
 export function noticeText(event: CustomerNoticeEvent, d: OrderDraftRow, language: string): string | null {
   const uk = language.toLowerCase().startsWith('uk');
-  const id = d.id.slice(0, 8);
+  const id = orderLabel(d);
   const amount = money(d.totalMinor, d.currency, uk);
   const branch = d.npCityName && d.npWarehouseName ? `${d.npCityName}, ${d.npWarehouseName}` : null;
   switch (event) {

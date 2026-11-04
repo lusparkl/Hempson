@@ -117,9 +117,40 @@ const MONTH = ['січень', 'лютий', 'березень', 'квітень
 export const monthName = (ym: string, inside = false) => (inside ? MONTH_IN : MONTH)[Number(ym.slice(5, 7)) - 1] ?? ym;
 export type AiSettings = { enabled: boolean; instructions: string; available: boolean; autonomy: 'approval_required' | 'auto_confirm'; autoConfirmMaxMinor: number | null; autonomyChangedAt: string | null };
 export type Escalation = { escalationId: string; conversationId: string; reason: string; createdAt: string };
-export type Customer = { customerId: string; channel: string; displayName: string | null; handle: string | null; createdAt: string };
-export type Conv = { conversationId: string; channel: string; lastMessageAt: string | null; aiPaused: boolean; createdAt: string; customer: Customer };
+export type Customer = { customerId: string; channel: string; displayName: string | null; handle: string | null; note: string | null; noteUpdatedAt: string | null; createdAt: string };
+export type CustomerCard = Customer & {
+  profile: { phone: string | null; city: string | null; orders: { count: number; placed: number; totals: Array<{ currency: string; totalMinor: number }>; lastAt: string | null } };
+};
+export type LastMessage = { text: string | null; senderType: 'customer' | 'ai' | 'human' | 'system'; attachments: number; at: string };
+export type Conv = {
+  conversationId: string;
+  channel: string;
+  lastMessageAt: string | null;
+  aiPaused: boolean;
+  createdAt: string;
+  customer: Customer;
+  lastMessage: LastMessage | null;
+  /** A customer message the current member has not seen. */
+  unread: boolean;
+};
 export const customerName = (c: Pick<Customer, 'displayName' | 'handle'>) => c.displayName ?? (c.handle ? `@${c.handle.replace(/^@/, '')}` : 'Клієнт');
+/** One-line preview of a conversation's newest message, with who wrote it when it was not the customer. */
+export const preview = (m: LastMessage | null) => {
+  if (!m) return 'Повідомлень ще немає';
+  const body = m.text?.trim() || (m.attachments ? 'Вкладення' : '…');
+  return m.senderType === 'ai' ? `ШІ: ${body}` : m.senderType === 'human' ? `Ви: ${body}` : body;
+};
+/** Per-shop order number as shown to members and customers. */
+export const orderNo = (n: number) => `№${n}`;
+
+type FeedOrder = { draftId: string; number: number; currency: string; totalMinor: number; customer: string | null };
+export type FeedItem = { id: string; at: string; unread: boolean } & (
+  | { kind: 'handoff'; conversationId: string; reason: string; resolved: boolean; customer: string | null }
+  | ({ kind: 'order_new'; createdBy: 'ai' | 'user'; status: string } & FeedOrder)
+  | ({ kind: 'payment_problem'; state: string; flag: string | null } & FeedOrder)
+  | ({ kind: 'ttn_problem'; ttnState: 'failed' | 'uncertain'; ttnError: string | null } & FeedOrder)
+);
+export type Feed = { seenAt: string | null; unread: number; items: FeedItem[] };
 
 export type StatsData = {
   period: { from: string; to: string };
@@ -128,7 +159,10 @@ export type StatsData = {
   ai: { runs: number; byStatus: Record<string, number>; modelRequests: number; inputTokens: number; outputTokens: number; replyRate: number | null };
   escalations: { opened: number; resolved: number; openNow: number; avgResolutionSeconds: number | null };
   orderDrafts: { byStatus: Record<string, number>; approved: Array<{ currency: string; count: number; totalMinor: number }> };
-  daily: Array<{ date: string; runs: number; replied: number; escalated: number; inputTokens: number; outputTokens: number }>;
+  /** Shop default currency; `daily[].revenueMinor` is in it. */
+  currency: string;
+  /** Every UTC day of the period, zeros included. */
+  daily: Array<{ date: string; runs: number; replied: number; escalated: number; inputTokens: number; outputTokens: number; newCustomers: number; outgoingHuman: number; approved: number; revenueMinor: number }>;
   funnel: { conversations: number; drafts: number; approved: number; paid: number; shipped: number; delivered: number };
   orderSources: { drafts: { ai: number; human: number }; approved: { ai: number; human: number }; approvedBy: { human: number; auto: number } };
   usage: Usage;

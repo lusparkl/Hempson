@@ -2,7 +2,8 @@ import { createContext, useContext, useEffect, useState, type FormEvent, type Re
 import { LoginFlow } from '../../../packages/ui/src/embeds/LoginFlow';
 import { Logo } from '../../../packages/ui/src/components';
 import { ApiError, UNAUTHORIZED, api, errText, monthName, token, useLoad, type AiSettings, type Escalation, type Me, type Shop, type Usage } from './api';
-import { ActionsSlot, Button, Icon, Input, ToastProvider, UsageMeter, useToast, type IconName } from './ui';
+import { Bell } from './Notifications';
+import { ActionsSlot, Button, Icon, Input, ToastProvider, UsageMeter, type IconName } from './ui';
 import { Catalog } from './views/Catalog';
 import { Inbox } from './views/Inbox';
 import { Orders } from './views/Orders';
@@ -30,9 +31,11 @@ type ShopContext = {
   params: NavParams;
   escalations: Escalation[];
   pendingOrders: number;
+  /** Conversations with a customer message this member has not seen. */
+  unreadConversations: number;
   usage: Usage | null;
   ai: AiSettings | null;
-  /** Reloads the shell's counters (open escalations, pending orders, usage, AI state). */
+  /** Reloads the shell's counters (open escalations, pending orders, unread conversations, usage, AI state). */
   refresh: () => void;
 };
 const Ctx = createContext<ShopContext | null>(null);
@@ -194,12 +197,12 @@ function Shell({ onLogout }: { onLogout: () => void }) {
 
 function ShopApp({ shop, shops, me, onPick, onAdd, onLogout }: { shop: Shop; shops: Shop[]; me: Me['user'] | null; onPick: (id: string) => void; onAdd: () => void; onLogout: () => void }) {
   const base = `/v1/shops/${shop.shopId}`;
-  const say = useToast();
   const [page, setPage] = useState<Page>(pageFromHash);
   const [params, setParams] = useState<NavParams>({});
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
   const esc = useLoad(() => api<{ items: Escalation[] }>('GET', `${base}/escalations?status=open`), [base], 8000);
   const pending = useLoad(() => api<{ total: number }>('GET', `${base}/order-drafts?status=pending_approval&limit=1`), [base], 8000);
+  const unread = useLoad(() => api<{ count: number }>('GET', `${base}/conversations/unread-count`), [base], 8000);
   const usage = useLoad(() => api<Usage>('GET', `${base}/usage`), [base], 60_000);
   const ai = useLoad(() => api<AiSettings>('GET', `${base}/ai`), [base]);
 
@@ -220,16 +223,18 @@ function ShopApp({ shop, shops, me, onPick, onAdd, onLogout }: { shop: Shop; sho
     params,
     escalations: esc.data?.items ?? [],
     pendingOrders: pending.data?.total ?? 0,
+    unreadConversations: unread.data?.count ?? 0,
     usage: usage.data,
     ai: ai.data,
     refresh: () => {
       void esc.reload();
       void pending.reload();
+      void unread.reload();
       void usage.reload();
       void ai.reload();
     },
   };
-  const counts: Partial<Record<Page, number>> = { inbox: ctx.escalations.length, orders: ctx.pendingOrders };
+  const counts: Partial<Record<Page, number>> = { inbox: ctx.unreadConversations, orders: ctx.pendingOrders };
   const u = usage.data;
   const month = u ? monthName(u.month) : '';
   const st = aiState(ai.data, u);
@@ -307,11 +312,7 @@ function ShopApp({ shop, shops, me, onPick, onAdd, onLogout }: { shop: Shop; sho
               <span className="ai-dot" style={{ background: st.color, boxShadow: `0 0 0 3px ${st.ring}` }} />
               <span>{st.label}</span>
             </div>
-            {/* P10: notification centre. Until then the bell only signals open hand-offs. */}
-            <button className="bell" title="Сповіщення" aria-label="Сповіщення" onClick={() => (ctx.escalations.length ? go('orders') : say('Центр сповіщень з’явиться незабаром'))}>
-              <Icon name="bell" size={18} />
-              {ctx.escalations.length > 0 && <span className="bell-dot" />}
-            </button>
+            <Bell base={base} go={go} />
           </header>
           <main className="content">
             <ActionsSlot value={slot}>

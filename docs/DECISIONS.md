@@ -286,3 +286,17 @@ Real Instagram message webhooks were not delivered in repeated live tests (Live 
 - Kept on purpose: the agent still replies in the customer's language (customers may write in Russian), so the reply guard keeps its Russian phrasings, and Nova Poshta city search still matches Russian spellings. These handle customer input; they are not a Russian version of the product.
 
 **Not taken.** Keeping the locale plumbing for one language: dead code with nothing to switch to; adding a locale later means restoring it from git.
+
+## D40 (2026-11-04): P10 design parity backend
+**Context.** The Dashboard v3 design shows data the API did not have (last-message preview, unread state, customer notes and profile, notification centre, per-day KPI series, order numbers), and the design system loaded Geist from Google Fonts.
+
+**Decision.**
+- Conversation list and detail carry `lastMessage` (newest customer/AI/human message; system lines skipped) and `unread` for the calling member. Read state is `conversation_reads` (member, conversation, last seen `seq`); only customer messages make a conversation unread. The dashboard marks the open conversation read while the tab is visible; a human reply marks it read on the server. `GET /conversations/unread-count` drives the inbox nav count.
+- Customer notes are `customers.note` (2000 characters, any member, `PUT /customers/:id/note`). They are private to the shop: never put into the AI prompt or a customer text. `GET /customers/:id` adds a profile computed from that customer's orders across conversations (newest phone and city, order counts and totals); no customer-level contact columns, so nothing can drift from the orders.
+- The notification centre (`/notification-feed`, separate from `/notifications`, which configures the Telegram chat) is computed from escalations, order creation events, problem payments (`create_failed`, `failure`, `reversed`, `expired`, or a Hepson flag) and TTN problems (`failed`, `uncertain`) of the last 30 days. Read state is one `seenAt` marker per member and shop. A computed feed cannot miss an item because some code path forgot to write it; the cost is that a TTN/payment problem resurfaces as unread when that row's `updated_at` moves.
+- Stats `daily` is dense (every UTC day of the period, zeros included) and adds `newCustomers`, `outgoingHuman`, `approved` (distinct orders moved to `approved`, as the funnel) and `revenueMinor` (in the shop's default currency, returned as `currency`).
+- Orders get a per-shop sequential `number`, assigned in the insert transaction (unique per shop) and backfilled in creation order by the migration. Members and customers see the same `№N`: dashboard, Excel export, Telegram texts, customer notices, payment link text and Monobank destination, and the agent's order-status tool.
+- The migration marks existing history as seen for existing members (reads at the current newest seq, feed `seenAt` = migration time), so an upgrade does not flood every member with unread items.
+- Geist and Geist Mono are self-hosted variable woff2 files in `packages/ui/src/fonts` (from `@fontsource-variable/geist` 5.2.8 and `geist-mono` 5.2.7, SIL OFL 1.1, licence next to them). No page requests a third-party font host any more (D37).
+
+**Not taken.** A notifications table written by every service: many writers, easy to miss one. Customer-level phone/city columns: a second copy of order data. Per-currency daily revenue: one shop currency covers the KPI card; other currencies keep their period totals.

@@ -12,7 +12,10 @@ export function Stats() {
   const s = useLoad(() => api<StatsData>('GET', statsUrl(shop.shopId, days)), [shop.shopId, days]);
   const d = s.data;
   const rev = d ? revenue(d, shop.defaultCurrency) : null;
-  const max = Math.max(1, ...(d?.daily.map((x) => x.replied) ?? []));
+  // Stacked per-day bars: AI replies below, human replies on top.
+  const max = Math.max(1, ...(d?.daily.map((x) => x.replied + x.outgoingHuman) ?? []));
+  const empty = !d?.daily.some((x) => x.replied + x.outgoingHuman > 0);
+  const bar = (n: number, color: string) => (n ? <div style={{ background: color, borderRadius: 2, flex: 'none', height: `calc(${(n / max) * 100}% - 2px)`, minHeight: 2 }} /> : null);
   const rows = (pairs: Array<[string, string | number]>) =>
     pairs.map(([k, v]) => (
       <div key={k} className="trow">
@@ -67,21 +70,24 @@ export function Stats() {
                   <i style={{ background: 'var(--brand-600)' }} />
                   ШІ
                 </span>
-                {/* P10: per-day human replies in the stats API; the series is empty until then. */}
-                <span title="Щоденні відповіді людей з’являться незабаром">
+                <span>
                   <i style={{ background: 'var(--accent-pink)' }} />
                   Люди
                 </span>
               </span>
             }
           >
-            <div className="bars" style={{ gap: d.daily.length > 12 ? 6 : 14 }}>
-              {d.daily.map((b) => (
-                <div key={b.date} title={`${fmtDay(b.date)}: відповідей ШІ ${b.replied}, запусків ${b.runs}`}>
-                  <div style={{ background: 'var(--brand-600)', borderRadius: 2, height: `${Math.max(b.replied ? 2 : 0, (b.replied / max) * 100)}%` }} />
-                </div>
-              ))}
-              {d.daily.length === 0 && <div className="placeholder">Даних за період немає</div>}
+            <div className="bars" style={{ gap: d.daily.length > 60 ? 2 : d.daily.length > 12 ? 4 : 14 }}>
+              {empty ? (
+                <div className="placeholder">Даних за період немає</div>
+              ) : (
+                d.daily.map((b) => (
+                  <div key={b.date} title={`${fmtDay(b.date)}: відповідей ШІ ${b.replied}, людей ${b.outgoingHuman}`}>
+                    {bar(b.outgoingHuman, 'var(--accent-pink)')}
+                    {bar(b.replied, 'var(--brand-600)')}
+                  </div>
+                ))
+              )}
             </div>
             <div className="bars-axis">
               <span>{fmtDay(d.period.from)}</span>

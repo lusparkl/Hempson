@@ -1,4 +1,4 @@
-import type { AgentRepository, ConversationRepository, CustomerNoticeEvent, ShopRepository } from '@hepson/database';
+import type { AgentRepository, ConversationRepository, CustomerNoticeEvent, OrderRepository, ShopRepository } from '@hepson/database';
 
 type Logger = { warn(o: object, m?: string): void };
 
@@ -51,8 +51,11 @@ export interface Notifier {
 
 const money = (minor: number, cur: string) => `${(minor / 100).toFixed(2)} ${cur}`;
 
-/** Plain text, no markup (so customer-derived text cannot inject formatting). Ukrainian for `uk` shops, English otherwise. */
-export function renderNotification(n: Notification, ctx: { shopName: string; language: string; customer: string }): string {
+/**
+ * Plain text, no markup (so customer-derived text cannot inject formatting). Ukrainian for `uk` shops, English otherwise.
+ * `order` is the order's display number (`№12`); without it the text names the order by its id prefix.
+ */
+export function renderNotification(n: Notification, ctx: { shopName: string; language: string; customer: string; order?: string }): string {
   const uk = ctx.language.toLowerCase().startsWith('uk');
   if (n.kind === 'channel_issue' && n.channel === 'telegram') {
     return uk
@@ -75,7 +78,7 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
       : `[${ctx.shopName}] The AI reply limit for ${n.month} is used up (${n.cap}). Until the month ends the AI does not answer: new conversations go to people ("Needs a human"). Contact Hepson to raise the limit.`;
   }
   if (n.kind === 'order_update') {
-    const id = n.draftId.slice(0, 8);
+    const id = ctx.order ?? n.draftId.slice(0, 8);
     const link = n.link ?? '';
     const ttn = n.ttn ? ` ТТН ${n.ttn}` : '';
     const ttnEn = n.ttn ? ` TTN ${n.ttn}` : '';
@@ -148,8 +151,8 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
   }
   const total = money(n.totalMinor, n.currency);
   return uk
-    ? `[${ctx.shopName}] Нова чернетка замовлення чекає підтвердження.\nКлієнт: ${ctx.customer}\nПозицій: ${n.itemCount}, разом ${total}`
-    : `[${ctx.shopName}] A new order draft awaits approval.\nCustomer: ${ctx.customer}\nItems: ${n.itemCount}, total ${total}`;
+    ? `[${ctx.shopName}] Нова чернетка замовлення${ctx.order ? ` ${ctx.order}` : ''} чекає підтвердження.\nКлієнт: ${ctx.customer}\nПозицій: ${n.itemCount}, разом ${total}`
+    : `[${ctx.shopName}] A new order draft${ctx.order ? ` ${ctx.order}` : ''} awaits approval.\nCustomer: ${ctx.customer}\nItems: ${n.itemCount}, total ${total}`;
 }
 
 export type TelegramDeps = {
@@ -157,6 +160,8 @@ export type TelegramDeps = {
   agent: AgentRepository;
   shops: ShopRepository;
   conversations: ConversationRepository;
+  /** Gives order texts the shop's order number; without it they use the id prefix. */
+  orders?: OrderRepository;
   log: Logger;
   /** Override for tests. */
   fetchImpl?: typeof fetch;
@@ -191,7 +196,8 @@ export class TelegramNotifier implements Notifier {
     if (!shop) return;
     const conv = 'conversationId' in n ? this.d.conversations.getConversation(n.shopId, n.conversationId) : undefined;
     const customer = conv?.customer.displayName || conv?.customer.handle || '?';
-    const text = renderNotification(n, { shopName: shop.name, language: shop.defaultLanguage, customer });
+    const num = 'draftId' in n ? this.d.orders?.getDraft(n.shopId, n.draftId)?.draft.number : undefined;
+    const text = renderNotification(n, { shopName: shop.name, language: shop.defaultLanguage, customer, ...(num ? { order: `№${num}` } : {}) });
     const res = await (this.d.fetchImpl ?? fetch)(`${this.d.baseUrl ?? 'https://api.telegram.org'}/bot${this.d.token}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

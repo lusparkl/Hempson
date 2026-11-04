@@ -18,3 +18,4 @@ export * from './delivery';
 export * from './payments';
 export * from './notices';
 export * from './plans';
+export * from './notifications';

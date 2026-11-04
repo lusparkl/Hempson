@@ -176,6 +176,16 @@ textarea.field { resize: vertical; line-height: 1.5; }
 .menu { position: absolute; right: 0; top: 40px; z-index: 30; background: #fff; border: 1px solid var(--border-default); border-radius: 8px; box-shadow: var(--shadow-lg); padding: 6px; min-width: 190px; display: flex; flex-direction: column; }
 .menu button { font: inherit; font-size: 14px; text-align: left; border: 0; background: none; padding: 9px 12px; border-radius: 4px; cursor: pointer; color: var(--ink-800); }
 .menu button:hover { background: var(--brand-50); }
+.notif { position: absolute; right: 0; top: 44px; z-index: 40; width: min(400px, calc(100vw - 32px)); background: #fff; border: 1px solid var(--border-default); border-radius: 8px; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; max-height: min(560px, calc(100vh - 96px)); }
+.notif-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border-subtle, var(--border-default)); font-size: 13px; }
+.notif-head strong { font-size: 15px; font-weight: 500; color: var(--ink-900); }
+.notif-list { overflow-y: auto; padding: 6px; }
+.notif-item { width: 100%; display: flex; align-items: center; gap: 12px; font: inherit; text-align: left; border: 0; background: none; padding: 10px; border-radius: 6px; cursor: pointer; }
+.notif-item:hover { background: var(--ink-50); }
+.notif-item[data-fresh] { background: var(--brand-50); }
+.notif-item .task-tile { width: 32px; height: 32px; }
+.notif-title { display: block; font-size: 14px; font-weight: 500; color: var(--ink-900); }
+.notif-sub { display: block; font-size: 13px; color: var(--text-muted); margin-top: 2px; }
 
 /* Catalog */
 .toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -268,5 +278,6 @@ textarea.field { resize: vertical; line-height: 1.5; }
   .thread-head .hs-switch { font-size: 0; gap: 0; }
   .msgs { padding: 16px; }
   .grid2 { grid-template-columns: 1fr; }
+  .notif { position: fixed; top: 64px; left: 16px; right: 16px; width: auto; }
 }
 .back { display: none; }

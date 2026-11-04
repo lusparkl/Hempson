@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useShop } from '../App';
-import { api, errText, money, moneyList, shortWhen, token, useLoad, when } from '../api';
+import { api, errText, money, moneyList, orderNo, shortWhen, token, useLoad, when } from '../api';
 import { Alert, Avatar, Badge, Button, HeaderActions, Icon, useToast, type Tone } from '../ui';
 
 type Item = { sku: string; productName: string; options: Record<string, string>; quantity: number; unitPriceMinor: number };
 export type Draft = {
   draftId: string;
+  /** Per-shop sequential number. */
+  number: number;
   conversationId: string | null;
   customerId: string;
   status: string;
@@ -67,8 +69,6 @@ const NOTICE_WHY: Record<string, string> = { OUTSIDE_MESSAGING_WINDOW: '24-го�
 const MISSING: Record<string, string> = { 'recipient name': 'ім’я отримувача', phone: 'телефон', 'Nova Poshta city': 'місто', 'Nova Poshta branch': 'відділення Нової Пошти', 'payment method': 'спосіб оплати' };
 const PAID = ['paid', 'shipped', 'delivered', 'returning', 'returned'];
 const HELD = ['approved', 'awaiting_payment', 'cod_confirmed', 'paid'];
-/** P10: human-readable order numbers. Until then a short form of the draft id. */
-export const orderNo = (id: string) => `№${id.slice(0, 6).toUpperCase()}`;
 
 export function Orders() {
   const { shop, params, escalations, go, refresh } = useShop();
@@ -158,7 +158,7 @@ export function Orders() {
                       {name}
                     </span>
                     <span style={{ display: 'block', fontSize: 12 }} className="subtle">
-                      {orderNo(o.draftId)} · {shortWhen(o.createdAt)}
+                      {orderNo(o.number)} · {shortWhen(o.createdAt)}
                     </span>
                   </span>
                 </span>
@@ -192,7 +192,7 @@ function Detail({ d, busy, act }: { d: Draft; busy: boolean; act: (path: string,
       <div className="detail-sec" style={{ gap: 6, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 13 }} className="subtle">
-            {orderNo(d.draftId)} · {shortWhen(d.createdAt)} · {d.createdBy === 'ai' ? 'створив ШІ' : 'вручну'}
+            {orderNo(d.number)} · {shortWhen(d.createdAt)} · {d.createdBy === 'ai' ? 'створив ШІ' : 'вручну'}
           </span>
           <span style={{ marginLeft: 'auto' }}>
             <Badge tone={tone}>{label}</Badge>
@@ -292,10 +292,10 @@ function Detail({ d, busy, act }: { d: Draft; busy: boolean; act: (path: string,
         <div className="actions">
           {d.status === 'pending_approval' && (
             <>
-              <Button variant="primary" size="md" disabled={busy} onClick={() => void act('approve', 'Підтвердити замовлення? Залишки на складі зменшаться.', `Замовлення ${orderNo(d.draftId)} підтверджено`)}>
+              <Button variant="primary" size="md" disabled={busy} onClick={() => void act('approve', 'Підтвердити замовлення? Залишки на складі зменшаться.', `Замовлення ${orderNo(d.number)} підтверджено`)}>
                 Підтвердити
               </Button>
-              <Button variant="secondary" size="md" disabled={busy} onClick={() => void act('reject', 'Відхилити чернетку?', `Замовлення ${orderNo(d.draftId)} відхилено`)}>
+              <Button variant="secondary" size="md" disabled={busy} onClick={() => void act('reject', 'Відхилити чернетку?', `Замовлення ${orderNo(d.number)} відхилено`)}>
                 Відхилити
               </Button>
             </>

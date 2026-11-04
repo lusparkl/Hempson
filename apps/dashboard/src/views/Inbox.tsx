@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useShop } from '../App';
-import { ago, api, customerName, dateOnly, errText, hhmm, money, useLoad, type Conv } from '../api';
+import { ago, api, customerName, dateOnly, errText, hhmm, money, orderNo, preview, shortWhen, useLoad, type Conv, type CustomerCard } from '../api';
 import { Avatar, Badge, Button, Icon, Switch, Textarea, useToast, type IconName } from '../ui';
 import { STATUS, type Draft } from './Orders';
 
-type Msg = { messageId: string; direction: 'incoming' | 'outgoing'; senderType: 'customer' | 'ai' | 'human' | 'system'; text: string | null; deliveryStatus: string; deliveryError: string | null; occurredAt: string };
+type Msg = { messageId: string; direction: 'incoming' | 'outgoing'; senderType: 'customer' | 'ai' | 'human' | 'system'; text: string | null; deliveryStatus: string; deliveryError: string | null; seq: number; occurredAt: string };
 
 const CH: Record<string, [string, IconName]> = { instagram: ['Instagram', 'instagram'], 'instagram-official': ['Instagram', 'instagram'], telegram: ['Telegram', 'send'], website: ['Чат на сайті', 'globe'] };
 export const channelLabel = (ch: string) => CH[ch]?.[0] ?? ch;
@@ -72,9 +72,8 @@ export function Inbox() {
                       {ago(c.lastMessageAt)}
                     </span>
                   </div>
-                  {/* P10: last-message preview; until then the line shows who is handling the chat. */}
-                  <div className="ellipsis muted" style={{ fontSize: 14, marginTop: 2 }}>
-                    {c.aiPaused ? 'Розмову веде людина' : 'ШІ відповідає'}
+                  <div className="ellipsis muted" style={{ fontSize: 14, marginTop: 2, ...(c.unread ? { color: 'var(--ink-900)' } : {}) }}>
+                    {preview(c.lastMessage)}
                   </div>
                   <div className="conv-meta">
                     <Icon name={channelIcon(c.channel)} size={13} />
@@ -82,8 +81,7 @@ export function Inbox() {
                     {need ? <span className="tag warn">Потрібна людина</span> : c.aiPaused ? <span className="tag paused">ШІ на паузі</span> : null}
                   </div>
                 </div>
-                {/* P10: real unread state; until then the dot marks an open hand-off. */}
-                {need && <span className="unread" />}
+                {c.unread && <span className="unread" role="img" aria-label="Непрочитане" />}
               </button>
             );
           })}
@@ -125,6 +123,22 @@ function Thread({ base, conv, onBack, onChange }: { base: string; conv: Conv; on
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'end' });
   }, [count]);
+  // The open conversation counts as read while the page is visible: on load, on each new message, and when the tab comes back.
+  const lastSeq = msgs.data?.items.at(-1)?.seq ?? 0;
+  const seen = useRef(0);
+  useEffect(() => {
+    const mark = () => {
+      if (!lastSeq || seen.current >= lastSeq || document.visibilityState !== 'visible') return;
+      seen.current = lastSeq;
+      void api('PUT', `${url}/read`, { seq: lastSeq })
+        .then(() => onChange())
+        .catch(() => (seen.current = 0));
+    };
+    mark();
+    document.addEventListener('visibilitychange', mark);
+    return () => document.removeEventListener('visibilitychange', mark);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastSeq, url]);
 
   const toggleAi = async () => {
     try {
@@ -195,7 +209,7 @@ function Thread({ base, conv, onBack, onChange }: { base: string; conv: Conv; on
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontSize: 12 }} className="subtle">
-                        Чернетка замовлення · {d.createdBy === 'ai' ? 'створив ШІ' : 'вручну'}
+                        Чернетка замовлення {orderNo(d.number)} · {d.createdBy === 'ai' ? 'створив ШІ' : 'вручну'}
                       </div>
                       <div className="amount">{money(d.totalMinor, d.currency)}</div>
                     </div>
@@ -268,16 +282,34 @@ function Thread({ base, conv, onBack, onChange }: { base: string; conv: Conv; on
   );
 }
 
+/** `1 замовлення`, `3 замовлення`, `5 замовлень` */
+const ordersWord = (n: number) => (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)) || (n % 10 === 1 && n % 100 !== 11) ? 'замовлення' : 'замовлень';
+
 function Side({ base, conv }: { base: string; conv: Conv }) {
-  const drafts = useLoad(() => api<{ items: Draft[] }>('GET', `${base}/order-drafts?conversationId=${conv.conversationId}&limit=20`), [conv.conversationId], 15_000);
+  const say = useToast();
+  const card = useLoad(() => api<CustomerCard>('GET', `${base}/customers/${conv.customer.customerId}`), [conv.customer.customerId], 15_000);
+  const [note, setNote] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const name = customerName(conv.customer);
-  const ds = drafts.data?.items ?? [];
-  // P10: customer-level phone, city and order history; until then from this conversation's latest draft.
-  const latest = ds[0];
-  const phone = latest?.checkout.phone ?? latest?.contactPhone ?? null;
-  const city = latest?.checkout.cityName ?? null;
-  const cur = latest?.currency ?? '';
-  const sum = ds.filter((d) => !['rejected', 'cancelled'].includes(d.status)).reduce((a, d) => a + d.totalMinor, 0);
+  const c = card.data;
+  const p = c?.profile;
+  const stored = c?.note ?? '';
+  const text = note ?? stored;
+  const dirty = note !== null && note.trim() !== stored;
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api('PUT', `${base}/customers/${conv.customer.customerId}/note`, { note: text });
+      await card.reload();
+      setNote(null);
+      say('Нотатку збережено');
+    } catch (e) {
+      say(errText(e), true);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const totals = p?.orders.totals.map((t) => money(t.totalMinor, t.currency)).join(' + ');
   return (
     <aside className="inbox-side" aria-label="Клієнт">
       <div className="profile">
@@ -291,11 +323,11 @@ function Side({ base, conv }: { base: string; conv: Conv }) {
       <div className="facts">
         <div>
           <Icon name="phone" size={16} />
-          {phone ?? 'не вказано'}
+          {p?.phone ?? 'не вказано'}
         </div>
         <div>
           <Icon name="map-pin" size={16} />
-          {city ?? 'не вказано'}
+          {p?.city ?? 'не вказано'}
         </div>
         <div>
           <Icon name="clock" size={16} />
@@ -305,15 +337,26 @@ function Side({ base, conv }: { base: string; conv: Conv }) {
       <div className="side-block">
         <div className="eyebrow">Замовлення</div>
         <div style={{ fontSize: 14 }} className="muted">
-          {ds.length === 0 ? 'Замовлень ще немає' : ds.length === 1 ? `${STATUS[latest!.status]?.[0] ?? latest!.status} · ${money(latest!.totalMinor, cur)}` : `${ds.length} замовлення · ${money(sum, cur)}`}
+          {!p ? '…' : p.orders.count === 0 ? 'Замовлень ще немає' : p.orders.placed === 0 ? `${p.orders.count} ${ordersWord(p.orders.count)}, усі скасовані або відхилені` : `${p.orders.placed} ${ordersWord(p.orders.placed)} · ${totals}`}
         </div>
+        {p?.orders.lastAt && (
+          <div style={{ fontSize: 12 }} className="subtle">
+            Останнє: {dateOnly(p.orders.lastAt)}
+          </div>
+        )}
       </div>
       <div className="side-block">
         <div className="eyebrow">Нотатка</div>
-        {/* P10: customer notes (no storage yet). */}
-        <Textarea rows={4} placeholder="Додайте нотатку про клієнта…" disabled aria-label="Нотатка" />
-        <div style={{ fontSize: 12 }} className="subtle">
-          Нотатки про клієнтів з’являться незабаром.
+        <Textarea rows={4} placeholder="Додайте нотатку про клієнта…" value={text} maxLength={2000} disabled={!c || saving} onChange={(e) => setNote(e.target.value)} aria-label="Нотатка" />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 12, flex: 1 }} className="subtle">
+            {c?.noteUpdatedAt && !dirty ? `Збережено ${shortWhen(c.noteUpdatedAt)} · ` : ''}Бачать лише працівники магазину.
+          </div>
+          {dirty && (
+            <Button variant="primary" size="sm" disabled={saving} onClick={() => void save()}>
+              Зберегти
+            </Button>
+          )}
         </div>
       </div>
     </aside>

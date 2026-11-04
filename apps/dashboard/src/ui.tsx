@@ -118,7 +118,7 @@ export function sparkPath(a: number[]) {
 }
 
 export function Spark({ data }: { data: number[] | null }) {
-  // null = no per-day series in the API yet (P10): a flat dashed line keeps the card layout.
+  // null = no per-day series for this value (e.g. revenue in another currency): a flat dashed line keeps the card layout.
   return (
     <svg width="96" height="32" viewBox="0 0 96 32" fill="none" style={{ flex: '0 1 96px', minWidth: 48 }} aria-hidden="true">
       {data && data.length > 1 ? (

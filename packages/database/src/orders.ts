@@ -83,6 +83,9 @@ const REFUNDABLE: OrderStatus[] = ['paid', 'shipped', 'delivered', 'returning', 
 const NOTICE_ON: Partial<Record<OrderStatus, CustomerNoticeEvent>> = { cod_confirmed: 'confirmed', rejected: 'rejected', paid: 'paid', shipped: 'shipped', delivered: 'delivered' };
 
 /** What is still missing before a draft may be approved. */
+/** How members and customers see an order: `№12`; an unnumbered row (only hand-built ones) falls back to the id prefix. */
+export const orderLabel = (d: { id: string; number: number }) => (d.number > 0 ? `№${d.number}` : d.id.slice(0, 8));
+
 export function checkoutMissing(d: OrderDraftRow): string[] {
   const miss: string[] = [];
   if (!d.recipientFirstName || !d.recipientLastName) miss.push('recipient name');
@@ -195,11 +198,14 @@ export class OrderRepository {
           .all();
         for (const r of stale) this.event(shopId, r.id, 'pending_approval', 'cancelled', 'system:supersede', 'superseded by a newer draft');
       }
+      // Next per-shop number; the write transaction serializes inserts, the unique index backs it up.
+      const number = this.db.select({ n: sql<number>`coalesce(max(${t.orderDrafts.number}), 0)` }).from(t.orderDrafts).where(eq(t.orderDrafts.shopId, shopId)).get()!.n + 1;
       const draft: OrderDraftRow = {
         id: randomUUID(),
         shopId,
         conversationId: conv.id,
         customerId: conv.customerId,
+        number,
         status: 'pending_approval',
         createdBy: v.createdBy,
         runId: v.runId ?? null,
@@ -272,10 +278,11 @@ export class OrderRepository {
   }
 
   /** Newest first. */
-  listDrafts(shopId: string, f: { status?: OrderDraftRow['status']; conversationId?: string; limit?: number; offset?: number } = {}): { items: OrderDraft[]; total: number } {
+  listDrafts(shopId: string, f: { status?: OrderDraftRow['status']; conversationId?: string; customerId?: string; limit?: number; offset?: number } = {}): { items: OrderDraft[]; total: number } {
     const conds = [eq(t.orderDrafts.shopId, shopId)];
     if (f.status) conds.push(eq(t.orderDrafts.status, f.status));
     if (f.conversationId) conds.push(eq(t.orderDrafts.conversationId, f.conversationId));
+    if (f.customerId) conds.push(eq(t.orderDrafts.customerId, f.customerId));
     const where = and(...conds);
     const total = this.db.select({ n: sql<number>`count(*)` }).from(t.orderDrafts).where(where).get()!.n;
     const rows = this.db

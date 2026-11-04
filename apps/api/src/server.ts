@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { ConnectorError } from '@hepson/connector-core';
-import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, CustomerNoticeRepository, onCustomerNoticeQueued, PlanRepository, DeliveryRepository, InstagramRepository, Keyring, OrderRepository, PaymentRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
+import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, CustomerNoticeRepository, onCustomerNoticeQueued, PlanRepository, DeliveryRepository, InstagramRepository, Keyring, NotificationRepository, OrderRepository, PaymentRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
 import { MockAdapter } from '@hepson/mock-adapter';
 import { BrowserInstagramAdapter } from '@hepson/instagram-browser';
 import { loadConfig, type Config } from './config';
@@ -17,6 +17,7 @@ import { OpenAiClient, type LlmClient } from './agent/llm';
 import { registerAiRoutes } from './routes/ai';
 import { registerOrderRoutes } from './routes/orders';
 import { registerStatsRoutes } from './routes/stats';
+import { registerNotificationFeedRoutes } from './routes/notification-feed';
 import { registerInstagramRoutes } from './routes/instagram';
 import { registerTelegramRoutes } from './routes/telegram';
 import { registerWebChatRoutes } from './routes/web-chat';
@@ -55,6 +56,7 @@ export type App = {
   agentRepo: AgentRepository;
   orders: OrderRepository;
   stats: StatsRepository;
+  feed: NotificationRepository;
   webChat: WebChatRepository;
   vault: CredentialVault;
   igRepo: InstagramRepository;
@@ -123,6 +125,7 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   const agentRepo = new AgentRepository(handle);
   const orders = new OrderRepository(handle);
   const stats = new StatsRepository(handle);
+  const feed = new NotificationRepository(handle);
   const webChat = new WebChatRepository(handle);
   const keyring = overrides.keyring !== undefined ? overrides.keyring : Keyring.fromEnv(process.env);
   const vault = new CredentialVault(handle, keyring);
@@ -166,7 +169,7 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   const profiles = new ProfileAdmin(cfg.dataDir);
   const llm = overrides.llm ?? (cfg.openaiApiKey && cfg.openaiModel ? new OpenAiClient({ apiKey: cfg.openaiApiKey, model: cfg.openaiModel, baseUrl: cfg.openaiBaseUrl, fetch: egress }) : null);
   const notifier: Notifier | null =
-    overrides.notifier ?? (cfg.telegramBotToken ? new TelegramNotifier({ token: cfg.telegramBotToken, agent: agentRepo, shops, conversations, log, baseUrl: cfg.telegramApiBaseUrl, fetchImpl: egress }) : null);
+    overrides.notifier ?? (cfg.telegramBotToken ? new TelegramNotifier({ token: cfg.telegramBotToken, agent: agentRepo, shops, conversations, orders, log, baseUrl: cfg.telegramApiBaseUrl, fetchImpl: egress }) : null);
   const ig = new InstagramService({
     graph: new InstagramGraph(
       {
@@ -298,6 +301,7 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   registerChannelRoutes(app, { store, shops, auth, bridge });
   registerAiRoutes(app, { shops, auth, agent: agentRepo, aiAvailable: salesAgent !== null, telegramAvailable: notifier !== null });
   registerStatsRoutes(app, { shops, auth, stats, plans });
+  registerNotificationFeedRoutes(app, { shops, auth, feed });
   registerPlanRoutes(app, { shops, auth, plans });
   registerWebChatRoutes(app, { shops, auth, webChat, svc: webChatSvc, publicUrl: cfg.publicUrl });
   registerOrderRoutes(app, { shops, auth, orders, delivery, payments, paymentRepo, noticeRepo });
@@ -342,6 +346,7 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     agentRepo,
     orders,
     stats,
+    feed,
     webChat,
     vault,
     igRepo,

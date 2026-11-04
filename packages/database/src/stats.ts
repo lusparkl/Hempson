@@ -37,9 +37,37 @@ export type ShopStats = {
   funnel: { conversations: number; drafts: number; approved: number; paid: number; shipped: number; delivered: number };
   /** P8, from `order_events`: drafts by creator, approvals by the draft's creator and by who approved (member or `auto_confirm`). */
   orderSources: { drafts: { ai: number; human: number }; approved: { ai: number; human: number }; approvedBy: { human: number; auto: number } };
-  /** UTC days with at least one run, oldest first. */
-  daily: Array<{ date: string; runs: number; replied: number; escalated: number; inputTokens: number; outputTokens: number }>;
+  /** The shop's default currency: `daily[].revenueMinor` counts approved orders in it only. */
+  currency: string;
+  /**
+   * Every UTC day the period touches, oldest first, zeros included (P10). AI runs by creation day; `newCustomers`,
+   * `outgoingHuman` (not failed) by creation day; `approved` = distinct orders moved to `approved` that day (as the
+   * funnel); `revenueMinor` = totals of orders whose `approved_at` falls on that day, in `currency`.
+   */
+  daily: Array<{
+    date: string;
+    runs: number;
+    replied: number;
+    escalated: number;
+    inputTokens: number;
+    outputTokens: number;
+    newCustomers: number;
+    outgoingHuman: number;
+    approved: number;
+    revenueMinor: number;
+  }>;
 };
+
+/** `YYYY-MM-DD` of every UTC day from the day of `from` to the day of the last instant before `to`. */
+function utcDays(period: StatsPeriod): string[] {
+  const out: string[] = [];
+  const last = new Date(new Date(period.to).getTime() - 1).toISOString().slice(0, 10);
+  for (let d = new Date(`${period.from.slice(0, 10)}T00:00:00.000Z`); ; d = new Date(d.getTime() + DAY_MS)) {
+    const k = d.toISOString().slice(0, 10);
+    out.push(k);
+    if (k >= last) return out;
+  }
+}
 
 /**
  * Read-only, shop-scoped AI activity statistics (Feature 9), computed from existing tables. Every query filters by
@@ -101,12 +129,53 @@ export class StatsRepository {
        where shop_id = @shop and approved_at >= @from and approved_at < @to group by currency order by currency`,
     );
 
-    const daily = all<{ d: string; runs: number; replied: number; escalated: number; inp: number; out: number }>(
+    const currency = one<{ c: string } | undefined>(`select default_currency c from shops where id = @shop`)?.c ?? 'UAH';
+    const runDays = all<{ d: string; runs: number; replied: number; escalated: number; inp: number; out: number }>(
       `select substr(created_at, 1, 10) d, count(*) runs,
               sum(status = 'replied') replied, sum(status = 'escalated') escalated,
               sum(input_tokens) inp, sum(output_tokens) out
        from ai_runs where shop_id = @shop and created_at >= @from and created_at < @to group by d order by d`,
     );
+    const byDay = <T extends { d: string }>(rows: T[]) => new Map(rows.map((r) => [r.d, r]));
+    const runsBy = byDay(runDays);
+    const custBy = byDay(
+      all<{ d: string; n: number }>(`select substr(created_at, 1, 10) d, count(*) n from customers where shop_id = @shop and created_at >= @from and created_at < @to group by d`),
+    );
+    const humanBy = byDay(
+      all<{ d: string; n: number }>(
+        `select substr(created_at, 1, 10) d, count(*) n from shop_messages
+         where shop_id = @shop and sender_type = 'human' and delivery_status <> 'failed' and created_at >= @from and created_at < @to group by d`,
+      ),
+    );
+    const apprBy = byDay(
+      all<{ d: string; n: number }>(
+        `select substr(created_at, 1, 10) d, count(distinct draft_id) n from order_events
+         where shop_id = @shop and to_status = 'approved' and created_at >= @from and created_at < @to group by d`,
+      ),
+    );
+    const revBy = byDay(
+      raw
+        .prepare(
+          `select substr(approved_at, 1, 10) d, sum(total_minor) n from order_drafts
+           where shop_id = @shop and currency = @cur and approved_at >= @from and approved_at < @to group by d`,
+        )
+        .all({ ...p, cur: currency }) as Array<{ d: string; n: number }>,
+    );
+    const daily = utcDays(period).map((date) => {
+      const r = runsBy.get(date);
+      return {
+        date,
+        runs: r?.runs ?? 0,
+        replied: r?.replied ?? 0,
+        escalated: r?.escalated ?? 0,
+        inputTokens: r?.inp ?? 0,
+        outputTokens: r?.out ?? 0,
+        newCustomers: custBy.get(date)?.n ?? 0,
+        outgoingHuman: humanBy.get(date)?.n ?? 0,
+        approved: apprBy.get(date)?.n ?? 0,
+        revenueMinor: revBy.get(date)?.n ?? 0,
+      };
+    });
 
     const stages = Object.fromEntries(
       all<{ to_status: string; n: number }>(
@@ -169,7 +238,8 @@ export class StatsRepository {
         approved: { ai: sum(approvals, (r) => r.created_by === 'ai'), human: sum(approvals, (r) => r.created_by !== 'ai') },
         approvedBy: { human: sum(approvals, (r) => !r.auto), auto: sum(approvals, (r) => !!r.auto) },
       },
-      daily: daily.map((r) => ({ date: r.d, runs: r.runs, replied: r.replied, escalated: r.escalated, inputTokens: r.inp ?? 0, outputTokens: r.out ?? 0 })),
+      currency,
+      daily,
     };
   }
 }

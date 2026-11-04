@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ConnectorError } from '@hepson/connector-core';
 import {
+  orderLabel,
   OrderValidationError,
   POLICY_TOPICS,
   normalizeUaPhone,
@@ -238,7 +239,7 @@ const orderView = ({ draft: d }: OrderDraft, facts: RunFacts, paymentRepo?: Paym
   const link = d.status === 'awaiting_payment' && pay?.state === 'created' && pay.pageUrl ? pay.pageUrl : null;
   if (link) facts.paymentLinks.add(link);
   return {
-    orderId: d.id.slice(0, 8),
+    order: orderLabel(d),
     status: d.status,
     meaning: STATUS_LABEL[d.status] ?? d.status,
     total: formatMoney(d.totalMinor, d.currency),

@@ -65,4 +65,12 @@ describe('renderNotification', () => {
     expect(renderNotification(n, { ...ctx, language: 'uk' })).toContain('Нова чернетка');
     expect(renderNotification(n, { ...ctx, language: 'en' })).toContain('order draft awaits approval');
   });
+
+  it('names the order by its shop number when known, else by its id prefix (P10)', () => {
+    const n = { kind: 'order_update', shopId: 's', conversationId: 'c', draftId: 'abcdef12-3456', event: 'ttn_failed', ttn: null } as const;
+    expect(renderNotification(n, { ...ctx, language: 'uk', order: '№12' })).toContain('замовлення №12');
+    expect(renderNotification(n, { ...ctx, language: 'uk' })).toContain('замовлення abcdef12');
+    const d = { kind: 'order_draft', shopId: 's', conversationId: 'c', draftId: 'd', currency: 'UAH', totalMinor: 1, itemCount: 1 } as const;
+    expect(renderNotification(d, { ...ctx, language: 'uk', order: '№7' })).toContain('Нова чернетка замовлення №7 чекає');
+  });
 });

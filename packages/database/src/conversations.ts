@@ -9,6 +9,18 @@ export type ShopConversationRow = typeof t.shopConversations.$inferSelect;
 export type ShopMessageRow = typeof t.shopMessages.$inferSelect;
 export type ConversationWithCustomer = { conversation: ShopConversationRow; customer: CustomerRow };
 export type DeliveryStatus = ShopMessageRow['deliveryStatus'];
+/** P10 list preview: the newest customer, AI or human message of a conversation (system lines are skipped). */
+export type LastMessage = { text: string | null; senderType: ShopMessageRow['senderType']; attachments: number; at: string };
+/** P10 customer card: phone and city from the customer's newest order that has them; orders across conversations (`count` all, `placed` and `totals` without rejected or cancelled ones). */
+export type CustomerProfile = {
+  phone: string | null;
+  city: string | null;
+  orders: { count: number; placed: number; totals: Array<{ currency: string; totalMinor: number }>; lastAt: string | null };
+};
+
+/** Statuses that do not count as a placed order in the customer card. */
+const NOT_PLACED = ['rejected', 'cancelled'];
+const NOTE_MAX = 2000;
 
 export class ConversationValidationError extends Error {
   constructor(readonly issues: string[]) {
@@ -117,6 +129,9 @@ export class ConversationRepository {
         externalId: c.externalId,
         displayName: c.displayName || null,
         handle: c.handle || null,
+        note: null,
+        noteUpdatedAt: null,
+        noteUpdatedByUserId: null,
         createdAt: ts,
         updatedAt: ts,
       };
@@ -471,5 +486,135 @@ export class ConversationRepository {
       .from(t.shopMessages)
       .where(and(eq(t.shopMessages.shopId, shopId), eq(t.shopMessages.id, messageId)))
       .get();
+  }
+  /** P10: the newest non-system message of each given conversation of this shop. */
+  lastMessages(shopId: string, conversationIds: string[]): Map<string, LastMessage> {
+    const out = new Map<string, LastMessage>();
+    for (let i = 0; i < conversationIds.length; i += 500) {
+      const ids = conversationIds.slice(i, i + 500);
+      const rows = this.handle.raw
+        .prepare(
+          `select m.conversation_id c, m.text, m.sender_type s, m.attachments a, m.occurred_at at from shop_messages m
+           where m.shop_id = ? and m.conversation_id in (${ids.map(() => '?').join(',')})
+             and m.seq = (select max(x.seq) from shop_messages x where x.conversation_id = m.conversation_id and x.sender_type <> 'system')`,
+        )
+        .all(shopId, ...ids) as Array<{ c: string; text: string | null; s: ShopMessageRow['senderType']; a: string; at: string }>;
+      for (const r of rows) out.set(r.c, { text: r.text, senderType: r.s, attachments: (JSON.parse(r.a) as unknown[]).length, at: r.at });
+    }
+    return out;
+  }
+
+  /**
+   * P10: which of the given conversations have a customer message this member has not seen (newer than their read
+   * marker; no marker = any customer message is unread).
+   */
+  unreadFor(shopId: string, userId: string, conversationIds: string[]): Set<string> {
+    const out = new Set<string>();
+    for (let i = 0; i < conversationIds.length; i += 500) {
+      const ids = conversationIds.slice(i, i + 500);
+      const rows = this.handle.raw
+        .prepare(
+          `select c.id from shop_conversations c
+           left join conversation_reads r on r.conversation_id = c.id and r.user_id = @user
+           where c.shop_id = @shop and c.id in (${ids.map((_, k) => `@id${k}`).join(',')})
+             and exists (select 1 from shop_messages m where m.conversation_id = c.id and m.direction = 'incoming' and m.seq > coalesce(r.last_seen_seq, 0))`,
+        )
+        .all({ shop: shopId, user: userId, ...Object.fromEntries(ids.map((id, k) => [`id${k}`, id])) }) as Array<{ id: string }>;
+      for (const r of rows) out.add(r.id);
+    }
+    return out;
+  }
+
+  /** P10: how many conversations of the shop are unread for this member (the inbox nav count). */
+  unreadCount(shopId: string, userId: string): number {
+    return (
+      this.handle.raw
+        .prepare(
+          `select count(*) n from shop_conversations c
+           left join conversation_reads r on r.conversation_id = c.id and r.user_id = @user
+           where c.shop_id = @shop
+             and exists (select 1 from shop_messages m where m.conversation_id = c.id and m.direction = 'incoming' and m.seq > coalesce(r.last_seen_seq, 0))`,
+        )
+        .get({ shop: shopId, user: userId }) as { n: number }
+    ).n;
+  }
+
+  /**
+   * P10: the member has seen the conversation up to `seq` (default: its newest message). The marker only moves forward
+   * and never past the newest message. Returns the stored marker.
+   */
+  markRead(shopId: string, conversationId: string, userId: string, seq?: number): number {
+    return this.handle.raw.transaction(() => {
+      if (!this.getConversation(shopId, conversationId)) throw new ConversationNotFoundError('conversation');
+      const max = this.db
+        .select({ n: sql<number>`coalesce(max(${t.shopMessages.seq}), 0)` })
+        .from(t.shopMessages)
+        .where(and(eq(t.shopMessages.shopId, shopId), eq(t.shopMessages.conversationId, conversationId)))
+        .get()!.n;
+      const target = Math.min(seq === undefined ? max : Math.max(Math.trunc(seq), 0), max);
+      const cur = this.db
+        .select()
+        .from(t.conversationReads)
+        .where(and(eq(t.conversationReads.conversationId, conversationId), eq(t.conversationReads.userId, userId)))
+        .get();
+      if (cur && cur.lastSeenSeq >= target) return cur.lastSeenSeq;
+      this.db
+        .insert(t.conversationReads)
+        .values({ shopId, conversationId, userId, lastSeenSeq: target, updatedAt: this.now() })
+        .onConflictDoUpdate({ target: [t.conversationReads.conversationId, t.conversationReads.userId], set: { lastSeenSeq: target, updatedAt: this.now() } })
+        .run();
+      return target;
+    })();
+  }
+
+  /** P10: replaces the shop's private note about a customer (empty text clears it). */
+  setCustomerNote(shopId: string, customerId: string, note: string, userId: string): CustomerRow {
+    const v = note.trim();
+    if (v.length > NOTE_MAX) throw new ConversationValidationError([`note: at most ${NOTE_MAX} characters`]);
+    const r = this.db
+      .update(t.customers)
+      .set({ note: v || null, noteUpdatedAt: this.now(), noteUpdatedByUserId: userId })
+      .where(and(eq(t.customers.shopId, shopId), eq(t.customers.id, customerId)))
+      .returning()
+      .get();
+    if (!r) throw new ConversationNotFoundError('customer');
+    return r;
+  }
+
+  /** P10: contact data and order history of one customer across all of their conversations in this shop. */
+  customerProfile(shopId: string, customerId: string): CustomerProfile {
+    const contact = this.db
+      .select({ phone: sql<string | null>`coalesce(${t.orderDrafts.recipientPhone}, ${t.orderDrafts.contactPhone})`, city: t.orderDrafts.npCityName })
+      .from(t.orderDrafts)
+      .where(
+        and(
+          eq(t.orderDrafts.shopId, shopId),
+          eq(t.orderDrafts.customerId, customerId),
+          sql`(${t.orderDrafts.recipientPhone} is not null or ${t.orderDrafts.contactPhone} is not null or ${t.orderDrafts.npCityName} is not null)`,
+        ),
+      )
+      .orderBy(desc(t.orderDrafts.createdAt), desc(t.orderDrafts.id))
+      .all();
+    const placed = sql`${t.orderDrafts.status} not in (${sql.join(
+      NOT_PLACED.map((x) => sql`${x}`),
+      sql`, `,
+    )})`;
+    const totals = this.db
+      .select({ currency: t.orderDrafts.currency, n: sql<number>`count(*)`, total: sql<number>`sum(${t.orderDrafts.totalMinor})` })
+      .from(t.orderDrafts)
+      .where(and(eq(t.orderDrafts.shopId, shopId), eq(t.orderDrafts.customerId, customerId), placed))
+      .groupBy(t.orderDrafts.currency)
+      .orderBy(asc(t.orderDrafts.currency))
+      .all();
+    const all = this.db
+      .select({ n: sql<number>`count(*)`, last: sql<string | null>`max(${t.orderDrafts.createdAt})` })
+      .from(t.orderDrafts)
+      .where(and(eq(t.orderDrafts.shopId, shopId), eq(t.orderDrafts.customerId, customerId)))
+      .get()!;
+    return {
+      phone: contact.find((c) => c.phone)?.phone ?? null,
+      city: contact.find((c) => c.city)?.city ?? null,
+      orders: { count: all.n, placed: totals.reduce((a, r) => a + r.n, 0), totals: totals.map((r) => ({ currency: r.currency, totalMinor: r.total })), lastAt: all.last },
+    };
   }
 }

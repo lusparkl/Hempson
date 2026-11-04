@@ -1,9 +1,9 @@
 import { useShop } from '../App';
-import { ago, api, customerName, moneyList, moneyShort, revenue, statsUrl, useLoad, type Conv, type StatsData } from '../api';
+import { ago, api, customerName, moneyList, moneyShort, orderNo, preview, revenue, statsUrl, useLoad, type Conv, type StatsData } from '../api';
 import { Avatar, Button, FunnelRows, Icon, Panel, Spark, type IconName } from '../ui';
 import { channelLabel } from './Inbox';
 
-type DraftLite = { draftId: string; conversationId: string | null; totalMinor: number; currency: string; contactName: string | null; createdBy: string; checkout: { missing: string[] } };
+type DraftLite = { draftId: string; number: number; conversationId: string | null; totalMinor: number; currency: string; contactName: string | null; createdBy: string; checkout: { missing: string[] } };
 type ProductLite = { variants: Array<{ stock: number; active: boolean }>; active: boolean };
 
 const greeting = () => {
@@ -33,15 +33,15 @@ export function Overview() {
     const v = a - b;
     return { text: `${v >= 0 ? '+' : ''}${v}`, up: v >= 0 };
   };
-  // Daily series exist only for AI runs (P10: daily customers / orders / revenue).
-  const daily = s?.daily.map((d) => d.replied) ?? null;
+  const series = (pick: (d: StatsData['daily'][number]) => number) => s?.daily.map(pick) ?? null;
   const rev = s ? revenue(s, shop.defaultCurrency) : null;
   const kpis = s
     ? [
-        { label: 'Відповіді ШІ', value: String(s.messages.outgoingAi), spark: daily, sub: `із ${s.ai.runs} запусків${s.ai.replyRate === null ? '' : ` · ${Math.round(s.ai.replyRate * 100)}%`}`, d: delta(s.messages.outgoingAi, p?.messages.outgoingAi, true) },
-        { label: 'Нові клієнти', value: String(s.conversations.newCustomers), spark: null, sub: 'за 30 днів', d: delta(s.conversations.newCustomers, p?.conversations.newCustomers, false) },
-        { label: 'Підтверджені замовлення', value: String(s.funnel.approved), spark: null, sub: `${s.orderSources.approved.ai} від ШІ · ${s.orderSources.approved.human} від менеджера`, d: delta(s.funnel.approved, p?.funnel.approved, false) },
-        { label: 'Виручка', value: moneyShort(rev!.totalMinor, rev!.currency), spark: null, sub: 'підтверджені замовлення', d: p ? delta(rev!.totalMinor, revenue(p, shop.defaultCurrency).totalMinor, true) : null },
+        { label: 'Відповіді ШІ', value: String(s.messages.outgoingAi), spark: series((d) => d.replied), sub: `із ${s.ai.runs} запусків${s.ai.replyRate === null ? '' : ` · ${Math.round(s.ai.replyRate * 100)}%`}`, d: delta(s.messages.outgoingAi, p?.messages.outgoingAi, true) },
+        { label: 'Нові клієнти', value: String(s.conversations.newCustomers), spark: series((d) => d.newCustomers), sub: 'за 30 днів', d: delta(s.conversations.newCustomers, p?.conversations.newCustomers, false) },
+        { label: 'Підтверджені замовлення', value: String(s.funnel.approved), spark: series((d) => d.approved), sub: `${s.orderSources.approved.ai} від ШІ · ${s.orderSources.approved.human} від менеджера`, d: delta(s.funnel.approved, p?.funnel.approved, false) },
+        // The daily revenue series is in the shop currency; another currency has no series.
+        { label: 'Виручка', value: moneyShort(rev!.totalMinor, rev!.currency), spark: rev!.currency === s.currency ? series((d) => d.revenueMinor) : null, sub: 'підтверджені замовлення', d: p ? delta(rev!.totalMinor, revenue(p, shop.defaultCurrency).totalMinor, true) : null },
       ]
     : [];
 
@@ -53,7 +53,7 @@ export function Overview() {
     tasks.push({
       key: d.draftId,
       icon: 'shopping-bag',
-      title: `Чернетка №${d.draftId.slice(0, 6).toUpperCase()} · ${moneyList(d.totalMinor, d.currency)}`,
+      title: `Чернетка ${orderNo(d.number)} · ${moneyList(d.totalMinor, d.currency)}`,
       sub: `${d.contactName ?? 'Клієнт'} · ${d.createdBy === 'ai' ? 'створив ШІ' : 'вручну'}${d.checkout.missing.length ? ' · бракує даних' : ''}`,
       tile: tile('var(--brand-50)', 'var(--brand-700)'),
       cta: 'Переглянути',
@@ -151,9 +151,8 @@ export function Overview() {
                     {channelLabel(c.channel)} · {ago(c.lastMessageAt)}
                   </span>
                 </div>
-                {/* P10: last-message preview in the conversation list API. */}
-                <div className="ellipsis muted" style={{ fontSize: 14 }}>
-                  {c.aiPaused ? 'ШІ на паузі · розмову веде людина' : 'ШІ відповідає'}
+                <div className="ellipsis muted" style={{ fontSize: 14, ...(c.unread ? { color: 'var(--ink-900)' } : {}) }}>
+                  {preview(c.lastMessage)}
                 </div>
               </div>
             </button>

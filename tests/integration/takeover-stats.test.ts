@@ -192,7 +192,15 @@ describe('statistics', () => {
     expect(r.body.orderDrafts).toMatchObject({ byStatus: { cod_confirmed: 1 }, approved: [{ currency: 'UAH', count: 1, totalMinor: 259_800 }] });
     expect(r.body.conversations).toMatchObject({ aiPausedNow: 1 });
     expect(r.body.conversations.active).toBeGreaterThanOrEqual(1);
-    expect(r.body.daily).toMatchObject([{ runs: 3, replied: 2, escalated: 1, inputTokens: 60, outputTokens: 30 }]);
+    // P10: one row per UTC day of the 30-day period (31 days touched), zeros included; all activity is today.
+    type Day = { date: string; runs: number; approved: number; revenueMinor: number; newCustomers: number; outgoingHuman: number };
+    const days = r.body.daily as Day[];
+    expect(days).toHaveLength(31);
+    expect(r.body.currency).toBe('UAH');
+    expect(days.at(-1)).toMatchObject({ date: new Date().toISOString().slice(0, 10), runs: 3, replied: 2, escalated: 1, inputTokens: 60, outputTokens: 30, approved: 1, revenueMinor: 259_800 });
+    expect(days.at(-1)!.newCustomers).toBe(r.body.conversations.newCustomers);
+    expect(days.at(-1)!.outgoingHuman).toBe(r.body.messages.outgoingHuman);
+    expect(days.slice(0, -1).every((d) => d.runs + d.approved + d.revenueMinor + d.newCustomers + d.outgoingHuman === 0)).toBe(true);
 
     // A second shop sees none of it.
     const t2 = await login('o2@example.com');
@@ -201,7 +209,8 @@ describe('statistics', () => {
     expect(z.ai).toMatchObject({ runs: 0, byStatus: {}, inputTokens: 0, replyRate: null });
     expect(z.messages).toMatchObject({ incoming: 0, outgoingAi: 0, outgoingHuman: 0 });
     expect(z.orderDrafts).toEqual({ byStatus: {}, approved: [] });
-    expect(z.daily).toEqual([]);
+    expect(z.daily).toHaveLength(31);
+    expect((z.daily as Array<{ runs: number; approved: number; newCustomers: number }>).every((d) => d.runs + d.approved + d.newCustomers === 0)).toBe(true);
   });
 
   it('respects the period, rejects bad ones, and hides the shop from outsiders', async () => {
