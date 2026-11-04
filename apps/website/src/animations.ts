@@ -100,18 +100,6 @@ export const ANIMATIONS = {
     durationMs: 600,
     reducedMotion: 'All cards visible.',
   },
-  'security.flow': {
-    trigger: 'in-view',
-    description: 'Diagram: shop credentials enter a lock (encrypted vault); outbound arrows only reach the allow-listed providers, an arrow to an unknown host bounces off.',
-    durationMs: 2000,
-    reducedMotion: 'Static diagram.',
-  },
-  'notfound.illustration': {
-    trigger: 'loop',
-    description: 'Small looping illustration on the 404 page (for example a parcel that keeps missing the branch).',
-    durationMs: 4000,
-    reducedMotion: 'Static illustration.',
-  },
 } as const satisfies Record<string, AnimationSpec>;
 
 export type AnimationId = keyof typeof ANIMATIONS;

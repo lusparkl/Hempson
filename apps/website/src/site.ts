@@ -12,6 +12,7 @@ export const SITE = {
     email: null as string | null,
     telegram: null as string | null, // e.g. "hepson_support", without @
     phone: null as string | null,
+    security: null as string | null, // vulnerability reports; falls back to `email`
   },
   /**
    * Legal details required on the offer, privacy and refund pages and by payment acquirers.
