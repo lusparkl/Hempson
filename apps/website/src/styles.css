@@ -24,7 +24,7 @@ img { max-width: 100%; }
 .site-nav-pages a { white-space: nowrap; }
 @media (max-width: 720px) { #site-nav { display: none; } }
 @media (max-width: 860px) { .site-nav-pages { display: none !important; } }
-@media (max-width: 400px) { .header-actions .hs-btn--secondary { display: none; } }
+@media (max-width: 400px) { .site-header header { column-gap: 12px; } .header-actions { gap: 6px; } .header-actions .hs-btn { padding: 0 10px; } }
 
 /* Footer ("Hepson Footer" design) */
 .site-footer { letter-spacing: -0.01em; background: var(--surface-subtle); border-top: 1px solid var(--border-default); color: var(--text-muted); }
