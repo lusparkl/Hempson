@@ -81,7 +81,11 @@ importers:
 
   apps/api: {}
 
+  apps/dashboard: {}
+
   apps/dev-console: {}
+
+  apps/website: {}
 
   packages/connector-core: {}
 
