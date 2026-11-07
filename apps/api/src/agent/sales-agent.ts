@@ -61,6 +61,19 @@ export type SalesAgentDeps = {
   photos?: PhotoSearchService;
 };
 
+type RunUsage = { model: string; modelRequests: number; inputTokens: number; outputTokens: number };
+type Turn = { reply: string | null; silentEscalation: boolean; blocked: string[]; trace: ToolTrace[]; usage: RunUsage };
+export type ToolTrace = { name: string; arguments: string; result: string };
+/** `blocked` = the reply guard rejected the answer twice; `step_limit` = the model never answered. A real run escalates in both. */
+export type PlaygroundResult = {
+  outcome: 'replied' | 'escalated' | 'blocked' | 'step_limit';
+  reply: string | null;
+  escalation: string | null;
+  blocked: string[];
+  tools: ToolTrace[];
+  usage: RunUsage;
+};
+
 type Target = { shopId: string; shopConversationId: string; trigger: ShopMessageRow; delivery: Delivery };
 
 /**
@@ -103,7 +116,7 @@ export class SalesAgent {
   }
 
   private async process(t: Target): Promise<void> {
-    const { agent, conversations, shops, llm, log } = this.d;
+    const { agent, conversations, shops, log } = this.d;
     const shop = shops.get(t.shopId);
     if (!shop) return;
     // Re-check after queueing: the owner may have switched the AI off meanwhile.
@@ -141,66 +154,113 @@ export class SalesAgent {
         notify: this.d.notifier,
         photoSearch: this.d.photos ? this.photoSearch(t.shopId, conv.conversation.channel, recent) : undefined,
       };
-      const customerText = trailingCustomerText(recent);
-      // Photo search is offered only when this server has a vision model (P9).
-      const tools = ctx.photoSearch ? TOOLS : TOOLS.filter((t) => t.name !== 'search_by_photo');
       const messages: ChatMessage[] = [
         { role: 'system', content: buildSystemPrompt(shop, conv.conversation.channel, agent.getSettings(t.shopId).instructions) },
         ...recent.map(toChat),
       ];
-
-      let requests = 0;
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let toolCalls = 0;
-      let repairs = 0;
-      let model: string = llm.model;
-      let reply: string | null = null;
-      let blocked: string[] = [];
-      const usage = () => ({ model, modelRequests: requests, inputTokens, outputTokens });
-
-      for (let step = 0; step < MAX_STEPS && reply === null; step++) {
-        const r = await llm.complete({ messages, tools });
-        requests++;
-        inputTokens += r.inputTokens;
-        outputTokens += r.outputTokens;
-        model = r.model;
-        if (r.toolCalls.length) {
-          messages.push({ role: 'assistant', content: r.content, toolCalls: r.toolCalls });
-          for (const c of r.toolCalls) {
-            const result = ++toolCalls > MAX_TOOL_CALLS ? JSON.stringify({ error: 'too many tool calls in this turn' }) : await runTool(ctx, c.name, c.arguments);
-            messages.push({ role: 'tool', toolCallId: c.id, content: result });
-          }
-          continue;
-        }
-        if (!r.content) {
-          if (facts.escalatedReason) return void finish('escalated', 'ESCALATED', usage());
-          blocked = ['the reply was empty'];
-        } else {
-          blocked = checkReply(r.content, facts, { customerText, maxLength: this.d.maxMessageLength });
-          if (!blocked.length) {
-            reply = r.content;
-            break;
-          }
-        }
-        if (repairs++ >= MAX_REPAIRS) break;
-        if (r.content) messages.push({ role: 'assistant', content: r.content });
-        messages.push({ role: 'system', content: `Your reply was NOT sent because: ${blocked.join(' ')} Write a corrected reply (or call escalate).` });
-      }
-
-      if (reply === null) {
+      const turn = await this.converse(messages, ctx, trailingCustomerText(recent));
+      if (turn.silentEscalation) return void finish('escalated', 'ESCALATED', turn.usage);
+      if (turn.reply === null) {
         const reason = facts.escalatedReason ?? 'AI reply could not be verified; please answer the customer';
         const e = agent.escalate(t.shopId, t.shopConversationId, reason, run.id);
         if (e.created) this.d.notifier?.notify({ kind: 'escalation', shopId: t.shopId, conversationId: t.shopConversationId, reason });
         log.warn({ shopId: t.shopId, runId: run.id }, 'agent reply blocked');
-        return void finish('escalated', blocked.length ? 'GUARD_BLOCKED' : 'STEP_LIMIT', usage());
+        return void finish('escalated', turn.blocked.length ? 'GUARD_BLOCKED' : 'STEP_LIMIT', turn.usage);
       }
-      await this.send(t, run.id, reply.trim(), facts.escalatedReason !== null, usage());
+      await this.send(t, run.id, turn.reply.trim(), facts.escalatedReason !== null, turn.usage);
     } catch (e) {
       const detail = e instanceof LlmError ? `LLM_${e.status ?? 'ERROR'}` : 'INTERNAL';
       log.warn({ shopId: t.shopId, runId: run.id, detail, err: e instanceof Error ? e.message : String(e) }, 'agent run failed');
       finish('failed', detail);
     }
+  }
+
+  /**
+   * The model/tool loop shared by real runs and the playground: tools run until the model answers, the answer passes
+   * `checkReply` or gets one repair attempt. `silentEscalation` = the model escalated and wrote nothing.
+   */
+  private async converse(messages: ChatMessage[], ctx: ToolContext, customerText: string): Promise<Turn> {
+    const { llm } = this.d;
+    // Photo search is offered only when this server has a vision model (P9).
+    const tools = ctx.photoSearch ? TOOLS : TOOLS.filter((t) => t.name !== 'search_by_photo');
+    const trace: ToolTrace[] = [];
+    let requests = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let toolCalls = 0;
+    let repairs = 0;
+    let model: string = llm.model;
+    let blocked: string[] = [];
+    const done = (reply: string | null, silentEscalation = false): Turn => ({
+      reply,
+      silentEscalation,
+      blocked,
+      trace,
+      usage: { model, modelRequests: requests, inputTokens, outputTokens },
+    });
+
+    for (let step = 0; step < MAX_STEPS; step++) {
+      const r = await llm.complete({ messages, tools });
+      requests++;
+      inputTokens += r.inputTokens;
+      outputTokens += r.outputTokens;
+      model = r.model;
+      if (r.toolCalls.length) {
+        messages.push({ role: 'assistant', content: r.content, toolCalls: r.toolCalls });
+        for (const c of r.toolCalls) {
+          const result = ++toolCalls > MAX_TOOL_CALLS ? JSON.stringify({ error: 'too many tool calls in this turn' }) : await runTool(ctx, c.name, c.arguments);
+          trace.push({ name: c.name, arguments: c.arguments, result });
+          messages.push({ role: 'tool', toolCallId: c.id, content: result });
+        }
+        continue;
+      }
+      if (!r.content) {
+        if (ctx.facts.escalatedReason) return done(null, true);
+        blocked = ['the reply was empty'];
+      } else {
+        blocked = checkReply(r.content, ctx.facts, { customerText, maxLength: this.d.maxMessageLength });
+        if (!blocked.length) return done(r.content);
+      }
+      if (repairs++ >= MAX_REPAIRS) break;
+      if (r.content) messages.push({ role: 'assistant', content: r.content });
+      messages.push({ role: 'system', content: `Your reply was NOT sent because: ${blocked.join(' ')} Write a corrected reply (or call escalate).` });
+    }
+    return done(null);
+  }
+
+  /**
+   * The owner's test chat: the same prompt, tools and reply guard as a real run, over a conversation the dashboard keeps.
+   * Nothing is stored or sent: no run, message, order draft, escalation or notification, and no reply cap is used.
+   * Works while the agent is switched off; `instructions` lets the owner try unsaved notes.
+   */
+  async playground(shopId: string, input: { messages: Array<{ role: 'customer' | 'assistant'; text: string }>; instructions?: string }): Promise<PlaygroundResult> {
+    const shop = this.d.shops.get(shopId);
+    if (!shop) throw new Error('shop not found');
+    const history = input.messages.slice(-HISTORY);
+    const facts = new RunFacts();
+    const ctx: ToolContext = {
+      shopId,
+      conversationId: '',
+      customerId: '',
+      runId: '',
+      catalog: this.d.catalog,
+      orders: this.d.orders,
+      agent: this.d.agent,
+      facts,
+      policies: this.d.policies,
+      deliveryRepo: this.d.deliveryRepo,
+      delivery: this.d.delivery,
+      sandbox: true,
+    };
+    const messages: ChatMessage[] = [
+      { role: 'system', content: buildSystemPrompt(shop, WEB_CHANNEL, input.instructions ?? this.d.agent.getSettings(shopId).instructions) },
+      ...history.map((m): ChatMessage => ({ role: m.role === 'customer' ? 'user' : 'assistant', content: m.text.slice(0, HISTORY_CHARS) })),
+    ];
+    const customerText: string[] = [];
+    for (let i = history.length - 1; i >= 0 && history[i]!.role === 'customer'; i--) customerText.push(history[i]!.text);
+    const turn = await this.converse(messages, ctx, customerText.join('\n'));
+    const outcome = turn.reply !== null ? (facts.escalatedReason ? 'escalated' : 'replied') : turn.silentEscalation ? 'escalated' : turn.blocked.length ? 'blocked' : 'step_limit';
+    return { outcome, reply: turn.reply?.trim() ?? null, escalation: facts.escalatedReason, blocked: turn.blocked, tools: turn.trace, usage: turn.usage };
   }
 
   /** One photo search per run, for the newest readable photo the customer sent since the last reply (computed on first use). */
@@ -236,13 +296,7 @@ export class SalesAgent {
     agent.updateRun(t.shopId, runId, { status: 'escalated', detail: 'AI_REPLY_CAP' });
   }
 
-  private async send(
-    t: Target,
-    runId: string,
-    text: string,
-    escalated: boolean,
-    usage: { model: string; modelRequests: number; inputTokens: number; outputTokens: number },
-  ): Promise<void> {
+  private async send(t: Target, runId: string, text: string, escalated: boolean, usage: RunUsage): Promise<void> {
     const { conversations, agent } = this.d;
     const done = (status: 'replied' | 'send_uncertain' | 'escalated' | 'failed' | 'superseded', detail: string | null, replyMessageId: string | null = null) =>
       agent.updateRun(t.shopId, runId, { ...usage, status, detail, replyMessageId });

@@ -356,7 +356,7 @@ export async function buildApp(
   registerPhotoSearchRoutes(app, { shops, auth, photos });
   registerStorefrontRoutes(app, { shops, auth, catalog, webChat, tgRepo, igRepo, publicUrl: cfg.publicUrl });
   registerConversationRoutes(app, { shops, auth, conversations, maxMessageLength: cfg.maxMessageLength, ig, tg });
-  registerAiRoutes(app, { shops, auth, agent: agentRepo, aiAvailable: salesAgent !== null, telegramAvailable: notifier !== null });
+  registerAiRoutes(app, { shops, auth, agent: agentRepo, salesAgent, telegramAvailable: notifier !== null, maxMessageLength: cfg.maxMessageLength });
   registerStatsRoutes(app, { shops, auth, stats, plans });
   registerNotificationFeedRoutes(app, { shops, auth, feed });
   registerPlanRoutes(app, { shops, auth, plans });

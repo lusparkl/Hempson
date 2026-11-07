@@ -8,16 +8,26 @@ import { Catalog } from './views/Catalog';
 import { Inbox } from './views/Inbox';
 import { Orders } from './views/Orders';
 import { Overview } from './views/Overview';
+import { Playground } from './views/Playground';
 import { Settings } from './views/Settings';
 import { Stats } from './views/Stats';
 
-export type Page = 'overview' | 'inbox' | 'orders' | 'catalog' | 'analytics' | 'settings';
-const TITLES: Record<Page, string> = { overview: 'Огляд', inbox: 'Розмови', orders: 'Замовлення', catalog: 'Каталог', analytics: 'Статистика', settings: 'Налаштування' };
+export type Page = 'overview' | 'inbox' | 'orders' | 'catalog' | 'playground' | 'analytics' | 'settings';
+const TITLES: Record<Page, string> = {
+  overview: 'Огляд',
+  inbox: 'Розмови',
+  orders: 'Замовлення',
+  catalog: 'Каталог',
+  playground: 'Тест асистента',
+  analytics: 'Статистика',
+  settings: 'Налаштування',
+};
 const NAV: Array<[Page, IconName]> = [
   ['overview', 'layout-dashboard'],
   ['inbox', 'message-circle'],
   ['orders', 'shopping-bag'],
   ['catalog', 'package'],
+  ['playground', 'sparkles'],
   ['analytics', 'chart-no-axes-column'],
   ['settings', 'settings'],
 ];
@@ -98,7 +108,11 @@ function Login({ onDone }: { onDone: () => void }) {
       <Input label="Email" type="email" name="email" required autoComplete="username" />
       {reg && <Input label="Ім’я" name="name" autoComplete="name" />}
       <Input label="Пароль" type="password" name="password" required minLength={10} hint="Від 10 символів" autoComplete={reg ? 'new-password' : 'current-password'} />
-      {err && <div className="err" role="alert">{err}</div>}
+      {err && (
+        <div className="err" role="alert">
+          {err}
+        </div>
+      )}
       <Button variant="primary" size="lg" type="submit" arrow disabled={busy}>
         {reg ? 'Зареєструватися' : 'Увійти'}
       </Button>
@@ -132,7 +146,11 @@ function NewShop({ onDone, onCancel }: { onDone: (id: string) => void; onCancel?
       </div>
       <Input label="Назва" name="name" required maxLength={120} placeholder="Лавка Софії" />
       <Input label="Адреса" name="slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minLength={2} maxLength={63} placeholder="lavka-sofii" hint="Латиниця, цифри, дефіс" />
-      {err && <div className="err" role="alert">{err}</div>}
+      {err && (
+        <div className="err" role="alert">
+          {err}
+        </div>
+      )}
       <Button variant="primary" size="lg" type="submit" arrow>
         Створити магазин
       </Button>
@@ -195,7 +213,21 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   return <ShopApp key={shop.shopId} shop={shop} shops={shops.data} me={me.data?.user ?? null} onPick={setShopId} onAdd={() => setAdding(true)} onLogout={onLogout} />;
 }
 
-function ShopApp({ shop, shops, me, onPick, onAdd, onLogout }: { shop: Shop; shops: Shop[]; me: Me['user'] | null; onPick: (id: string) => void; onAdd: () => void; onLogout: () => void }) {
+function ShopApp({
+  shop,
+  shops,
+  me,
+  onPick,
+  onAdd,
+  onLogout,
+}: {
+  shop: Shop;
+  shops: Shop[];
+  me: Me['user'] | null;
+  onPick: (id: string) => void;
+  onAdd: () => void;
+  onLogout: () => void;
+}) {
   const base = `/v1/shops/${shop.shopId}`;
   const [page, setPage] = useState<Page>(pageFromHash);
   const [params, setParams] = useState<NavParams>({});
@@ -279,7 +311,12 @@ function ShopApp({ shop, shops, me, onPick, onAdd, onLogout }: { shop: Shop; sho
           <div style={{ flex: 1 }} />
           {u && (
             <div className="lbl sb-usage">
-              <UsageMeter label={`Відповіді ШІ · ${month}`} value={u.aiReplies} max={u.aiReplyCap ?? Math.max(u.aiReplies, 1)} valueLabel={u.aiReplyCap === null ? String(u.aiReplies) : `${u.aiReplies} / ${u.aiReplyCap}`} />
+              <UsageMeter
+                label={`Відповіді ШІ · ${month}`}
+                value={u.aiReplies}
+                max={u.aiReplyCap ?? Math.max(u.aiReplies, 1)}
+                valueLabel={u.aiReplyCap === null ? String(u.aiReplies) : `${u.aiReplies} / ${u.aiReplyCap}`}
+              />
               <div style={{ fontSize: 12 }} className="subtle">
                 План {u.plan} · {u.remaining === null ? 'без ліміту' : `залишилось ${u.remaining}`}
               </div>
@@ -320,6 +357,7 @@ function ShopApp({ shop, shops, me, onPick, onAdd, onLogout }: { shop: Shop; sho
               {page === 'inbox' && <Inbox />}
               {page === 'orders' && <Orders />}
               {page === 'catalog' && <Catalog />}
+              {page === 'playground' && <Playground />}
               {page === 'analytics' && <Stats />}
               {page === 'settings' && <Settings />}
             </ActionsSlot>

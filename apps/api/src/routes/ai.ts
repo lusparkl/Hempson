@@ -2,6 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ApiError } from '../errors';
 import { AgentNotFoundError, AgentValidationError, type AgentRepository, type AiRunRow, type AuthRepository, type EscalationRow, type ShopRepository } from '@hepson/database';
+import { LlmError } from '../agent/llm';
+import type { SalesAgent } from '../agent/sales-agent';
+import { RateLimitedError } from '../services/web-chat';
+import { RateLimiter } from '../services/rate-limit';
 import { route } from './define';
 import { makeRequireRole } from './shops';
 
@@ -17,6 +21,9 @@ const settingsBody = z.strictObject({
   autonomy: z.enum(['approval_required', 'auto_confirm']).optional(),
   autoConfirmMaxMinor: z.number().int().nullable().optional(),
 });
+
+/** Model turns per shop and hour in the test chat: it costs the operator tokens but does not count against the plan cap. */
+const PLAYGROUND_TURNS_PER_HOUR = 60;
 
 const runView = (r: AiRunRow) => ({
   runId: r.id,
@@ -52,9 +59,19 @@ function translate(e: unknown): never {
 /** AI settings (owner writes, any member reads), the agent's run audit trail and escalations (any member). */
 export function registerAiRoutes(
   app: FastifyInstance,
-  deps: { shops: ShopRepository; auth: AuthRepository; agent: AgentRepository; aiAvailable: boolean; telegramAvailable: boolean },
+  deps: { shops: ShopRepository; auth: AuthRepository; agent: AgentRepository; salesAgent: SalesAgent | null; telegramAvailable: boolean; maxMessageLength: number },
 ) {
-  const { shops, auth, agent, aiAvailable, telegramAvailable } = deps;
+  const { shops, auth, agent, salesAgent, telegramAvailable } = deps;
+  const aiAvailable = salesAgent !== null;
+  const playgroundLimit = new RateLimiter(PLAYGROUND_TURNS_PER_HOUR, 3_600_000);
+  const playgroundBody = z.strictObject({
+    messages: z
+      .array(z.strictObject({ role: z.enum(['customer', 'assistant']), text: z.string().trim().min(1).max(deps.maxMessageLength) }))
+      .min(1)
+      .max(40)
+      .refine((m) => m.at(-1)?.role === 'customer', 'the last message must be from the customer'),
+    instructions: z.string().max(2000).optional(),
+  });
   const requireRole = makeRequireRole(shops, auth);
   const settingsView = (shopId: string) => {
     const s = agent.getSettings(shopId);
@@ -100,6 +117,29 @@ export function registerAiRoutes(
         translate(e);
       }
       return settingsView(params.shopId);
+    },
+  });
+
+  route(app, {
+    method: 'POST',
+    url: '/v1/shops/:shopId/ai/playground',
+    summary:
+      'Test chat with the shop AI (any member): same prompt, catalog, policies and reply guard as a real reply; nothing is stored or sent (no order, escalation, notification or reply-cap use). Works while the AI is off; `instructions` tries unsaved notes.',
+    tag: 'ai',
+    auth: 'user',
+    params: shopP,
+    body: playgroundBody,
+    handler: async ({ req, params, body }) => {
+      requireRole(req, params.shopId, 'manager');
+      if (!salesAgent) throw new ApiError('NOT_CONFIGURED', 'No AI model is configured on this server');
+      const wait = playgroundLimit.hit(params.shopId);
+      if (wait) throw new RateLimitedError(wait);
+      try {
+        return await salesAgent.playground(params.shopId, body);
+      } catch (e) {
+        if (e instanceof LlmError) throw new ApiError('TEMPORARY_FAILURE', 'The AI model did not answer, try again');
+        throw e;
+      }
     },
   });
 

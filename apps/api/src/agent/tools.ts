@@ -70,6 +70,8 @@ export type ToolContext = {
   notify?: Notifier;
   /** P9: matches the customer's newest photo in this turn against the catalog photo index; absent when photo search is off. */
   photoSearch?: (limit: number) => Promise<PhotoSearchResult | { status: 'no_photo' }>;
+  /** Owner's test chat (playground): reads are real, but no order, escalation or notification is written or sent. */
+  sandbox?: boolean;
 };
 
 const items = z
@@ -289,6 +291,18 @@ const orderView = ({ draft: d }: OrderDraft, facts: RunFacts, paymentRepo?: Paym
   };
 };
 
+/** create_order_draft in the playground: the same checks as a real draft (stock, phone, payment method), nothing stored. */
+function sandboxDraft(ctx: ToolContext, lineItems: Array<{ sku: string; quantity: number }>, phone: string, paymentMethod: PaymentMethod) {
+  const issues: string[] = [];
+  const normalized = normalizeUaPhone(phone);
+  if (!normalized) issues.push('checkout.phone: not a Ukrainian phone number');
+  else if (!ctx.deliveryRepo.paymentMethods(ctx.shopId, { phone: normalized }).methods.includes(paymentMethod))
+    issues.push(`checkout.paymentMethod: ${paymentMethod} is not offered for this customer`);
+  if (issues.length) throw new OrderValidationError(issues);
+  const view = quoteView(ctx.orders.quote(ctx.shopId, lineItems), ctx.facts);
+  return { draftId: null, status: 'pending_approval', confirmed: false, note: 'NOT a confirmed order. The shop must confirm it first; tell the customer exactly that.', ...view };
+}
+
 const npUnavailable = { error: 'Nova Poshta lookup is not available for this shop right now. Do not guess the branch: call escalate.' };
 
 /** Runs one tool call. Never throws: a bad call becomes an `{error}` result the model can react to. */
@@ -439,6 +453,7 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         if (!city || !branch || branch.cityRef !== a.data.cityRef)
           return out({ error: 'cityRef/branchRef were not returned by find_np_city/find_np_branch in this turn: look them up first' });
         const { items: lineItems, firstName, lastName, phone, paymentMethod, note } = a.data;
+        if (ctx.sandbox) return out(sandboxDraft(ctx, lineItems, phone, paymentMethod));
         const created = ctx.orders.createDraft(ctx.shopId, {
           items: lineItems,
           note,
@@ -499,13 +514,13 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         const a = noArgs.safeParse(json);
         if (!a.success) return bad(a.error);
         ctx.facts.orderStatusLookups++;
-        const list = ctx.orders.listDrafts(ctx.shopId, { conversationId: ctx.conversationId, limit: 3 }).items;
+        const list = ctx.sandbox ? [] : ctx.orders.listDrafts(ctx.shopId, { conversationId: ctx.conversationId, limit: 3 }).items;
         return out({ orders: list.map((d) => orderView(d, ctx.facts, ctx.paymentRepo)), ...(list.length ? {} : { note: 'This customer has no orders in this conversation.' }) });
       }
       case 'escalate': {
         const a = escalateArgs.safeParse(json);
         if (!a.success) return bad(a.error);
-        const e = ctx.agent.escalate(ctx.shopId, ctx.conversationId, a.data.reason, ctx.runId);
+        const e = ctx.sandbox ? { created: false } : ctx.agent.escalate(ctx.shopId, ctx.conversationId, a.data.reason, ctx.runId);
         if (e.created) ctx.notify?.notify({ kind: 'escalation', shopId: ctx.shopId, conversationId: ctx.conversationId, reason: a.data.reason });
         ctx.facts.escalatedReason = a.data.reason;
         return out({ ok: true, note: 'A manager will take over. Do not promise a time.' });
