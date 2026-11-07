@@ -313,3 +313,80 @@ Real Instagram message webhooks were not delivered in repeated live tests (Live 
 - Browser profiles under `$HEPSON_DATA_DIR/profiles/` are not touched by code. They hold Instagram session cookies; the operator deletes them by hand.
 
 **Not taken.** Keeping the tables and dropping only the code: dead tables with account-scoped keys in them. Removing API keys entirely: the operator needs a fallback to set a plan until self-serve billing exists.
+
+## D42 (2026-11-07): P9 photo search, forwarded posts and storefront as built
+**Context.** D36 left the photo index source open (OpenAI account or local, no new paid service). The owner chose the OpenAI route on 2026-11-07 and asked for the rest of P9 in one session, overriding the one-part-per-session order.
+
+**Photo index (option B of D36).**
+- Each active product's main image (`media[0]`, http(s) only) is described once by a vision-capable chat model, using one fixed English prompt: product type, colours, material, pattern, cut, details, and visible text. The description is embedded with `text-embedding-3-small` at 512 dimensions and stored as a unit Float32 vector in `product_photo_index`, which is added by migration `0018`.
+- An entry is current only while its `image_url` equals `media[0]` and its `model` (`<vision>|<embedding>|<dims>`) equals the configured one. Anything else is indexed again.
+- The provider fetches the catalog image URL itself (`image_url`, `detail: low`), so Hepson never requests an owner-supplied address. There is no SSRF surface and no egress change for catalog images.
+- A provider 400 means the image is unreadable, and a `NO_PRODUCT` answer means the photo shows no product. Both are stored as `failed` and are not retried until the owner presses "try again" (`POST /photo-index/retry`).
+- A 429, a 5xx or a network error pauses indexing for 5 minutes and marks nothing.
+- Indexing runs in the background after any catalog write (create, edit, an applied import), at start, and every `HEPSON_PHOTO_INDEX_MINUTES` (default 10).
+- Settings: `HEPSON_PHOTO_SEARCH` (default on), `HEPSON_VISION_MODEL` (default: the agent model), `HEPSON_EMBEDDING_MODEL`. The feature is off without `OPENAI_API_KEY`.
+
+**Customer side.**
+- New agent tool `search_by_photo(limit ≤ 3)`. It is offered to the model only when photo search is on.
+- It takes the newest readable photo in the customer's messages since the last reply. One download and one search happen per run; a second call reuses the result.
+- The photo is downloaded into memory and sent to the provider as a data URL. It is never written to disk or the database (D36).
+- The match uses the same prompt, the same embedding and cosine similarity over the shop's current entries.
+- Scores below 0.5 are dropped, and a score of 0.7 or more is a "close" match. Both thresholds are uncalibrated (see LIMITATIONS).
+- Matches go through the same product view as `search_products`, so prices and stock join the run's facts for the reply guard.
+- Prompt rule 6b: a "close" match may be named as the likely product and a "possible" one only as similar; the customer confirms first. With no match the agent asks for a name or description.
+- The image type comes from magic bytes (JPEG, PNG, WebP, GIF), never from headers. The size cap is 5 MB.
+- Where images come from:
+  - **Telegram:** the largest photo size within 5 MB (or an image sent as a document). The `file_id` is kept as attachment `ref`; Bot API `getFile` and the file URL are on the already-allowed `api.telegram.org`.
+  - **Instagram:** `payload.url` of `image` attachments, and of `share`/`ig_post` (stored as kind `post`), is kept as `ref`. `ig_reel`/`reel` become kind `reel`, and `story_mention` keeps its own kind; neither is searched.
+- Attachment `ref` stays on the server. The conversations API strips it, and the dashboard shows only the attachment kind.
+
+**Instagram CDN hosts are not guessed (D36).** Meta's webhook pages (read 2026-11-07) show only placeholder URLs and say nothing about the host, expiry or authentication. So no Instagram media host is built in.
+- `HEPSON_EGRESS_EXTRA_HOSTS` now accepts host families: an entry starting with a dot allows `<one label>.<suffix>`, by the same rule as `.googleusercontent.com`.
+- After a live capture, the operator adds the real host or host family.
+- Until then an Instagram photo download is refused before any request, and the refused host is logged (never the URL). The tool tells the model the photo could not be read, and the agent asks the customer instead.
+
+**Forwarded posts.** Only the media URL is documented for shares ("Only the URL for the shared media or post is included"), so a forwarded post is handled exactly like a photo, through `search_by_photo`. If the URL is not an image (failed magic-byte check), it is unreadable. There is no caption lookup and no Graph media call.
+
+**Storefront.**
+- `GET /s/<slug>` is server-rendered HTML in Ukrainian. It is off until the owner turns it on: `shops.storefront_enabled`, set with `PATCH /v1/shops/:id {storefrontEnabled}`.
+- `GET /v1/shops/:id/storefront` returns the state, the public URL and the product count.
+- The page shows active products with at least one active in-stock variant: in-stock options only, a price range, the main image, and a description cut at 300 characters. It shows no stock numbers, no SKUs, and nothing from other shops.
+- 48 products per page, at most 1000 products read per render.
+- Everything is escaped. Images are http(s) URLs, loaded by the visitor with `referrerpolicy=no-referrer`.
+- Headers:
+  - CSP: `default-src 'none'`, `script-src` and `connect-src` set to this server's origin only, `frame-ancestors 'none'`.
+  - `no-referrer`, `nosniff`, and a 60 s public cache.
+- Ordering stays the single chat checkout (D36):
+  - The website chat widget is embedded when the shop's web chat is enabled.
+  - Links to the shop's Telegram bot (`t.me`) and Instagram (`ig.me/m/`) appear when they are connected.
+- The web chat gate also accepts this server's own origin, only while that shop's storefront is on. Same-origin GETs have no `Origin` header, so `Sec-Fetch-Site: same-origin` stands in for it. As in D19, Origin is a browser control, not authentication.
+
+**Not taken.**
+- A local CLIP model: a large native dependency and a model download.
+- A per-message description fed to text search: rejected in D36.
+- Hosting customer images or product uploads.
+- A per-product "share to Instagram" deep link.
+- Telegram `start` deep links per product: SKUs do not fit the 64-character `[A-Za-z0-9_-]` limit.
+- Storefront search and filters.
+
+## D43 (2026-11-07): P8 XLSX catalog import as built
+Amends D35 ("XLSX import: not built").
+- **Route.** `POST /v1/shops/:shopId/products/import-xlsx` takes `{ file: base64, dryRun }`, owner only, file at most 5 MB. It reads the first worksheet in the workbook's order and feeds the same table importer as CSV (`importCatalogTable`), so D21's all-or-nothing, dry-run-default and SKU-upsert rules apply unchanged. Error lines are worksheet row numbers.
+- **Reader.** Built in, with no dependency (`services/xlsx.ts`, `readXlsxFirstSheet`): it parses the zip central directory and inflates only the needed parts with `node:zlib`.
+- **Limits:**
+  - 20 MB uncompressed per part (a zip-bomb guard through `maxOutputLength`).
+  - CRC-checked parts.
+  - 5001 rows and 100 columns.
+  - Zip64, encrypted and `.xlsb` files are refused with an owner-readable message.
+- **Cell values:**
+  - Shared and inline strings are text; rich-text runs are joined and phonetic runs dropped.
+  - Numbers are rounded to 15 significant digits, as Excel shows them (a stored `1299.8999999999999` reads as `1299.9`).
+  - Booleans become 1/0, and formulas give their cached value, never evaluated.
+  - Dates arrive as serial numbers (no catalog column is a date).
+  - Namespace-prefixed parts (OpenXML SDK output) are accepted.
+- **Images column.** The importer gains an `images`/`image`/`фото` column for both CSV and XLSX: http(s) links separated by `|`, the first one the main image (P9). An update replaces the list; a bad link is a row error.
+- **Dashboard.** The import drawer accepts `.xlsx` next to `.csv`. The new-product form takes one optional photo link.
+- **Not verified.** The reader is tested on its own writer's output and on hand-built Excel-shaped and SDK-shaped workbooks. It has not been tested on files saved by Microsoft Excel, LibreOffice or Google Sheets.
+
+## D44 (2026-11-07): WayForPay deferred
+The owner dropped WayForPay from the active roadmap for now. P5 stays Monobank only: built against a fake, with the live check with a test token still open. Nothing is removed: `api.wayforpay.com` stays on the egress allow-list and `wayforpay` stays a credential kind, because both are inert without code. The website no longer announces WayForPay. Picking it up again needs only a new P-row.

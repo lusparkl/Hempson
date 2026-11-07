@@ -443,6 +443,9 @@
                   },
                   "defaultLanguage": {
                     "type": "string"
+                  },
+                  "storefrontEnabled": {
+                    "type": "boolean"
                   }
                 },
                 "additionalProperties": false
@@ -1361,6 +1364,74 @@
         }
       }
     },
+    "/v1/shops/{shopId}/products/import-xlsx": {
+      "post": {
+        "summary": "Import products from the first worksheet of an .xlsx file (base64), with the same columns and rules as CSV; dryRun (default true) reports without writing (owner)",
+        "tags": [
+          "catalog"
+        ],
+        "parameters": [
+          {
+            "name": "shopId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 6666668,
+                    "format": "base64",
+                    "contentEncoding": "base64",
+                    "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                  },
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/shops/{shopId}/products/import-sheet": {
       "post": {
         "summary": "Import products from a Google Sheet shared by link, through the same CSV importer; dryRun (default true) reports without writing (owner)",
@@ -1420,6 +1491,172 @@
                   "url"
                 ],
                 "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/shops/{shopId}/photo-index": {
+      "get": {
+        "summary": "Photo search index: products with a main image, indexed, failed (image unreadable or not a product) and pending (any member)",
+        "tags": [
+          "catalog"
+        ],
+        "parameters": [
+          {
+            "name": "shopId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/shops/{shopId}/photo-index/retry": {
+      "post": {
+        "summary": "Try failed product images again, e.g. after fixing a link (owner)",
+        "tags": [
+          "catalog"
+        ],
+        "parameters": [
+          {
+            "name": "shopId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/shops/{shopId}/storefront": {
+      "get": {
+        "summary": "Storefront state: on/off (set with PATCH /v1/shops/:shopId storefrontEnabled), its public address and how many products it shows (any member)",
+        "tags": [
+          "storefront"
+        ],
+        "parameters": [
+          {
+            "name": "shopId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/s/{slug}": {
+      "get": {
+        "summary": "Public storefront page of a shop that turned it on (HTML, Ukrainian)",
+        "tags": [
+          "storefront"
+        ],
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
               }
             }
           }
@@ -2168,6 +2405,94 @@
                     ]
                   }
                 },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/shops/{shopId}/ai/playground": {
+      "post": {
+        "summary": "Test chat with the shop AI (any member): same prompt, catalog, policies and reply guard as a real reply; nothing is stored or sent (no order, escalation, notification or reply-cap use). Works while the AI is off; `instructions` tries unsaved notes.",
+        "tags": [
+          "ai"
+        ],
+        "parameters": [
+          {
+            "name": "shopId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "messages": {
+                    "minItems": 1,
+                    "maxItems": 40,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "customer",
+                            "assistant"
+                          ]
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 1000
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "text"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "instructions": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "messages"
+                ],
                 "additionalProperties": false
               }
             }

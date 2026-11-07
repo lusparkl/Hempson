@@ -8,7 +8,7 @@ Dashboard users authenticate with `Authorization: Bearer hsu_…` from `POST /v1
 GET    /health · /ready
 POST   /v1/auth/register|login|logout   GET /v1/auth/me
 GET|POST /v1/shops   GET|PATCH /v1/shops/:shopId   members: GET|POST .../members, PATCH|DELETE .../members/:userId
-catalog: .../products[/:productId[/variants[/:variantId[/stock]]]], POST .../products/import {csv, dryRun}, POST .../products/import-sheet {url, dryRun} (owner)
+catalog: .../products[/:productId[/variants[/:variantId[/stock]]]], POST .../products/import {csv, dryRun}, POST .../products/import-xlsx {file: base64, dryRun}, POST .../products/import-sheet {url, dryRun} (owner); GET .../photo-index (any member), POST .../photo-index/retry (owner)
 chats:   GET .../customers, GET .../conversations[/:id], GET|POST .../conversations/:id/messages, PUT .../conversations/:id/ai {paused}
 agent:   GET|PUT .../ai {enabled, instructions, autonomy, autoConfirmMaxMinor}, GET .../ai/runs, GET .../escalations, POST .../escalations/:id/resolve
 orders:  GET .../order-drafts[/:draftId] (each with `customerNotices`: event, state, code, at), GET .../order-drafts/export.xlsx?from&to&status, GET .../order-drafts/:draftId/events|payments,

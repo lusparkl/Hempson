@@ -23,7 +23,7 @@ Node 22+ (dev on 24), TypeScript strict, pnpm workspace, Fastify 5, Zod 4, SQLit
 |---|---|
 | `packages/database` | Drizzle schema, migrations `0000`-`0017`, operator `api-keys` and one repository per area (`shops`, `auth`, `catalog`, `catalog-import`, `conversations`, `agent`, `orders`, `stats`, `webchat`, `instagram`, `telegram`, `policies`, `delivery`, `payments`, `notices`, `plans`), `CredentialVault`/`Keyring` (`credentials.ts`) |
 | `packages/ui` | Shared design system (D38): `styles.css`, `components.tsx`, `icons.ts`, `embeds/`, self-hosted fonts; imported by relative path |
-| `apps/api` | Fastify server: `errors.ts` (`ApiError`), `routes/`, `services/` (`instagram*.ts`, `telegram*.ts`, `nova-poshta.ts` + `delivery.ts` (P4), `monobank.ts` + `payments.ts` (P5), `customer-notices.ts` (P6), `google-sheets.ts` + `xlsx.ts` (P8), `egress.ts`, `shop-sender.ts`, `web-chat.ts`, `notifier.ts`), `auth/`, `agent/`, `widget/` |
+| `apps/api` | Fastify server: `errors.ts` (`ApiError`), `routes/`, `services/` (`instagram*.ts`, `telegram*.ts`, `nova-poshta.ts` + `delivery.ts` (P4), `monobank.ts` + `payments.ts` (P5), `customer-notices.ts` (P6), `google-sheets.ts` + `xlsx.ts` (P8), `photo-search.ts` (P9), `egress.ts`, `shop-sender.ts`, `web-chat.ts`, `notifier.ts`), `auth/`, `agent/`, `widget/` |
 | `apps/dashboard` | Shop-owner UI (user sessions, port 5174) |
 | `apps/website` | Public marketing site (D37): prerendered static pages, Ukrainian only (D39); copy in `src/i18n/`, page list in `src/routes.ts`, owner-supplied facts in `src/site.ts`, animation slots in `src/animations.ts`; dev port 5175 |
 | `scripts/` | `migrate`, `bootstrap-key`, `backup`, `gen-openapi`, `gen-master-key`, `rewrap-credentials` |

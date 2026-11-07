@@ -38,8 +38,8 @@ Competitive target: NovaSale (Ukrainian AI sales assistant), on trust and price.
 | P5 Monobank payment links | Built | Fake-only. WayForPay **not built** |
 | P6 Customer notifications | Built | Fakes |
 | P7 Plans and AI-reply quotas | Built | Tests |
-| P8 Google Sheets import, Excel export, funnel stats | Built | Sheets fake-only. XLSX **import** not built |
-| P9 Product suggestions tool | Built | Tests. Photo search, forwarded posts, storefront **not built** |
+| P8 Google Sheets and XLSX import, Excel export, funnel stats | Built | Sheets fake-only. XLSX tested on generated files only (D43) |
+| P9 Suggestions, photo search, forwarded posts, storefront | Built | Tests with fakes. Instagram media CDN host unknown until a live capture (D42) |
 | P10 Dashboard v3 parity (unread, notes, notification centre, order numbers, dense stats) | Built | Tests + manual Playwright pass |
 | W1 Public marketing website (12 pages, Ukrainian) | Built | Builds; content placeholders remain (contacts, prices, legal entity) |
 | Design system `packages/ui` (D38) | Built | Used by dashboard and website |
@@ -69,7 +69,7 @@ docs/             AI_HANDOFF, API, DECISIONS, LIMITATIONS, OVERVIEW, PROJECT_CON
 Root tooling: `drizzle.config.ts`, `vitest.config.ts`, `vitest.browser.config.ts`, `tsconfig.json`, `.prettierrc.json`, `.env.example` (every setting documented, nothing auto-loaded).
 
 ### Main dependencies
-Runtime: `fastify` 5 (with its own `pino` logger), `zod` 4, `better-sqlite3` + `drizzle-orm`. Front ends: `react` 19, `vite` 8, `@vitejs/plugin-react`. Dev: `typescript`, `vitest`, `tsx`, `drizzle-kit`, `prettier`, `playwright` (widget browser test only). No auth library, no HTTP client library, no XLSX library (own writer), no OpenAI SDK (plain `fetch`).
+Runtime: `fastify` 5 (with its own `pino` logger), `zod` 4, `better-sqlite3` + `drizzle-orm`. Front ends: `react` 19, `vite` 8, `@vitejs/plugin-react`. Dev: `typescript`, `vitest`, `tsx`, `drizzle-kit`, `prettier`, `playwright` (widget browser test only). No auth library, no HTTP client library, no XLSX library (own writer and reader), no OpenAI SDK (plain `fetch`).
 
 ---
 
@@ -91,7 +91,7 @@ Shop API (user session, `/v1/shops/:shopId/...` checks membership):
 | Meta | `GET /health`, `GET /ready` (DB check), `GET /v1/openapi.json` |
 | Auth | `POST /v1/auth/register`, `POST /v1/auth/login`, `POST /v1/auth/logout`, `GET /v1/auth/me` |
 | Shops & team | `POST/GET /v1/shops`, `GET/PATCH /v1/shops/:shopId`, `GET/POST .../members`, `PATCH/DELETE .../members/:userId` |
-| Catalog | `POST/GET .../products`, `GET/PATCH .../products/:productId`, `POST .../products/:productId/variants`, `PATCH .../variants/:variantId`, `POST .../variants/:variantId/stock` (atomic delta), `POST .../products/import` (CSV, dry run default), `POST .../products/import-sheet` (Google Sheets link) |
+| Catalog | `POST/GET .../products`, `GET/PATCH .../products/:productId`, `POST .../products/:productId/variants`, `PATCH .../variants/:variantId`, `POST .../variants/:variantId/stock` (atomic delta), `POST .../products/import` (CSV, dry run default), `POST .../products/import-xlsx` (first worksheet, base64), `POST .../products/import-sheet` (Google Sheets link), `GET .../photo-index`, `POST .../photo-index/retry` |
 | Customers & chats | `GET .../customers`, `GET .../customers/:customerId` (profile card), `PUT .../customers/:customerId/note`, `GET .../conversations`, `GET .../conversations/unread-count`, `GET .../conversations/:id`, `PUT .../conversations/:id/read`, `GET/POST .../conversations/:id/messages` (human reply), `PUT .../conversations/:id/ai` (pause/resume AI) |
 | AI agent | `GET/PUT .../ai` (enabled, instructions, autonomy, auto-confirm max sum), `GET .../ai/runs`, `GET .../escalations`, `POST .../escalations/:id/resolve` |
 | Orders | `GET .../order-drafts` (filters incl. `customerId`), `GET .../order-drafts/export.xlsx?from&to&status`, `GET .../order-drafts/:draftId`, `POST .../:draftId/approve`, `POST .../:draftId/reject`, `POST .../:draftId/{cancel,returned,ttn,ttn/release,payment-link,refund-requested}`, `GET .../:draftId/events`, `GET .../:draftId/payments` |
@@ -109,6 +109,7 @@ Public and webhook routes:
 
 | Route | Purpose |
 |---|---|
+| `GET /s/:slug` | Public storefront page (P9, off until the owner enables it; active in-stock products, website chat widget, Telegram/Instagram links) |
 | `GET /widget/web-chat.js` | Embeddable chat widget script |
 | `POST /public/web-chat/:widgetKey/session`, `POST/GET /public/web-chat/:widgetKey/messages` | Website visitor chat (widget key, Origin allow-list, visitor token, rate limits) |
 | `GET /public/instagram/callback` | OAuth return from Meta Unified login |
@@ -138,7 +139,8 @@ Error envelope everywhere: `{ "error": { "code", "message", "retryable" } }`.
 | `payments.ts` | `PaymentService`: one invoice per order for the stored total, link message, webhook apply (idempotent, ordered), reconciliation every `HEPSON_PAYMENT_CHECK_MINUTES`, one reminder, cancel expired with restock, amount mismatch → escalate |
 | `customer-notices.ts` | `CustomerNoticeService`: sends queued fixed-text notices once (`confirmed`, `rejected`, `paid`, `shipped`, `delivered`); crash mid-send → `uncertain` |
 | `google-sheets.ts` | Fetches a link-shared sheet as CSV (only Google hosts, one redirect to googleusercontent) |
-| `xlsx.ts` | Dependency-free one-sheet XLSX writer for order export |
+| `xlsx.ts` | Dependency-free one-sheet XLSX writer (order export) and first-sheet reader (catalog import) |
+| `photo-search.ts` | P9 photo index (background indexing of product main images) and customer-photo matching; customer bytes in memory only |
 | `rate-limit.ts` | In-memory limiter for website chat |
 | `event-bus.ts` | In-process pub/sub (`message.received` etc.) |
 
@@ -192,7 +194,7 @@ SQLite through better-sqlite3 + Drizzle (`schema.ts`, ~900 lines). Migrations `0
 
 ### 5.3 Enumerations (`order-kinds.ts`, `credential-kinds.ts`)
 - Order statuses (D25): `pending_approval`, `approved`, `awaiting_payment`, `cod_confirmed`, `paid`, `shipped`, `delivered`, `returning`, `returned`, `rejected`, `cancelled`, `refund_requested`.
-- Payment methods: `cod`, `prepaid`. Providers: `monobank` (WayForPay later).
+- Payment methods: `cod`, `prepaid`. Providers: `monobank` (WayForPay deferred, D44).
 - Payment states: `creating`, `create_failed`, `created`, `processing`, `hold`, `success`, `failure`, `reversed`, `expired`, `removed`.
 - Customer notice events: `confirmed`, `rejected`, `paid`, `shipped`, `delivered`; states `pending`, `sending`, `sent`, `uncertain`, `failed`, `skipped`.
 - Policy topics: `delivery`, `returns`, `payment`, `hours`.
@@ -219,7 +221,7 @@ SQLite through better-sqlite3 + Drizzle (`schema.ts`, ~900 lines). Migrations `0
 - Products with variants, SKU unique per shop, stock never below zero, hide/deactivate (no hard delete), Cyrillic-safe search.
 - CSV import: upsert by SKU, `;`/`,`/tab, BOM, Ukrainian or English headers, `group` column for variants, all-or-nothing with line-numbered errors, dry run first, 2 MB cap.
 - Google Sheets import by share link through the same importer (one tab per run, fake-only).
-- Not built: XLSX import, image hosting (products hold external image URLs), product feeds.
+- Not built: image hosting (products hold external image URLs), product feeds.
 
 ### Orders
 - AI drafts or (future) manual; approval checks complete checkout data and reduces stock atomically.
@@ -373,8 +375,8 @@ Nothing auto-loads `.env`; run with `tsx --env-file=.env`. Full commented list i
 - Instagram: real webhook delivery (Meta sends none in dev), App Review / Advanced Access, Business Verification, media attachments, auto-pause when the owner replies from the Instagram app.
 - Telegram: live disconnect / blocked / revoked checks, media messages.
 - Nova Poshta and Monobank: no live run yet. WayForPay: not built. Courier/address delivery and other carriers: not supported.
-- P9 remainder: photo search (catalog image index, decided in D36), reading forwarded Instagram posts, public storefront at `/s/<shop-slug>`.
-- P8: XLSX import.
+- P9 live checks: Instagram attachment CDN host, `share`/`ig_post` URL contents, photo score thresholds on a real catalog.
+- WayForPay (deferred, D44).
 - Website: real contacts, legal entity, prices, lawyer review of legal texts, OG image, hosting/domain, About story/team. "Увійти" hidden in the header at ≤400px.
 - Billing for Hepson itself, refunds automation (refunds stay human).
 - Dashboard: manual order creation/editing, password reset, member role change/removal UI, limited product/variant editing, no live updates (polling).
