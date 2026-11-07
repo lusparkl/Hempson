@@ -1,7 +1,33 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
 import { ApiError } from './errors';
-import { AgentRepository, ApiKeyRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, CustomerNoticeRepository, onCustomerNoticeQueued, PlanRepository, DeliveryRepository, InstagramRepository, Keyring, NotificationRepository, OrderRepository, PaymentRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
+import {
+  AgentRepository,
+  ApiKeyRepository,
+  AuthRepository,
+  CatalogRepository,
+  ConversationRepository,
+  CredentialVault,
+  CustomerNoticeRepository,
+  onCustomerNoticeQueued,
+  PlanRepository,
+  DeliveryRepository,
+  InstagramRepository,
+  Keyring,
+  NotificationRepository,
+  OrderRepository,
+  PaymentRepository,
+  PhotoIndexRepository,
+  PolicyRepository,
+  openDb,
+  runMigrations,
+  SESSION_PREFIX,
+  ShopRepository,
+  StatsRepository,
+  TelegramRepository,
+  WebChatRepository,
+  type DbHandle,
+} from '@hepson/database';
 import { loadConfig, type Config } from './config';
 import { registerAuthRoutes } from './routes/auth';
 import { registerCatalogRoutes } from './routes/catalog';
@@ -9,6 +35,10 @@ import { registerConversationRoutes } from './routes/conversations';
 import { registerShopRoutes } from './routes/shops';
 import { SalesAgent } from './agent/sales-agent';
 import { OpenAiClient, type LlmClient } from './agent/llm';
+import { OpenAiVision, type VisionClient } from './agent/vision';
+import { PhotoSearchService } from './services/photo-search';
+import { registerPhotoSearchRoutes } from './routes/photo-search';
+import { registerStorefrontRoutes } from './routes/storefront';
 import { registerAiRoutes } from './routes/ai';
 import { registerOrderRoutes } from './routes/orders';
 import { registerStatsRoutes } from './routes/stats';
@@ -64,6 +94,8 @@ export type App = {
   plans: PlanRepository;
   notifier: Notifier | null;
   salesAgent: SalesAgent | null;
+  photoRepo: PhotoIndexRepository;
+  photos: PhotoSearchService | null;
   handle: DbHandle;
   cfg: Config;
   close(): Promise<void>;
@@ -103,7 +135,17 @@ export const REDACT_PATHS = [
   '*.body',
 ];
 
-export async function buildApp(overrides: Partial<Config> & { logger?: boolean; llm?: LlmClient; notifier?: Notifier; keyring?: Keyring | null; fetchImpl?: typeof fetch; logStream?: NodeJS.WritableStream } = {}): Promise<App> {
+export async function buildApp(
+  overrides: Partial<Config> & {
+    logger?: boolean;
+    llm?: LlmClient;
+    notifier?: Notifier;
+    keyring?: Keyring | null;
+    fetchImpl?: typeof fetch;
+    logStream?: NodeJS.WritableStream;
+    vision?: VisionClient | null;
+  } = {},
+): Promise<App> {
   const cfg: Config = { ...loadConfig(), ...overrides };
   const handle = openDb(cfg.dbFile);
   runMigrations(handle);
@@ -128,18 +170,42 @@ export async function buildApp(overrides: Partial<Config> & { logger?: boolean; 
   const plans = new PlanRepository(handle, cfg.defaultPlan);
   // The only outbound transport (D22): configured provider hosts are added to the built-in allow-list.
   const egress = createEgress({
-    extraHosts: [...cfg.egressExtraHosts, cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl, cfg.novaPoshtaBaseUrl, cfg.monobankBaseUrl].flatMap((u) => (u ? [hostOf(u) ?? ''] : [])).filter(Boolean),
+    extraHosts: [
+      ...cfg.egressExtraHosts.filter((h) => h.startsWith('.')),
+      ...[...cfg.egressExtraHosts.filter((h) => !h.startsWith('.')), cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl, cfg.novaPoshtaBaseUrl, cfg.monobankBaseUrl]
+        .flatMap((u) => (u ? [hostOf(u) ?? ''] : []))
+        .filter(Boolean),
+    ],
     fetchImpl: overrides.fetchImpl,
   });
   const app = Fastify({
-    logger: overrides.logger === false ? false : { level: cfg.logLevel, redact: { paths: REDACT_PATHS, censor: '[redacted]' }, serializers: { req: logReq }, ...(overrides.logStream ? { stream: overrides.logStream } : {}) },
+    logger:
+      overrides.logger === false
+        ? false
+        : {
+            level: cfg.logLevel,
+            redact: { paths: REDACT_PATHS, censor: '[redacted]' },
+            serializers: { req: logReq },
+            ...(overrides.logStream ? { stream: overrides.logStream } : {}),
+          },
     bodyLimit: 64 * 1024,
     trustProxy: cfg.trustProxy,
   });
   const log = app.log;
-  const llm = overrides.llm ?? (cfg.openaiApiKey && cfg.openaiModel ? new OpenAiClient({ apiKey: cfg.openaiApiKey, model: cfg.openaiModel, baseUrl: cfg.openaiBaseUrl, fetch: egress }) : null);
+  const vision =
+    overrides.vision !== undefined
+      ? overrides.vision
+      : cfg.photoSearch && cfg.openaiApiKey && cfg.visionModel
+        ? new OpenAiVision({ apiKey: cfg.openaiApiKey, model: cfg.visionModel, embeddingModel: cfg.embeddingModel, baseUrl: cfg.openaiBaseUrl, fetch: egress })
+        : null;
+  const llm =
+    overrides.llm ??
+    (cfg.openaiApiKey && cfg.openaiModel ? new OpenAiClient({ apiKey: cfg.openaiApiKey, model: cfg.openaiModel, baseUrl: cfg.openaiBaseUrl, fetch: egress }) : null);
   const notifier: Notifier | null =
-    overrides.notifier ?? (cfg.telegramBotToken ? new TelegramNotifier({ token: cfg.telegramBotToken, agent: agentRepo, shops, conversations, orders, log, baseUrl: cfg.telegramApiBaseUrl, fetchImpl: egress }) : null);
+    overrides.notifier ??
+    (cfg.telegramBotToken
+      ? new TelegramNotifier({ token: cfg.telegramBotToken, agent: agentRepo, shops, conversations, orders, log, baseUrl: cfg.telegramApiBaseUrl, fetchImpl: egress })
+      : null);
   const ig = new InstagramService({
     graph: new InstagramGraph(
       {
@@ -196,8 +262,29 @@ export async function buildApp(overrides: Partial<Config> & { logger?: boolean; 
   });
   // Any repository instance on this database may queue a notice (P6); the sender wakes after the transition commits.
   const stopNoticeListener = onCustomerNoticeQueued(handle, () => notices.kick());
+  const photoRepo = new PhotoIndexRepository(handle);
+  const photos = vision ? new PhotoSearchService({ repo: photoRepo, vision, egress, telegram: tg, log }) : null;
   const salesAgent = llm
-    ? new SalesAgent({ shops, conversations, catalog, orders, agent: agentRepo, policies, plans, deliveryRepo, delivery, paymentRepo, payments, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg })
+    ? new SalesAgent({
+        shops,
+        conversations,
+        catalog,
+        orders,
+        agent: agentRepo,
+        policies,
+        plans,
+        deliveryRepo,
+        delivery,
+        paymentRepo,
+        payments,
+        llm,
+        log,
+        maxMessageLength: cfg.maxMessageLength,
+        notifier: notifier ?? undefined,
+        instagram: ig,
+        telegram: tg,
+        photos: photos ?? undefined,
+      })
     : null;
 
   const webChatSvc = new WebChatService(
@@ -265,7 +352,9 @@ export async function buildApp(overrides: Partial<Config> & { logger?: boolean; 
   route(app, { method: 'GET', url: '/health', summary: 'Liveness', tag: 'meta', auth: 'none', handler: () => ({ ok: true, time: new Date().toISOString() }) });
   registerAuthRoutes(app, auth, { allowRegistration: cfg.allowRegistration, sessionTtlMs: cfg.sessionTtlDays * 86_400_000, throttle: new LoginThrottle() });
   registerShopRoutes(app, { shops, auth, handle });
-  registerCatalogRoutes(app, { shops, auth, catalog, egress });
+  registerCatalogRoutes(app, { shops, auth, catalog, egress, onCatalogChange: () => photos?.schedule() });
+  registerPhotoSearchRoutes(app, { shops, auth, photos });
+  registerStorefrontRoutes(app, { shops, auth, catalog, webChat, tgRepo, igRepo, publicUrl: cfg.publicUrl });
   registerConversationRoutes(app, { shops, auth, conversations, maxMessageLength: cfg.maxMessageLength, ig, tg });
   registerAiRoutes(app, { shops, auth, agent: agentRepo, aiAvailable: salesAgent !== null, telegramAvailable: notifier !== null });
   registerStatsRoutes(app, { shops, auth, stats, plans });
@@ -297,6 +386,9 @@ export async function buildApp(overrides: Partial<Config> & { logger?: boolean; 
   npTimer?.unref();
   const payTimer = cfg.paymentCheckMinutes > 0 ? setInterval(() => void payments.reconcileOnce().catch(() => undefined), cfg.paymentCheckMinutes * 60_000) : null;
   payTimer?.unref();
+  const photoTimer = photos && cfg.photoIndexMinutes > 0 ? setInterval(() => photos.schedule(), cfg.photoIndexMinutes * 60_000) : null;
+  photoTimer?.unref();
+  photos?.schedule();
 
   let closed = false;
   return {
@@ -326,6 +418,8 @@ export async function buildApp(overrides: Partial<Config> & { logger?: boolean; 
     plans,
     notifier,
     salesAgent,
+    photoRepo,
+    photos,
     handle,
     cfg,
     async close() {
@@ -335,10 +429,12 @@ export async function buildApp(overrides: Partial<Config> & { logger?: boolean; 
       if (pollTimer) clearInterval(pollTimer);
       if (npTimer) clearInterval(npTimer);
       if (payTimer) clearInterval(payTimer);
+      if (photoTimer) clearInterval(photoTimer);
       await salesAgent?.whenIdle();
       await ig.whenIdle();
       await payments.whenIdle();
       await delivery.whenIdle();
+      await photos?.whenIdle();
       stopNoticeListener();
       await notices.whenIdle();
       notices.stop();

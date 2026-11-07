@@ -12,7 +12,8 @@ export const DEFAULT_EGRESS_HOSTS = [
 /** Allowed host families: `<one label>.<suffix>` only (D35: Google's per-file download hosts, e.g. `doc-0c-1a-sheets.googleusercontent.com`). */
 export const DEFAULT_EGRESS_SUFFIXES = ['.googleusercontent.com'] as const;
 const SUFFIX_LABEL = /^[a-z0-9-]{1,63}$/;
-const suffixAllowed = (host: string) => DEFAULT_EGRESS_SUFFIXES.some((s) => host.endsWith(s) && SUFFIX_LABEL.test(host.slice(0, -s.length)));
+const SUFFIX = /^(\.[a-z0-9-]{1,63}){2,}$/;
+const suffixMatch = (suffixes: Iterable<string>, host: string) => [...suffixes].some((s) => host.endsWith(s) && SUFFIX_LABEL.test(host.slice(0, -s.length)));
 
 export class EgressDeniedError extends Error {
   constructor(readonly host: string) {
@@ -24,7 +25,7 @@ export class EgressDeniedError extends Error {
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 export type EgressOptions = {
-  /** Added to the default list (e.g. the configured LLM provider's host, or a local mock in tests). */
+  /** Added to the default list (e.g. the configured LLM provider's host, or a local mock in tests). An entry starting with a dot is a host family like the built-in suffixes (P9: Instagram media CDN hosts, D42). */
   extraHosts?: Iterable<string>;
   /** The real transport; tests pass a stub, which is still subject to the allow-list. */
   fetchImpl?: typeof fetch;
@@ -46,7 +47,13 @@ export function hostOf(urlOrHost: string): string | undefined {
  */
 export function createEgress(opts: EgressOptions = {}): typeof fetch {
   const allowed = new Set<string>(DEFAULT_EGRESS_HOSTS);
+  const suffixes = new Set<string>(DEFAULT_EGRESS_SUFFIXES);
   for (const h of opts.extraHosts ?? []) {
+    const lower = h.trim().toLowerCase();
+    if (lower.startsWith('.')) {
+      if (SUFFIX.test(lower)) suffixes.add(lower);
+      continue;
+    }
     const host = hostOf(h);
     if (host) allowed.add(host);
   }
@@ -60,8 +67,31 @@ export function createEgress(opts: EgressOptions = {}): typeof fetch {
       throw new EgressDeniedError('(invalid url)');
     }
     const host = u.hostname.toLowerCase();
-    if (!(allowed.has(host) || suffixAllowed(host)) || u.username || u.password) throw new EgressDeniedError(host);
+    if (!(allowed.has(host) || suffixMatch(suffixes, host)) || u.username || u.password) throw new EgressDeniedError(host);
     if (u.protocol !== 'https:' && !(u.protocol === 'http:' && LOOPBACK.has(host))) throw new EgressDeniedError(host);
     return base(input, { ...init, redirect: 'manual' });
   }) as typeof fetch;
+}
+
+/** A response body of at most `maxBytes`, or null when it is larger (the rest is not read). */
+export async function readCapped(res: Response, maxBytes: number): Promise<Buffer | null> {
+  if (Number(res.headers.get('content-length') ?? '0') > maxBytes) {
+    await res.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  const reader = res.body?.getReader();
+  if (!reader) return Buffer.alloc(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
 }

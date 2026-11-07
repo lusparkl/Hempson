@@ -19,7 +19,15 @@ type Np = {
   parcelDescription: string;
   lastError: string | null;
 };
-type Mono = { available: boolean; status: Status; merchantName: string | null; webhookReady: boolean; paymentTimeoutHours: number; reminderHoursBefore: number; lastError: string | null };
+type Mono = {
+  available: boolean;
+  status: Status;
+  merchantName: string | null;
+  webhookReady: boolean;
+  paymentTimeoutHours: number;
+  reminderHoursBefore: number;
+  lastError: string | null;
+};
 type NpCity = { ref: string; name: string; area: string | null };
 type NpBranch = { ref: string; number: string | null; name: string };
 type Notify = { telegram: { available: boolean; chatId: string | null } };
@@ -27,6 +35,8 @@ type Web = { enabled: boolean; widgetKey: string | null; allowedOrigins: string[
 type Ig = { available: boolean; status: Status; username: string | null; tokenExpiresAt: string | null; lastError: string | null };
 type Tg = { available: boolean; status: Status; botUsername: string | null; lastError: string | null };
 type Member = { userId: string; email: string; displayName: string; role: string };
+type Storefront = { enabled: boolean; url: string; products: number };
+type PhotoIndex = { available: boolean; withPhoto: number; indexed: number; failed: number; pending: number };
 
 type Tab = 'channels' | 'ai' | 'rules' | 'ship' | 'team';
 const TABS: Array<[Tab, string, IconName]> = [
@@ -36,13 +46,17 @@ const TABS: Array<[Tab, string, IconName]> = [
   ['ship', 'Доставка й оплата', 'truck'],
   ['team', 'Команда', 'users'],
 ];
-const STATUS_BADGE: Record<Status, [string, Tone]> = { connected: ['Підключено', 'success'], needs_reconnect: ['Потрібно підключити знову', 'danger'], not_connected: ['Не підключено', 'neutral'] };
+const STATUS_BADGE: Record<Status, [string, Tone]> = {
+  connected: ['Підключено', 'success'],
+  needs_reconnect: ['Потрібно підключити знову', 'danger'],
+  not_connected: ['Не підключено', 'neutral'],
+};
 
 export function Settings() {
-  const { shop } = useShop();
+  const { shop, params } = useShop();
   const base = `/v1/shops/${shop.shopId}`;
   const owner = shop.role === 'owner';
-  const [tab, setTab] = useState<Tab>('channels');
+  const [tab, setTab] = useState<Tab>(() => TABS.find(([k]) => k === params.tab)?.[0] ?? 'channels');
   return (
     <div className="settings">
       <nav aria-label="Розділи налаштувань">
@@ -65,13 +79,19 @@ export function Settings() {
               <InstagramRow base={base} owner={owner} />
               <TelegramBotRow base={base} owner={owner} />
               <WebChatRows base={base} owner={owner} />
+              <StorefrontRow base={base} owner={owner} />
             </Panel>
             <Panel title="Сповіщення для команди">
               <NotifyRow base={base} owner={owner} />
             </Panel>
           </>
         )}
-        {tab === 'ai' && <AiTab base={base} owner={owner} />}
+        {tab === 'ai' && (
+          <>
+            <AiTab base={base} owner={owner} />
+            <PhotoSearchPanel base={base} owner={owner} />
+          </>
+        )}
         {tab === 'rules' && <RulesTab base={base} owner={owner} />}
         {tab === 'ship' && (
           <>
@@ -220,6 +240,85 @@ function TelegramBotRow({ base, owner }: { base: string; owner: boolean }) {
   );
 }
 
+function StorefrontRow({ base, owner }: { base: string; owner: boolean }) {
+  const sf = useLoad(() => api<Storefront>('GET', `${base}/storefront`), [base]);
+  const run = useRun();
+  if (!sf.data) return <Loading error={sf.error} />;
+  const d = sf.data;
+  const toggle = (enabled: boolean) =>
+    run(
+      async () => {
+        await api('PATCH', base, { storefrontEnabled: enabled });
+        await sf.reload();
+      },
+      enabled ? 'Вітрину увімкнено' : 'Вітрину вимкнено',
+    );
+  return (
+    <Row
+      title="Вітрина"
+      desc={
+        <>
+          Публічна сторінка з товарами в наявності (без залишків). Замовлення — через чати магазину: чат на сайті з’являється на вітрині, якщо його увімкнено.
+          {d.enabled && (
+            <>
+              {' '}
+              <a href={d.url} target="_blank" rel="noopener noreferrer">
+                {d.url}
+              </a>{' '}
+              · товарів: {d.products}
+            </>
+          )}
+        </>
+      }
+    >
+      <Switch label="Увімкнено" checked={d.enabled} disabled={!owner} onChange={(e) => void toggle(e.target.checked)} />
+    </Row>
+  );
+}
+
+function PhotoSearchPanel({ base, owner }: { base: string; owner: boolean }) {
+  const p = useLoad(() => api<PhotoIndex>('GET', `${base}/photo-index`), [base]);
+  const run = useRun();
+  if (!p.data)
+    return (
+      <Panel title="Пошук за фото">
+        <Loading error={p.error} />
+      </Panel>
+    );
+  const d = p.data;
+  return (
+    <Panel title="Пошук за фото">
+      {!d.available ? (
+        <div className="panel-text">Сервер не налаштований для пошуку за фото (потрібні OPENAI_API_KEY і модель із підтримкою зображень).</div>
+      ) : (
+        <Row
+          title="Фото товарів"
+          desc={
+            d.withPhoto === 0
+              ? 'Додайте посилання на фото товарів (колонка images в імпорті), щоб асистент знаходив товар за фото клієнта.'
+              : `Проіндексовано ${d.indexed} з ${d.withPhoto}${d.pending ? `, в черзі ${d.pending}` : ''}${d.failed ? `, не вдалося ${d.failed} (посилання не відкривається або на фото немає товару)` : ''}. Асистент порівнює фото від клієнта з цими фото й пропонує схожі товари.`
+          }
+        >
+          {owner && d.failed > 0 && (
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() =>
+                void run(async () => {
+                  await api('POST', `${base}/photo-index/retry`);
+                  await p.reload();
+                }, 'Фото поставлено в чергу')
+              }
+            >
+              Спробувати ще раз
+            </Button>
+          )}
+        </Row>
+      )}
+    </Panel>
+  );
+}
+
 function WebChatRows({ base, owner }: { base: string; owner: boolean }) {
   const w = useLoad(() => api<Web>('GET', `${base}/web-chat`), [base]);
   const run = useRun();
@@ -234,7 +333,11 @@ function WebChatRows({ base, owner }: { base: string; owner: boolean }) {
       await api('PUT', `${base}/web-chat`, { enabled, allowedOrigins: list });
       await w.reload();
     });
-  const parsed = () => origins.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+  const parsed = () =>
+    origins
+      .split(/[\s,]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
   return (
     <>
       <Row title="Чат на сайті" desc="Код віджета вставте перед закриттям body на дозволеному сайті.">
@@ -351,12 +454,21 @@ function AiTab({ base, owner }: { base: string; owner: boolean }) {
             key={String(d.autoConfirmMaxMinor)}
             onSubmit={(e) => {
               e.preventDefault();
-              const cap = String(new FormData(e.currentTarget).get('cap') ?? '').trim().replace(',', '.');
+              const cap = String(new FormData(e.currentTarget).get('cap') ?? '')
+                .trim()
+                .replace(',', '.');
               save({ autoConfirmMaxMinor: cap ? Math.round(Number(cap) * 100) : null });
             }}
           >
             <div style={{ flex: '0 1 220px' }}>
-              <Input label="Сума, грн" name="cap" inputMode="decimal" placeholder="Без ліміту" defaultValue={d.autoConfirmMaxMinor === null ? '' : String(d.autoConfirmMaxMinor / 100)} disabled={!owner} />
+              <Input
+                label="Сума, грн"
+                name="cap"
+                inputMode="decimal"
+                placeholder="Без ліміту"
+                defaultValue={d.autoConfirmMaxMinor === null ? '' : String(d.autoConfirmMaxMinor / 100)}
+                disabled={!owner}
+              />
             </div>
             {owner && (
               <Button variant="primary" size="md" type="submit">
@@ -388,7 +500,12 @@ function AiTab({ base, owner }: { base: string; owner: boolean }) {
       </Panel>
       {usage && (
         <div className="panel panel-pad">
-          <UsageMeter label={`Відповіді ШІ у ${monthName(usage.month, true)}`} value={usage.aiReplies} max={usage.aiReplyCap ?? Math.max(usage.aiReplies, 1)} valueLabel={usage.aiReplyCap === null ? String(usage.aiReplies) : `${usage.aiReplies} / ${usage.aiReplyCap}`} />
+          <UsageMeter
+            label={`Відповіді ШІ у ${monthName(usage.month, true)}`}
+            value={usage.aiReplies}
+            max={usage.aiReplyCap ?? Math.max(usage.aiReplies, 1)}
+            valueLabel={usage.aiReplyCap === null ? String(usage.aiReplies) : `${usage.aiReplies} / ${usage.aiReplyCap}`}
+          />
           <div style={{ fontSize: 13 }} className="subtle">
             План {usage.plan} · {usage.aiReplyCap === null ? 'без ліміту' : `ліміт оновиться ${resets}`}.
           </div>
@@ -462,7 +579,12 @@ function NovaPoshtaCard({ base, owner }: { base: string; owner: boolean }) {
   const [city, setCity] = useState<NpCity | null>(null);
   const [branches, setBranches] = useState<NpBranch[]>([]);
   const [picking, setPicking] = useState(false);
-  if (!np.data) return <Panel title="Нова Пошта"><Loading error={np.error} /></Panel>;
+  if (!np.data)
+    return (
+      <Panel title="Нова Пошта">
+        <Loading error={np.error} />
+      </Panel>
+    );
   const d = np.data;
   const connect = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -626,7 +748,12 @@ function MonobankCard({ base, owner }: { base: string; owner: boolean }) {
   const mono = useLoad(() => api<Mono>('GET', `${base}/monobank`), [base]);
   const run = useRun();
   const [tokenForm, setTokenForm] = useState(false);
-  if (!mono.data) return <Panel title="Оплата карткою · monobank"><Loading error={mono.error} /></Panel>;
+  if (!mono.data)
+    return (
+      <Panel title="Оплата карткою · monobank">
+        <Loading error={mono.error} />
+      </Panel>
+    );
   const d = mono.data;
   const connect = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -657,7 +784,8 @@ function MonobankCard({ base, owner }: { base: string; owner: boolean }) {
   return (
     <Panel title="Оплата карткою · monobank" action={<Badge tone={STATUS_BADGE[d.status][1]}>{STATUS_BADGE[d.status][0]}</Badge>}>
       <div className="panel-text">
-        {d.status === 'connected' && `${d.merchantName ? `${d.merchantName}. ` : ''}Кошти надходять напряму на ваш рахунок monobank. Оплата зараховується лише після підтвердження від monobank.`}
+        {d.status === 'connected' &&
+          `${d.merchantName ? `${d.merchantName}. ` : ''}Кошти надходять напряму на ваш рахунок monobank. Оплата зараховується лише після підтвердження від monobank.`}
         {d.status === 'needs_reconnect' && <span className="err">monobank не приймає токен: посилання на оплату не створюються. Підключіть знову.</span>}
         {d.status === 'not_connected' && 'Не підключено. Токен еквайрингу є в кабінеті web.monobank.ua (розділ «Інтернет-еквайринг»). Кошти надходять напряму на ваш рахунок.'}
       </div>
@@ -679,7 +807,16 @@ function MonobankCard({ base, owner }: { base: string; owner: boolean }) {
         <form onSubmit={saveSettings} key={JSON.stringify(d)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div className="fields">
             <Input label="Скасувати неоплачене через, годин" name="timeout" type="number" min={1} max={720} defaultValue={d.paymentTimeoutHours} disabled={!owner} />
-            <Input label="Нагадати за, годин до скасування" name="reminder" type="number" min={0} max={719} defaultValue={d.reminderHoursBefore} hint="0 — не нагадувати" disabled={!owner} />
+            <Input
+              label="Нагадати за, годин до скасування"
+              name="reminder"
+              type="number"
+              min={0}
+              max={719}
+              defaultValue={d.reminderHoursBefore}
+              hint="0 — не нагадувати"
+              disabled={!owner}
+            />
           </div>
           {owner && (
             <div className="actions">

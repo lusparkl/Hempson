@@ -41,7 +41,7 @@ const createSchema = z.strictObject({
   defaultLanguage: language.default('uk'),
 });
 const updateSchema = z
-  .strictObject({ name, slug, defaultCurrency: currency, defaultLanguage: language })
+  .strictObject({ name, slug, defaultCurrency: currency, defaultLanguage: language, storefrontEnabled: z.boolean() })
   .partial()
   .refine((v) => Object.keys(v).length > 0, 'no fields to update');
 
@@ -69,7 +69,7 @@ export class ShopRepository {
   create(input: CreateShopInput): ShopRow {
     const v = parse(createSchema, input);
     const ts = this.clock().toISOString();
-    const row: ShopRow = { id: randomUUID(), ...v, createdAt: ts, updatedAt: ts };
+    const row: ShopRow = { id: randomUUID(), ...v, storefrontEnabled: false, createdAt: ts, updatedAt: ts };
     try {
       this.db.insert(t.shops).values(row).run();
     } catch (e) {
@@ -94,7 +94,12 @@ export class ShopRepository {
   update(id: string, input: UpdateShopInput): ShopRow {
     const v = parse(updateSchema, input);
     try {
-      const row = this.db.update(t.shops).set({ ...v, updatedAt: this.clock().toISOString() }).where(eq(t.shops.id, id)).returning().get();
+      const row = this.db
+        .update(t.shops)
+        .set({ ...v, updatedAt: this.clock().toISOString() })
+        .where(eq(t.shops.id, id))
+        .returning()
+        .get();
       if (!row) throw new ShopNotFoundError(id);
       return row;
     } catch (e) {

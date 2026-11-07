@@ -43,9 +43,26 @@ const obj = (v: unknown): Json => (v && typeof v === 'object' ? (v as Json) : {}
 const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
 const intId = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) ? String(v) : undefined);
 
-function attachmentsOf(m: Json): { kind: string }[] {
-  const out: { kind: string }[] = [];
-  if (Array.isArray(m.photo) && m.photo.length) out.push({ kind: 'image' });
+/** Largest photo size Telegram offers that photo search may download (P9). */
+const MAX_PHOTO_BYTES = 5_000_000;
+
+/** The biggest size of a Telegram photo that stays within the download cap (sizes come smallest first). */
+function photoFileId(sizes: unknown[]): string | undefined {
+  const ok = sizes.map(obj).filter((p) => str(p.file_id) && (typeof p.file_size !== 'number' || p.file_size <= MAX_PHOTO_BYTES));
+  return str(ok.at(-1)?.file_id);
+}
+
+function attachmentsOf(m: Json): { kind: string; ref?: string }[] {
+  const out: { kind: string; ref?: string }[] = [];
+  const doc = obj(m.document);
+  if (Array.isArray(m.photo) && m.photo.length) {
+    const ref = photoFileId(m.photo);
+    out.push(ref ? { kind: 'image', ref } : { kind: 'image' });
+  } else if (str(doc.mime_type)?.startsWith('image/') && str(doc.file_id) && (typeof doc.file_size !== 'number' || doc.file_size <= MAX_PHOTO_BYTES)) {
+    // A photo sent "as a file" keeps its full quality; it is still a photo to the customer.
+    out.push({ kind: 'image', ref: str(doc.file_id)! });
+    return out;
+  }
   if (m.video || m.video_note || m.animation) out.push({ kind: 'video' });
   if (m.voice || m.audio) out.push({ kind: 'audio' });
   if (m.document || m.sticker || m.location || m.contact) out.push({ kind: 'other' });
@@ -231,6 +248,18 @@ export class TelegramService {
 
   isConnected(shopId: string): boolean {
     return this.d.repo.getChannel(shopId)?.status === 'connected';
+  }
+
+  /** P9: the bytes of a photo a customer sent, for one agent run; null when it cannot be fetched. Never stored. */
+  async downloadImage(shopId: string, fileId: string): Promise<Buffer | null> {
+    if (this.blockReason(shopId)) return null;
+    try {
+      return await this.d.vault.withSecret(shopId, 'telegram_bot', (t) => this.d.api.downloadFile(t, fileId, MAX_PHOTO_BYTES));
+    } catch (e) {
+      if (e instanceof TelegramApiError && e.kind === 'auth') this.markNeedsReconnect(shopId, 'TOKEN_REJECTED');
+      this.d.log.warn({ shopId, err: e instanceof TelegramApiError ? e.kind : e instanceof Error ? e.name : 'ERROR' }, 'telegram photo download failed');
+      return null;
+    }
   }
 
   /** Sends one text to the conversation's chat. Never retries; never throws for provider problems. */

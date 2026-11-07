@@ -7,7 +7,15 @@ describe('egress guard (D22)', () => {
   it('allows only the built-in provider hosts over https', async () => {
     const f = stub();
     const egress = createEgress({ fetchImpl: f as never });
-    for (const u of ['https://graph.facebook.com/x', 'https://graph.facebook.com/v26.0/oauth/access_token', 'https://api.telegram.org/bot1/sendMessage', 'https://api.openai.com/v1/chat/completions', 'https://api.novaposhta.ua/v2.0/json/', 'https://api.monobank.ua/api/merchant/invoice/create', 'https://api.wayforpay.com/api'])
+    for (const u of [
+      'https://graph.facebook.com/x',
+      'https://graph.facebook.com/v26.0/oauth/access_token',
+      'https://api.telegram.org/bot1/sendMessage',
+      'https://api.openai.com/v1/chat/completions',
+      'https://api.novaposhta.ua/v2.0/json/',
+      'https://api.monobank.ua/api/merchant/invoice/create',
+      'https://api.wayforpay.com/api',
+    ])
       await egress(u);
     expect(f).toHaveBeenCalledTimes(7);
   });
@@ -15,9 +23,28 @@ describe('egress guard (D22)', () => {
   it('refuses everything else before calling the transport', () => {
     const f = stub();
     const egress = createEgress({ fetchImpl: f as never });
-    for (const u of ['https://evil.example/x', 'https://graph.facebook.com.evil.example/x', 'http://graph.facebook.com/x', 'https://user:pw@graph.facebook.com/x', 'https://graph.instagram.com/x', 'https://169.254.169.254/latest/meta-data', 'http://127.0.0.1:9/x', 'ftp://graph.instagram.com/x', 'not a url'])
+    for (const u of [
+      'https://evil.example/x',
+      'https://graph.facebook.com.evil.example/x',
+      'http://graph.facebook.com/x',
+      'https://user:pw@graph.facebook.com/x',
+      'https://graph.instagram.com/x',
+      'https://169.254.169.254/latest/meta-data',
+      'http://127.0.0.1:9/x',
+      'ftp://graph.instagram.com/x',
+      'not a url',
+    ])
       expect(() => egress(u), u).toThrow(EgressDeniedError);
     expect(f).not.toHaveBeenCalled();
+  });
+
+  it('an extra entry starting with a dot allows one label under that suffix only (P9 media CDN, D42)', async () => {
+    const f = stub();
+    const egress = createEgress({ extraHosts: ['.cdn-ig.example', '.example', 'not a suffix.'], fetchImpl: f as never });
+    await egress('https://scontent-waw2-1.cdn-ig.example/m/1.jpg');
+    for (const u of ['https://cdn-ig.example/x', 'https://a.b.cdn-ig.example/x', 'https://evilcdn-ig.example/x', 'http://scontent.cdn-ig.example/x', 'https://shop.example/x'])
+      expect(() => egress(u), u).toThrow(EgressDeniedError);
+    expect(f).toHaveBeenCalledTimes(1);
   });
 
   it('extra hosts are explicit; http works only for an allowed loopback host', async () => {
@@ -35,7 +62,14 @@ describe('egress guard (D22)', () => {
     await egress('https://docs.google.com/spreadsheets/d/x/export?format=csv');
     await egress('https://doc-0c-1a-sheets.googleusercontent.com/export/x');
     expect(f).toHaveBeenCalledTimes(2);
-    for (const u of ['https://googleusercontent.com/x', 'https://a.b.googleusercontent.com/x', 'https://evilgoogleusercontent.com/x', 'https://googleusercontent.com.evil.example/x', 'http://doc-0c.googleusercontent.com/x', 'https://sheets.google.com/x'])
+    for (const u of [
+      'https://googleusercontent.com/x',
+      'https://a.b.googleusercontent.com/x',
+      'https://evilgoogleusercontent.com/x',
+      'https://googleusercontent.com.evil.example/x',
+      'http://doc-0c.googleusercontent.com/x',
+      'https://sheets.google.com/x',
+    ])
       expect(() => egress(u), u).toThrow(EgressDeniedError);
   });
 

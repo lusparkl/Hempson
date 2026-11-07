@@ -123,8 +123,16 @@ function translate(e: unknown): never {
 }
 
 /** Owner: create/edit products and variants. Any member: read, and change stock. */
-export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopRepository; auth: AuthRepository; catalog: CatalogRepository; egress: typeof fetch }) {
+export function registerCatalogRoutes(
+  app: FastifyInstance,
+  deps: { shops: ShopRepository; auth: AuthRepository; catalog: CatalogRepository; egress: typeof fetch; onCatalogChange?: () => void },
+) {
   const { shops, auth, catalog, egress } = deps;
+  /** P9: products or their images changed; the photo index catches up in the background. */
+  const changed = <T>(v: T): T => {
+    deps.onCatalogChange?.();
+    return v;
+  };
   const requireRole = makeRequireRole(shops, auth);
   const base = '/v1/shops/:shopId/products';
 
@@ -140,7 +148,7 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopR
     handler: ({ req, params, body }) => {
       const { shop } = requireRole(req, params.shopId, 'owner');
       try {
-        return productView(catalog.createProduct(shop.id, { currency: shop.defaultCurrency, ...body }));
+        return changed(productView(catalog.createProduct(shop.id, { currency: shop.defaultCurrency, ...body })));
       } catch (e) {
         translate(e);
       }
@@ -193,7 +201,7 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopR
     handler: ({ req, params, body }) => {
       requireRole(req, params.shopId, 'owner');
       try {
-        return productView(catalog.updateProduct(params.shopId, params.productId, body));
+        return changed(productView(catalog.updateProduct(params.shopId, params.productId, body)));
       } catch (e) {
         translate(e);
       }
@@ -273,7 +281,7 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopR
     handler: ({ req, params, body }) => {
       const { shop } = requireRole(req, params.shopId, 'owner');
       try {
-        return importCatalogCsv(catalog, shop.id, body.csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency });
+        return changed(importCatalogCsv(catalog, shop.id, body.csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency }));
       } catch (e) {
         translate(e);
       }
@@ -301,7 +309,7 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopR
         throw e;
       }
       try {
-        return importCatalogTable(catalog, shop.id, table, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency });
+        return changed(importCatalogTable(catalog, shop.id, table, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency }));
       } catch (e) {
         translate(e);
       }
@@ -329,7 +337,7 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopR
       }
       if (!csv.trim()) throw new ApiError('VALIDATION_ERROR', 'The sheet is empty');
       try {
-        return importCatalogCsv(catalog, shop.id, csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency });
+        return changed(importCatalogCsv(catalog, shop.id, csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency }));
       } catch (e) {
         translate(e);
       }

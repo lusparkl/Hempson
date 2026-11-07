@@ -62,7 +62,8 @@ const messageView = (m: ShopMessageRow) => ({
   senderType: m.senderType,
   senderUserId: m.senderUserId,
   text: m.text,
-  attachments: m.attachments,
+  // `ref` is the channel's media handle (P9): server-side only.
+  attachments: m.attachments.map(({ ref: _ref, ...a }) => a),
   deliveryStatus: m.deliveryStatus,
   deliveryError: m.deliveryError,
   seq: m.seq,
@@ -172,7 +173,7 @@ export function registerConversationRoutes(
   route(app, {
     method: 'PUT',
     url: '/v1/shops/:shopId/conversations/:conversationId/read',
-    summary: "Mark the conversation seen by the calling member up to `seq` (default: its newest message); the marker only moves forward (any member)",
+    summary: 'Mark the conversation seen by the calling member up to `seq` (default: its newest message); the marker only moves forward (any member)',
     tag: 'conversations',
     auth: 'user',
     params: convP,
@@ -263,7 +264,12 @@ export function registerConversationRoutes(
       let message: ShopMessageRow;
       try {
         conversations.setAiPaused(params.shopId, params.conversationId, true, userId);
-        message = conversations.recordOutbound(params.shopId, params.conversationId, { senderType: 'human', senderUserId: userId, text: body.text, deliveryStatus: 'pending' }).message;
+        message = conversations.recordOutbound(params.shopId, params.conversationId, {
+          senderType: 'human',
+          senderUserId: userId,
+          text: body.text,
+          deliveryStatus: 'pending',
+        }).message;
         // Replying means the member has read the conversation.
         conversations.markRead(params.shopId, params.conversationId, userId, message.seq);
       } catch (e) {

@@ -1,4 +1,4 @@
-import { EgressDeniedError } from './egress';
+import { EgressDeniedError, readCapped } from './egress';
 
 /** A Bot API call failed. Carries codes only: never a URL (it holds the token) or Telegram's description text. */
 export class TelegramApiError extends Error {
@@ -79,6 +79,33 @@ export class TelegramBotApi {
   async deleteWebhook(token: string): Promise<void> {
     const r = await this.call(token, 'deleteWebhook', {});
     if (!r.ok) this.fail(r);
+  }
+
+  /**
+   * P9 photo search: downloads one file a customer sent (Bot API `getFile`, then the file URL, which carries the token).
+   * Size-capped; the bytes live only in memory for the current run (D36). Null when the file is gone or too large.
+   */
+  async downloadFile(token: string, fileId: string, maxBytes: number): Promise<Buffer | null> {
+    const r = await this.call(token, 'getFile', { file_id: fileId });
+    if (!r.ok) {
+      if (r.status === 400) return null; // unknown or expired file id
+      this.fail(r);
+    }
+    const f = asObj(r.result);
+    if (typeof f.file_path !== 'string' || !/^[\w./-]{1,256}$/.test(f.file_path) || f.file_path.includes('..')) return null;
+    if (typeof f.file_size === 'number' && f.file_size > maxBytes) return null;
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.baseUrl.replace(/\/+$/, '')}/file/bot${token}/${f.file_path}`, { signal: AbortSignal.timeout(this.timeoutMs) });
+    } catch (e) {
+      if (e instanceof EgressDeniedError) throw e;
+      throw new TelegramApiError('unavailable', null);
+    }
+    if (!res.ok) {
+      if (isAuth(res.status)) throw new TelegramApiError('auth', res.status);
+      return null;
+    }
+    return readCapped(res, maxBytes);
   }
 
   /**

@@ -21,6 +21,7 @@ import {
 import type { DeliveryService } from '../services/delivery';
 import type { Notifier } from '../services/notifier';
 import type { PaymentService } from '../services/payments';
+import type { PhotoSearchResult } from '../services/photo-search';
 import type { ToolSpec } from './llm';
 
 export const formatMoney = (minor: number, currency: string) => `${(minor / 100).toFixed(2)} ${currency}`;
@@ -67,13 +68,19 @@ export type ToolContext = {
   paymentRepo?: PaymentRepository;
   payments?: PaymentService;
   notify?: Notifier;
+  /** P9: matches the customer's newest photo in this turn against the catalog photo index; absent when photo search is off. */
+  photoSearch?: (limit: number) => Promise<PhotoSearchResult | { status: 'no_photo' }>;
 };
 
-const items = z.array(z.strictObject({ sku: z.string().trim().min(1).max(64), quantity: z.number().int().min(1).max(1000) })).min(1).max(20);
+const items = z
+  .array(z.strictObject({ sku: z.string().trim().min(1).max(64), quantity: z.number().int().min(1).max(1000) }))
+  .min(1)
+  .max(20);
 const searchArgs = z.strictObject({ query: z.string().trim().max(200).default(''), limit: z.number().int().min(1).max(5).default(5) });
 const skuArgs = z.strictObject({ sku: z.string().trim().min(1).max(64) });
 const quoteArgs = z.strictObject({ items });
 const suggestArgs = z.strictObject({ sku: z.string().trim().min(1).max(64), kind: z.enum(['alternatives', 'complements']), limit: z.number().int().min(1).max(3).default(3) });
+const photoArgs = z.strictObject({ limit: z.number().int().min(1).max(3).default(3) });
 const escalateArgs = z.strictObject({ reason: z.string().trim().min(1).max(500) });
 const policyArgs = z.strictObject({ topic: z.enum(POLICY_TOPICS) });
 const cityArgs = z.strictObject({ query: z.string().trim().min(2).max(100) });
@@ -106,7 +113,8 @@ const itemsSchema = {
 export const TOOLS: ToolSpec[] = [
   {
     name: 'search_products',
-    description: 'Search the shop catalog by words (name, description, SKU, size/color). Returns active products with variants, prices and stock. Use 1-3 key words (product name, type), not a whole sentence. Use before saying anything about a product.',
+    description:
+      'Search the shop catalog by words (name, description, SKU, size/color). Returns active products with variants, prices and stock. Use 1-3 key words (product name, type), not a whole sentence. Use before saying anything about a product.',
     parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 5 } }, required: ['query'], additionalProperties: false },
   },
   {
@@ -120,10 +128,20 @@ export const TOOLS: ToolSpec[] = [
       'Catalog suggestions for a SKU the customer looked at. kind "alternatives": in-stock options of the same product and similar products (use when the wanted variant is out of stock or the customer asks for something similar). kind "complements": in-stock products other customers of this shop ordered together with it (an upsell after the customer chose). Suggest only what this returns.',
     parameters: {
       type: 'object',
-      properties: { sku: { type: 'string', description: 'Variant SKU exactly as returned by a product tool' }, kind: { type: 'string', enum: ['alternatives', 'complements'] }, limit: { type: 'integer', minimum: 1, maximum: 3 } },
+      properties: {
+        sku: { type: 'string', description: 'Variant SKU exactly as returned by a product tool' },
+        kind: { type: 'string', enum: ['alternatives', 'complements'] },
+        limit: { type: 'integer', minimum: 1, maximum: 3 },
+      },
       required: ['sku', 'kind'],
       additionalProperties: false,
     },
+  },
+  {
+    name: 'search_by_photo',
+    description:
+      'Find catalog products that look like the photo or the shared Instagram post the customer sent in this turn. Returns up to 3 visually similar active products with variants, prices and stock, each marked match "close" or "possible". These are candidates, not certainties.',
+    parameters: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 3 } }, additionalProperties: false },
   },
   {
     name: 'quote_order',
@@ -132,7 +150,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_policy',
-    description: "The shop's own text about delivery (terms, times, costs), returns/exchanges, payment, or opening hours. Call it before saying anything on these topics and quote only what it returns. If it has no text, call escalate.",
+    description:
+      "The shop's own text about delivery (terms, times, costs), returns/exchanges, payment, or opening hours. Call it before saying anything on these topics and quote only what it returns. If it has no text, call escalate.",
     parameters: { type: 'object', properties: { topic: { type: 'string', enum: [...POLICY_TOPICS] } }, required: ['topic'], additionalProperties: false },
   },
   {
@@ -143,7 +162,12 @@ export const TOOLS: ToolSpec[] = [
   {
     name: 'find_np_branch',
     description: 'Find a Nova Poshta branch or parcel locker in a city returned by find_np_city in this turn. Query by branch number or street. Returns up to 5 with branchRef.',
-    parameters: { type: 'object', properties: { cityRef: { type: 'string' }, query: { type: 'string', description: 'Branch number (e.g. "5") or street' } }, required: ['cityRef', 'query'], additionalProperties: false },
+    parameters: {
+      type: 'object',
+      properties: { cityRef: { type: 'string' }, query: { type: 'string', description: 'Branch number (e.g. "5") or street' } },
+      required: ['cityRef', 'query'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'get_checkout_options',
@@ -172,13 +196,20 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: 'get_order_status',
-    description: "Status of this customer's orders in this conversation: confirmation, Nova Poshta TTN and delivery status. Call before saying anything about an order's state or delivery.",
+    description:
+      "Status of this customer's orders in this conversation: confirmation, Nova Poshta TTN and delivery status. Call before saying anything about an order's state or delivery.",
     parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
   },
   {
     name: 'escalate',
-    description: 'Hand the conversation to a human manager (unknown facts, discounts, returns, complaints, payment, anything sensitive or unclear). After this you may still send one short holding message to the customer.',
-    parameters: { type: 'object', properties: { reason: { type: 'string', description: 'Short reason for the manager, in the shop language' } }, required: ['reason'], additionalProperties: false },
+    description:
+      'Hand the conversation to a human manager (unknown facts, discounts, returns, complaints, payment, anything sensitive or unclear). After this you may still send one short holding message to the customer.',
+    parameters: {
+      type: 'object',
+      properties: { reason: { type: 'string', description: 'Short reason for the manager, in the shop language' } },
+      required: ['reason'],
+      additionalProperties: false,
+    },
   },
 ];
 
@@ -206,7 +237,14 @@ const quoteView = (q: OrderQuote, facts: RunFacts) => {
   return {
     currency: q.currency,
     total: formatMoney(q.totalMinor, q.currency),
-    lines: q.lines.map((l) => ({ sku: l.sku, name: l.productName, options: l.options, quantity: l.quantity, unitPrice: formatMoney(l.unitPriceMinor, q.currency), lineTotal: formatMoney(l.lineTotalMinor, q.currency) })),
+    lines: q.lines.map((l) => ({
+      sku: l.sku,
+      name: l.productName,
+      options: l.options,
+      quantity: l.quantity,
+      unitPrice: formatMoney(l.unitPriceMinor, q.currency),
+      lineTotal: formatMoney(l.lineTotalMinor, q.currency),
+    })),
   };
 };
 
@@ -271,12 +309,23 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         ctx.facts.productLookups++;
         let found = ctx.catalog.listProducts(ctx.shopId, { q: a.data.query, active: true, limit: a.data.limit });
         // The catalog ANDs every word; a customer-style query ("худі Classic чорне") would then match nothing. Fall back to products matching any word, best match first.
-        const words = [...new Set(a.data.query.toLowerCase().split(/\s+/).filter((w) => w.length > 1))].slice(0, 6);
+        const words = [
+          ...new Set(
+            a.data.query
+              .toLowerCase()
+              .split(/\s+/)
+              .filter((w) => w.length > 1),
+          ),
+        ].slice(0, 6);
         if (!found.items.length && words.length > 1) {
           const hits = new Map<string, { pw: ProductWithVariants; n: number }>();
           for (const w of words)
-            for (const pw of ctx.catalog.listProducts(ctx.shopId, { q: w, active: true, limit: 20 }).items) hits.set(pw.product.id, { pw, n: (hits.get(pw.product.id)?.n ?? 0) + 1 });
-          const items = [...hits.values()].sort((x, y) => y.n - x.n).slice(0, a.data.limit).map((h) => h.pw);
+            for (const pw of ctx.catalog.listProducts(ctx.shopId, { q: w, active: true, limit: 20 }).items)
+              hits.set(pw.product.id, { pw, n: (hits.get(pw.product.id)?.n ?? 0) + 1 });
+          const items = [...hits.values()]
+            .sort((x, y) => y.n - x.n)
+            .slice(0, a.data.limit)
+            .map((h) => h.pw);
           found = { items, total: hits.size };
         }
         const products = found.items.map((p) => productView(p, ctx.facts)).filter((p) => p.variants.length);
@@ -307,6 +356,25 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         const products = ctx.catalog.similarProducts(ctx.shopId, v.productId, a.data.limit).map((p) => productView(p, ctx.facts));
         return out({ sameProduct, products, ...(sameProduct || products.length ? {} : none) });
       }
+      case 'search_by_photo': {
+        const a = photoArgs.safeParse(json);
+        if (!a.success) return bad(a.error);
+        const ask = 'Ask the customer for the product name or a short description, then use search_products.';
+        if (!ctx.photoSearch) return out({ error: `Photo search is not available. ${ask}` });
+        ctx.facts.productLookups++;
+        const r = await ctx.photoSearch(a.data.limit);
+        if (r.status === 'no_photo') return out({ error: `There is no customer photo in this turn that can be read. ${ask}` });
+        if (r.status === 'unreadable') return out({ error: `The photo could not be read. ${ask}` });
+        if (r.status === 'unavailable') return out({ error: `Photo search failed for now. ${ask}` });
+        if (r.status === 'no_product') return out({ note: `The photo does not show a product. ${ask}` });
+        const products = r.matches.flatMap((m) => {
+          const pw = ctx.catalog.getProduct(ctx.shopId, m.productId);
+          if (!pw?.product.active) return [];
+          const view = productView(pw, ctx.facts);
+          return view.variants.length ? [{ match: m.close ? 'close' : 'possible', ...view }] : [];
+        });
+        return out({ products, ...(products.length ? {} : { note: `Nothing similar in the catalog. Do not suggest anything else. ${ask}` }) });
+      }
       case 'quote_order': {
         const a = quoteArgs.safeParse(json);
         if (!a.success) return bad(a.error);
@@ -329,7 +397,10 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         if (!ctx.delivery?.connected(ctx.shopId)) return out(npUnavailable);
         const cities = await ctx.delivery.cities(ctx.shopId, a.data.query);
         for (const c of cities) ctx.facts.npCities.set(c.ref, c.name);
-        return out({ cities: cities.map((c) => ({ cityRef: c.ref, name: c.name, area: c.area })), ...(cities.length ? {} : { note: 'No such city at Nova Poshta. Ask the customer to check the spelling.' }) });
+        return out({
+          cities: cities.map((c) => ({ cityRef: c.ref, name: c.name, area: c.area })),
+          ...(cities.length ? {} : { note: 'No such city at Nova Poshta. Ask the customer to check the spelling.' }),
+        });
       }
       case 'find_np_branch': {
         const a = branchArgs.safeParse(json);
@@ -338,7 +409,10 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         if (!ctx.delivery?.connected(ctx.shopId)) return out(npUnavailable);
         const list = await ctx.delivery.warehouses(ctx.shopId, a.data.cityRef, a.data.query);
         for (const w of list) ctx.facts.npBranches.set(w.ref, { cityRef: a.data.cityRef, name: w.name });
-        return out({ branches: list.map((w) => ({ branchRef: w.ref, number: w.number, name: w.name })), ...(list.length ? {} : { note: 'No matching working branch. Ask for another branch number or street.' }) });
+        return out({
+          branches: list.map((w) => ({ branchRef: w.ref, number: w.number, name: w.name })),
+          ...(list.length ? {} : { note: 'No matching working branch. Ask for another branch number or street.' }),
+        });
       }
       case 'get_checkout_options': {
         const a = checkoutArgs.safeParse(json);
@@ -346,7 +420,10 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         const phone = a.data.phone ? normalizeUaPhone(a.data.phone) : null;
         const pm = ctx.deliveryRepo.paymentMethods(ctx.shopId, { phone, customerId: ctx.customerId });
         ctx.facts.paymentMethods = pm.methods;
-        const labels: Record<PaymentMethod, string> = { cod: 'cash on delivery at the Nova Poshta branch (накладений платіж)', prepaid: 'online card payment via monobank; the payment link is sent automatically in this chat once the order is confirmed' };
+        const labels: Record<PaymentMethod, string> = {
+          cod: 'cash on delivery at the Nova Poshta branch (накладений платіж)',
+          prepaid: 'online card payment via monobank; the payment link is sent automatically in this chat once the order is confirmed',
+        };
         return out({
           paymentMethods: pm.methods.map((m) => ({ method: m, description: labels[m] })),
           ...(a.data.phone && !phone ? { phoneProblem: 'not a valid Ukrainian phone number; ask the customer to check it' } : {}),
@@ -359,7 +436,8 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         ctx.facts.productLookups++;
         const city = ctx.facts.npCities.get(a.data.cityRef);
         const branch = ctx.facts.npBranches.get(a.data.branchRef);
-        if (!city || !branch || branch.cityRef !== a.data.cityRef) return out({ error: 'cityRef/branchRef were not returned by find_np_city/find_np_branch in this turn: look them up first' });
+        if (!city || !branch || branch.cityRef !== a.data.cityRef)
+          return out({ error: 'cityRef/branchRef were not returned by find_np_city/find_np_branch in this turn: look them up first' });
         const { items: lineItems, firstName, lastName, phone, paymentMethod, note } = a.data;
         const created = ctx.orders.createDraft(ctx.shopId, {
           items: lineItems,
@@ -377,7 +455,16 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
           ctx.delivery?.afterApproval(ctx.shopId, auto.draft);
           ctx.payments?.afterApproval(ctx.shopId, auto.draft);
           ctx.notify?.notify({ kind: 'order_update', shopId: ctx.shopId, conversationId: ctx.conversationId, draftId: draft.id, event: 'auto_confirmed', ttn: null });
-        } else ctx.notify?.notify({ kind: 'order_draft', shopId: ctx.shopId, conversationId: ctx.conversationId, draftId: draft.id, currency: draft.currency, totalMinor: draft.totalMinor, itemCount: lines.length });
+        } else
+          ctx.notify?.notify({
+            kind: 'order_draft',
+            shopId: ctx.shopId,
+            conversationId: ctx.conversationId,
+            draftId: draft.id,
+            currency: draft.currency,
+            totalMinor: draft.totalMinor,
+            itemCount: lines.length,
+          });
         const q: OrderQuote = {
           currency: draft.currency,
           totalMinor: draft.totalMinor,
@@ -385,10 +472,28 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         };
         const view = quoteView(q, ctx.facts);
         if (auto?.approved && auto.draft.draft.status === 'awaiting_payment')
-          return out({ draftId: draft.id, status: 'awaiting_payment', confirmed: true, note: 'The shop confirmed this order automatically. The shop system sends the payment link in this chat by itself; the parcel is sent by Nova Poshta after payment. Do not write a link, card or account details yourself.', ...view });
+          return out({
+            draftId: draft.id,
+            status: 'awaiting_payment',
+            confirmed: true,
+            note: 'The shop confirmed this order automatically. The shop system sends the payment link in this chat by itself; the parcel is sent by Nova Poshta after payment. Do not write a link, card or account details yourself.',
+            ...view,
+          });
         if (auto?.approved)
-          return out({ draftId: draft.id, status: auto.draft.draft.status, confirmed: true, note: 'The shop confirmed this order automatically. You may say it is confirmed and will be sent by Nova Poshta. Do not promise a delivery date.', ...view });
-        return out({ draftId: draft.id, status: 'pending_approval', confirmed: false, note: 'NOT a confirmed order. The shop must confirm it first; tell the customer exactly that.', ...view });
+          return out({
+            draftId: draft.id,
+            status: auto.draft.draft.status,
+            confirmed: true,
+            note: 'The shop confirmed this order automatically. You may say it is confirmed and will be sent by Nova Poshta. Do not promise a delivery date.',
+            ...view,
+          });
+        return out({
+          draftId: draft.id,
+          status: 'pending_approval',
+          confirmed: false,
+          note: 'NOT a confirmed order. The shop must confirm it first; tell the customer exactly that.',
+          ...view,
+        });
       }
       case 'get_order_status': {
         const a = noArgs.safeParse(json);

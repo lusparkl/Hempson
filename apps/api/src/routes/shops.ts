@@ -22,11 +22,27 @@ import { route } from './define';
 const shopId = z.object({ shopId: z.uuid() });
 const memberParams = z.object({ shopId: z.uuid(), userId: z.uuid() });
 const createBody = z.strictObject({ name: z.string(), slug: z.string(), defaultCurrency: z.string().optional(), defaultLanguage: z.string().optional() });
-const updateBody = z.strictObject({ name: z.string().optional(), slug: z.string().optional(), defaultCurrency: z.string().optional(), defaultLanguage: z.string().optional() });
+const updateBody = z.strictObject({
+  name: z.string().optional(),
+  slug: z.string().optional(),
+  defaultCurrency: z.string().optional(),
+  defaultLanguage: z.string().optional(),
+  storefrontEnabled: z.boolean().optional(),
+});
 const addMemberBody = z.strictObject({ email: z.string().max(254), role: roleSchema });
 const roleBody = z.strictObject({ role: roleSchema });
 
-const shopView = (s: ShopRow, role: Role) => ({ shopId: s.id, name: s.name, slug: s.slug, defaultCurrency: s.defaultCurrency, defaultLanguage: s.defaultLanguage, createdAt: s.createdAt, updatedAt: s.updatedAt, role });
+const shopView = (s: ShopRow, role: Role) => ({
+  shopId: s.id,
+  name: s.name,
+  slug: s.slug,
+  defaultCurrency: s.defaultCurrency,
+  defaultLanguage: s.defaultLanguage,
+  storefrontEnabled: s.storefrontEnabled,
+  createdAt: s.createdAt,
+  updatedAt: s.updatedAt,
+  role,
+});
 
 /** Maps domain errors to API errors. */
 function translate(e: unknown): never {
@@ -82,7 +98,7 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
   route(app, {
     method: 'GET',
     url: '/v1/shops',
-    summary: "Shops the caller belongs to",
+    summary: 'Shops the caller belongs to',
     tag: 'shops',
     auth: 'user',
     handler: ({ req }) => auth.listShopsForUser(req.user!.user.id).map(({ shop, role }) => shopView(shop, role)),
@@ -128,7 +144,9 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     params: shopId,
     handler: ({ req, params }) => {
       requireRole(req, params.shopId, 'manager');
-      return auth.listMembers(params.shopId).map(({ membership, user }) => ({ userId: user.id, email: user.email, displayName: user.displayName, role: membership.role, since: membership.createdAt }));
+      return auth
+        .listMembers(params.shopId)
+        .map(({ membership, user }) => ({ userId: user.id, email: user.email, displayName: user.displayName, role: membership.role, since: membership.createdAt }));
     },
   });
 

@@ -1,14 +1,34 @@
-import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, type AiUsage, AiRunStatus, CatalogRepository, ConversationRepository, DeliveryRepository, OrderRepository, type PaymentRepository, type PlanRepository, PolicyRepository, RunPatch, ShopMessageRow, ShopRepository } from '@hepson/database';
+import {
+  INSTAGRAM_CHANNEL,
+  TELEGRAM_CHANNEL,
+  WEB_CHANNEL,
+  type AgentRepository,
+  type AiUsage,
+  AiRunStatus,
+  CatalogRepository,
+  ConversationRepository,
+  DeliveryRepository,
+  OrderRepository,
+  type PaymentRepository,
+  type PlanRepository,
+  PolicyRepository,
+  RunPatch,
+  ShopMessageRow,
+  ShopRepository,
+} from '@hepson/database';
 import type { DeliveryService } from '../services/delivery';
 import type { PaymentService } from '../services/payments';
 import type { InstagramService } from '../services/instagram';
 import type { Notifier } from '../services/notifier';
 import type { TelegramService } from '../services/telegram';
+import { PhotoSearchService } from '../services/photo-search';
 import { deliverPending, sendSystemMessage, type Delivery } from '../services/shop-sender';
 import { checkReply } from './guard';
 import { LlmError, type ChatMessage, type LlmClient } from './llm';
 import { buildSystemPrompt } from './prompt';
-import { RunFacts, TOOLS, runTool } from './tools';
+import { RunFacts, TOOLS, runTool, type ToolContext } from './tools';
+
+type PhotoSearchFn = NonNullable<ToolContext['photoSearch']>;
 
 type Logger = { info(o: object, m?: string): void; warn(o: object, m?: string): void; error(o: object, m?: string): void };
 
@@ -37,6 +57,8 @@ export type SalesAgentDeps = {
   notifier?: Notifier;
   instagram?: InstagramService;
   telegram?: TelegramService;
+  /** P9 photo search; absent when no vision model is configured. */
+  photos?: PhotoSearchService;
 };
 
 type Target = { shopId: string; shopConversationId: string; trigger: ShopMessageRow; delivery: Delivery };
@@ -64,7 +86,8 @@ export class SalesAgent {
     const conv = this.d.conversations.getConversation(shopId, conversationId);
     if (!trigger || !conv || trigger.direction !== 'incoming' || trigger.conversationId !== conversationId) return;
     const ch = conv.conversation.channel;
-    const delivery: Delivery | null = ch === WEB_CHANNEL ? { kind: 'internal' } : ch === INSTAGRAM_CHANNEL ? { kind: 'instagram' } : ch === TELEGRAM_CHANNEL ? { kind: 'telegram' } : null;
+    const delivery: Delivery | null =
+      ch === WEB_CHANNEL ? { kind: 'internal' } : ch === INSTAGRAM_CHANNEL ? { kind: 'instagram' } : ch === TELEGRAM_CHANNEL ? { kind: 'telegram' } : null;
     if (delivery) this.enqueue({ shopId, shopConversationId: conversationId, trigger, delivery });
   }
 
@@ -87,15 +110,15 @@ export class SalesAgent {
     if (!agent.getSettings(t.shopId).enabled) return;
     const run = agent.startRun(t.shopId, t.shopConversationId, t.trigger.id);
     if (!run) return; // this message already has a run: never answer it twice
-    const finish = (status: AiRunStatus, detail: string | null, extra: RunPatch = {}) =>
-      agent.updateRun(t.shopId, run.id, { status, detail, ...extra });
+    const finish = (status: AiRunStatus, detail: string | null, extra: RunPatch = {}) => agent.updateRun(t.shopId, run.id, { status, detail, ...extra });
 
     try {
       if (conversations.getConversation(t.shopId, t.shopConversationId)?.conversation.aiPaused) return void finish('skipped', 'AI_PAUSED');
       if (agent.openEscalation(t.shopId, t.shopConversationId)) return void finish('skipped', 'ESCALATION_OPEN');
       const recent = conversations.listMessages(t.shopId, t.shopConversationId, { limit: HISTORY }).items;
       const newest = recent.at(-1);
-      if (newest?.id !== t.trigger.id) return void finish(newest?.direction === 'incoming' ? 'superseded' : 'skipped', newest?.direction === 'incoming' ? 'NEWER_MESSAGE' : 'ALREADY_ANSWERED');
+      if (newest?.id !== t.trigger.id)
+        return void finish(newest?.direction === 'incoming' ? 'superseded' : 'skipped', newest?.direction === 'incoming' ? 'NEWER_MESSAGE' : 'ALREADY_ANSWERED');
       const quota = this.d.plans.usage(t.shopId, run.id);
       if (quota.capReached) return void (await this.atCap(t, run.id, quota, shop.defaultLanguage));
 
@@ -116,8 +139,11 @@ export class SalesAgent {
         paymentRepo: this.d.paymentRepo,
         payments: this.d.payments,
         notify: this.d.notifier,
+        photoSearch: this.d.photos ? this.photoSearch(t.shopId, conv.conversation.channel, recent) : undefined,
       };
       const customerText = trailingCustomerText(recent);
+      // Photo search is offered only when this server has a vision model (P9).
+      const tools = ctx.photoSearch ? TOOLS : TOOLS.filter((t) => t.name !== 'search_by_photo');
       const messages: ChatMessage[] = [
         { role: 'system', content: buildSystemPrompt(shop, conv.conversation.channel, agent.getSettings(t.shopId).instructions) },
         ...recent.map(toChat),
@@ -134,7 +160,7 @@ export class SalesAgent {
       const usage = () => ({ model, modelRequests: requests, inputTokens, outputTokens });
 
       for (let step = 0; step < MAX_STEPS && reply === null; step++) {
-        const r = await llm.complete({ messages, tools: TOOLS });
+        const r = await llm.complete({ messages, tools });
         requests++;
         inputTokens += r.inputTokens;
         outputTokens += r.outputTokens;
@@ -177,6 +203,21 @@ export class SalesAgent {
     }
   }
 
+  /** One photo search per run, for the newest readable photo the customer sent since the last reply (computed on first use). */
+  private photoSearch(shopId: string, channel: string, recent: ShopMessageRow[]): PhotoSearchFn {
+    const photos = this.d.photos!;
+    const trailing: ShopMessageRow[] = [];
+    for (let i = recent.length - 1; i >= 0 && recent[i]!.direction === 'incoming'; i--) trailing.unshift(recent[i]!);
+    let result: ReturnType<PhotoSearchFn> | undefined;
+    return (limit) =>
+      (result ??= (async () => {
+        const pick = PhotoSearchService.pickPhoto(trailing);
+        if (!pick) return { status: 'no_photo' as const };
+        const image = await photos.loadCustomerImage(shopId, channel, pick.ref);
+        return image ? photos.search(shopId, image, limit) : { status: 'unreadable' as const };
+      })());
+  }
+
   /**
    * P7: this month's AI-reply cap is reached. No model call: the conversation goes to a person, the customer gets one
    * fixed holding text (never silence), and the owner gets one notice per shop and month instead of one per escalation.
@@ -195,7 +236,13 @@ export class SalesAgent {
     agent.updateRun(t.shopId, runId, { status: 'escalated', detail: 'AI_REPLY_CAP' });
   }
 
-  private async send(t: Target, runId: string, text: string, escalated: boolean, usage: { model: string; modelRequests: number; inputTokens: number; outputTokens: number }): Promise<void> {
+  private async send(
+    t: Target,
+    runId: string,
+    text: string,
+    escalated: boolean,
+    usage: { model: string; modelRequests: number; inputTokens: number; outputTokens: number },
+  ): Promise<void> {
     const { conversations, agent } = this.d;
     const done = (status: 'replied' | 'send_uncertain' | 'escalated' | 'failed' | 'superseded', detail: string | null, replyMessageId: string | null = null) =>
       agent.updateRun(t.shopId, runId, { ...usage, status, detail, replyMessageId });
@@ -203,7 +250,10 @@ export class SalesAgent {
 
     // A newer customer message arrived while the model was working: drop this reply, the next run answers everything.
     // Server messages sent meanwhile (a payment link after auto-confirm) do not count.
-    const lastIncoming = conversations.listMessages(t.shopId, t.shopConversationId, { limit: 20 }).items.filter((m) => m.direction === 'incoming').at(-1);
+    const lastIncoming = conversations
+      .listMessages(t.shopId, t.shopConversationId, { limit: 20 })
+      .items.filter((m) => m.direction === 'incoming')
+      .at(-1);
     if (lastIncoming && lastIncoming.id !== t.trigger.id) {
       agent.updateRun(t.shopId, runId, { ...usage, status: 'superseded', detail: 'NEWER_MESSAGE' });
       return;

@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { CREDENTIAL_KINDS, CREDENTIAL_STATUSES } from './credential-kinds';
 import { CUSTOMER_NOTICE_EVENTS, CUSTOMER_NOTICE_STATES, ORDER_STATUSES, PAYMENT_METHODS, PAYMENT_PROVIDERS, PAYMENT_STATES, PLAN_NAMES, POLICY_TOPICS } from './order-kinds';
-import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { blob, check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // NOTE: no column here may ever hold cookies, tokens, passwords or 2FA secrets in clear text.
 // Provider tokens live only in `shop_credentials`, encrypted by `CredentialVault` (D28).
@@ -28,6 +28,8 @@ export const shops = sqliteTable(
     slug: text('slug').notNull(),
     defaultCurrency: text('default_currency').notNull().default('UAH'),
     defaultLanguage: text('default_language').notNull().default('uk'),
+    /** P9: the public read-only catalog page `/s/<slug>` is on. Off until the owner turns it on. */
+    storefrontEnabled: integer('storefront_enabled', { mode: 'boolean' }).notNull().default(false),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
@@ -103,6 +105,34 @@ export const products = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (t) => [index('products_shop_idx').on(t.shopId, t.createdAt), check('products_price_nonneg', sql`${t.priceMinor} >= 0`)],
+);
+
+/**
+ * P9 photo search (D42): one entry per product, built from its main image (`media[0]`). The vision model's description of
+ * the image and its embedding. An entry is current only while `image_url` equals the product's `media[0]` and `model`
+ * the configured models; anything else is re-indexed. Customer images are never stored here or anywhere else (D36).
+ */
+export const productPhotoIndex = sqliteTable(
+  'product_photo_index',
+  {
+    productId: text('product_id')
+      .primaryKey()
+      .references(() => products.id),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shops.id),
+    imageUrl: text('image_url').notNull(),
+    /** `<vision model>|<embedding model>|<dimensions>`. */
+    model: text('model').notNull(),
+    status: text('status', { enum: ['ready', 'failed'] }).notNull(),
+    description: text('description').notNull().default(''),
+    /** Float32 little-endian, unit length; empty when failed. */
+    embedding: blob('embedding', { mode: 'buffer' }),
+    /** Short error code when failed (never a URL or provider text). */
+    error: text('error'),
+    indexedAt: text('indexed_at').notNull(),
+  },
+  (t) => [index('photo_index_shop_idx').on(t.shopId, t.status)],
 );
 
 export const productVariants = sqliteTable(
@@ -209,7 +239,8 @@ export const shopMessages = sqliteTable(
     /** Dashboard user who sent a `human` message. */
     senderUserId: text('sender_user_id').references(() => users.id),
     text: text('text'),
-    attachments: text('attachments', { mode: 'json' }).$type<Array<{ kind: string; url?: string; name?: string }>>().notNull(),
+    /** `ref`: the channel's own handle for the media (Telegram file id, Instagram CDN URL), used only to fetch it for one agent run (P9). Never returned by the API. */
+    attachments: text('attachments', { mode: 'json' }).$type<Array<{ kind: string; url?: string; name?: string; ref?: string }>>().notNull(),
     /** received (incoming) | pending -> sent | failed | uncertain (outgoing). Never set `sent` without a real acknowledgement. */
     deliveryStatus: text('delivery_status', { enum: ['received', 'pending', 'sent', 'failed', 'uncertain'] }).notNull(),
     deliveryError: text('delivery_error'),
@@ -260,7 +291,9 @@ export const shopAiSettings = sqliteTable('shop_ai_settings', {
   /** Owner-written tone/policy notes appended to the agent prompt. */
   instructions: text('instructions').notNull().default(''),
   /** D26: who approves AI drafts. Only an owner changes it; the last change is recorded below. */
-  autonomy: text('autonomy', { enum: ['approval_required', 'auto_confirm'] }).notNull().default('approval_required'),
+  autonomy: text('autonomy', { enum: ['approval_required', 'auto_confirm'] })
+    .notNull()
+    .default('approval_required'),
   /** Optional `auto_confirm` cap on the order total (minor units); null = no cap. */
   autoConfirmMaxMinor: integer('auto_confirm_max_minor'),
   autonomyChangedAt: text('autonomy_changed_at'),
@@ -279,17 +312,24 @@ export const shopNotifySettings = sqliteTable('shop_notify_settings', {
 });
 
 /** Website chat channel of a shop (Feature 10). Absent row or `enabled=false` = the widget key answers 404. */
-export const webChatConfigs = sqliteTable('web_chat_configs', {
-  shopId: text('shop_id')
-    .primaryKey()
-    .references(() => shops.id),
-  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
-  /** Public identifier embedded in the widget snippet. Not a secret: origin checks and visitor tokens protect the chat. */
-  widgetKey: text('widget_key').notNull(),
-  /** Exact origins (scheme://host[:port]) allowed to embed the widget. Empty = nobody. */
-  allowedOrigins: text('allowed_origins', { mode: 'json' }).$type<string[]>().notNull().default(sql`'[]'`),
-  updatedAt: text('updated_at').notNull(),
-}, (t) => [uniqueIndex('web_chat_key_uq').on(t.widgetKey)]);
+export const webChatConfigs = sqliteTable(
+  'web_chat_configs',
+  {
+    shopId: text('shop_id')
+      .primaryKey()
+      .references(() => shops.id),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+    /** Public identifier embedded in the widget snippet. Not a secret: origin checks and visitor tokens protect the chat. */
+    widgetKey: text('widget_key').notNull(),
+    /** Exact origins (scheme://host[:port]) allowed to embed the widget. Empty = nobody. */
+    allowedOrigins: text('allowed_origins', { mode: 'json' })
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'`),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => [uniqueIndex('web_chat_key_uq').on(t.widgetKey)],
+);
 
 /** Anonymous visitor session: the opaque token (sha256 stored) is the visitor's only credential. */
 export const webChatSessions = sqliteTable(
@@ -701,7 +741,9 @@ export const orderPayments = sqliteTable(
   (t) => [
     index('order_payments_draft_idx').on(t.shopId, t.draftId, t.createdAt),
     uniqueIndex('order_payments_invoice_uq').on(t.provider, t.invoiceId),
-    uniqueIndex('order_payments_active_uq').on(t.draftId).where(sql`${t.active} = 1`),
+    uniqueIndex('order_payments_active_uq')
+      .on(t.draftId)
+      .where(sql`${t.active} = 1`),
     index('order_payments_state_idx').on(t.state, t.lastCheckedAt),
   ],
 );
@@ -752,7 +794,11 @@ export const customerNotices = sqliteTable(
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
-  (t) => [uniqueIndex('customer_notices_uq').on(t.draftId, t.event), index('customer_notices_state_idx').on(t.state, t.createdAt), index('customer_notices_shop_idx').on(t.shopId, t.draftId)],
+  (t) => [
+    uniqueIndex('customer_notices_uq').on(t.draftId, t.event),
+    index('customer_notices_state_idx').on(t.state, t.createdAt),
+    index('customer_notices_shop_idx').on(t.shopId, t.draftId),
+  ],
 );
 
 /**

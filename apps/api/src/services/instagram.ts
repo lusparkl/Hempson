@@ -65,6 +65,27 @@ function eventTime(ts: unknown, now: Date): string {
 }
 
 /**
+ * Webhook attachment types from Meta's documentation (not live-verified): image, video, audio, file, share (legacy post
+ * share), ig_post, ig_reel, reel, story_mention. Only `payload.url` is documented. For images and shared posts the URL is
+ * kept as `ref` so photo search (P9) can fetch it for one run; it is never shown or returned by the API.
+ */
+const IG_KINDS: Record<string, string> = {
+  image: 'image',
+  video: 'video',
+  audio: 'audio',
+  share: 'post',
+  ig_post: 'post',
+  ig_reel: 'reel',
+  reel: 'reel',
+  story_mention: 'story_mention',
+};
+function attachmentOf(a: unknown): { kind: string; ref?: string } {
+  const kind = IG_KINDS[str(obj(a).type) ?? ''] ?? 'other';
+  const url = str(obj(obj(a).payload).url);
+  return (kind === 'image' || kind === 'post') && url && url.startsWith('https://') && url.length <= 2048 ? { kind, ref: url } : { kind };
+}
+
+/**
  * The official Instagram channel (D23): connect flow, webhook ingest, sends and token upkeep. Writes straight into the
  * shop tables (like the website chat, D19).
  */
@@ -228,7 +249,16 @@ export class InstagramService {
       const changes = Array.isArray(entry.changes) ? entry.changes.map(obj) : [];
       const messaging = [...(Array.isArray(entry.messaging) ? entry.messaging : []), ...changes.filter((c) => c.field === 'messages').map((c) => c.value)];
       // Shape only: ids of our own account, counts and field names. Never message text or customer ids.
-      this.d.log.info({ entryId: igId ?? null, matched: !!ch, events: messaging.length, keys: Object.keys(entry).filter((k) => k !== 'id' && k !== 'time'), fields: changes.map((c) => str(c.field) ?? null) }, 'instagram webhook entry');
+      this.d.log.info(
+        {
+          entryId: igId ?? null,
+          matched: !!ch,
+          events: messaging.length,
+          keys: Object.keys(entry).filter((k) => k !== 'id' && k !== 'time'),
+          fields: changes.map((c) => str(c.field) ?? null),
+        },
+        'instagram webhook entry',
+      );
       if (!ch) {
         // Meta can start delivery before the subscribe response returns and the channel is saved. Ask it to retry.
         if (igId && this.connectingAccounts.has(igId)) retryableFailure = true;
@@ -259,17 +289,18 @@ export class InstagramService {
     const customerId = echo ? recipient : sender;
     if (!customerId || customerId === ch.igUserId) return false;
     const text = str(m.text) ?? null;
-    const attachments = (Array.isArray(m.attachments) ? m.attachments : []).map((a) => {
-      const t = str(obj(a).type);
-      return { kind: t === 'image' || t === 'video' || t === 'audio' ? t : 'other' };
-    });
+    const attachments = (Array.isArray(m.attachments) ? m.attachments : []).map(attachmentOf);
     if (!text && !attachments.length) return false;
     const occurredAt = eventTime(ev.timestamp, this.now());
     const { conversations } = this.d;
 
     if (echo) {
       // Sent from this account: by Hepson (adopt our pending row) or by a person in the Instagram app (record as human).
-      const { conversation } = conversations.ensureConversation(ch.shopId, { channel: INSTAGRAM_CHANNEL, conversationExternalId: customerId, customer: { externalId: customerId } });
+      const { conversation } = conversations.ensureConversation(ch.shopId, {
+        channel: INSTAGRAM_CHANNEL,
+        conversationExternalId: customerId,
+        customer: { externalId: customerId },
+      });
       if (text && conversations.adoptPendingOutbound(ch.shopId, conversation.id, text, mid, 'sent', 'ai')) return false;
       if (text && conversations.adoptPendingOutbound(ch.shopId, conversation.id, text, mid, 'sent', 'human')) return false;
       conversations.recordOutbound(ch.shopId, conversation.id, { senderType: 'human', text, attachments, externalId: mid, deliveryStatus: 'sent', occurredAt });
@@ -279,7 +310,15 @@ export class InstagramService {
     // Dispatch reads the newly stored message synchronously and queues its work for after this transaction commits.
     // If dispatch throws, roll the insert back so a retried delivery can still trigger the agent exactly once.
     const r = conversations.db.transaction(() => {
-      const incoming = conversations.ingestMessage(ch.shopId, { channel: INSTAGRAM_CHANNEL, conversationExternalId: customerId, customer: { externalId: customerId }, externalId: mid, text, attachments, occurredAt });
+      const incoming = conversations.ingestMessage(ch.shopId, {
+        channel: INSTAGRAM_CHANNEL,
+        conversationExternalId: customerId,
+        customer: { externalId: customerId },
+        externalId: mid,
+        text,
+        attachments,
+        occurredAt,
+      });
       if (!incoming.duplicated) {
         try {
           this.d.onInbound(ch.shopId, incoming.conversation.id, incoming.message.id);
@@ -301,7 +340,11 @@ export class InstagramService {
     try {
       const p = await this.d.vault.withSecret(shopId, 'instagram', (t) => this.d.graph.profile(t, igsid));
       if (!p.name && !p.username) return;
-      this.d.conversations.ensureConversation(shopId, { channel: INSTAGRAM_CHANNEL, conversationExternalId: igsid, customer: { externalId: igsid, displayName: p.name ?? p.username, handle: p.username } });
+      this.d.conversations.ensureConversation(shopId, {
+        channel: INSTAGRAM_CHANNEL,
+        conversationExternalId: igsid,
+        customer: { externalId: igsid, displayName: p.name ?? p.username, handle: p.username },
+      });
     } catch {
       /* profile data is optional */
     }
@@ -377,7 +420,12 @@ export class InstagramService {
             newest = Math.max(newest, m.createdAtMs);
             const own = m.fromId === ch.igUserId || (!!ch.username && m.fromUsername === ch.username);
             try {
-              const ev = { sender: { id: own ? ch.igUserId : m.fromId }, recipient: { id: own ? m.toId : ch.igUserId }, timestamp: m.createdAtMs, message: { mid: m.id, text: m.text ?? undefined, is_echo: own } };
+              const ev = {
+                sender: { id: own ? ch.igUserId : m.fromId },
+                recipient: { id: own ? m.toId : ch.igUserId },
+                timestamp: m.createdAtMs,
+                message: { mid: m.id, text: m.text ?? undefined, is_echo: own },
+              };
               if (this.ingestEvent(ch, ev)) {
                 stored++;
                 shopStored++;

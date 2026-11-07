@@ -46,7 +46,9 @@ const channel = z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/, 'lowercase channel k
 const externalId = z.string().trim().min(1).max(256);
 const isoTime = z.iso.datetime({ offset: true }).transform((s) => new Date(s).toISOString());
 const attachments = z
-  .array(z.strictObject({ kind: z.string().trim().min(1).max(40), url: z.string().max(2048).optional(), name: z.string().max(200).optional() }))
+  .array(
+    z.strictObject({ kind: z.string().trim().min(1).max(40), url: z.string().max(2048).optional(), name: z.string().max(200).optional(), ref: z.string().max(2048).optional() }),
+  )
   .max(20)
   .default([]);
 const messageText = z.string().max(10_000).nullish();
@@ -473,11 +475,13 @@ export class ConversationRepository {
 
   /** When the customer last wrote in this conversation (channel time), or undefined: the start of Instagram's 24-hour window. */
   lastInboundAt(shopId: string, conversationId: string): string | undefined {
-    return this.db
-      .select({ at: sql<string>`max(${t.shopMessages.occurredAt})` })
-      .from(t.shopMessages)
-      .where(and(eq(t.shopMessages.shopId, shopId), eq(t.shopMessages.conversationId, conversationId), eq(t.shopMessages.direction, 'incoming')))
-      .get()?.at ?? undefined;
+    return (
+      this.db
+        .select({ at: sql<string>`max(${t.shopMessages.occurredAt})` })
+        .from(t.shopMessages)
+        .where(and(eq(t.shopMessages.shopId, shopId), eq(t.shopMessages.conversationId, conversationId), eq(t.shopMessages.direction, 'incoming')))
+        .get()?.at ?? undefined
+    );
   }
 
   getMessage(shopId: string, messageId: string): ShopMessageRow | undefined {

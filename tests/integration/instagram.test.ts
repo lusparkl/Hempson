@@ -57,7 +57,14 @@ function fakeMeta(): Graph & { fetchImpl: typeof fetch } {
   return Object.assign(g, { fetchImpl });
 }
 
-const cfgOver = { publicUrl: 'https://hepson.example', dashboardUrl: 'https://dash.example', metaAppId: 'app-1', metaConfigId: 'cfg-1', metaAppSecret: APP_SECRET, metaVerifyToken: VERIFY };
+const cfgOver = {
+  publicUrl: 'https://hepson.example',
+  dashboardUrl: 'https://dash.example',
+  metaAppId: 'app-1',
+  metaConfigId: 'cfg-1',
+  metaAppSecret: APP_SECRET,
+  metaVerifyToken: VERIFY,
+};
 const notifier = () => ({ notify: vi.fn(), whenIdle: async () => {} });
 
 async function login(email: string) {
@@ -100,7 +107,13 @@ async function webhook(payload: unknown, o: { sig?: string | null; raw?: string 
 }
 const inbound = (mid: string, text: string, over: { igId?: string; sender?: string; ts?: number } = {}) => ({
   object: 'instagram',
-  entry: [{ id: over.igId ?? IG, time: Date.now(), messaging: [{ sender: { id: over.sender ?? CUSTOMER }, recipient: { id: over.igId ?? IG }, timestamp: over.ts ?? Date.now(), message: { mid, text } }] }],
+  entry: [
+    {
+      id: over.igId ?? IG,
+      time: Date.now(),
+      messaging: [{ sender: { id: over.sender ?? CUSTOMER }, recipient: { id: over.igId ?? IG }, timestamp: over.ts ?? Date.now(), message: { mid, text } }],
+    },
+  ],
 });
 const echo = (mid: string, text: string) => ({
   object: 'instagram',
@@ -108,7 +121,10 @@ const echo = (mid: string, text: string) => ({
 });
 
 /** The `changes[]` envelope of Meta's webhook fields (also what the dashboard test button sends). */
-const asChange = (p: ReturnType<typeof inbound>) => ({ object: 'instagram', entry: [{ id: p.entry[0]!.id, time: p.entry[0]!.time, changes: [{ field: 'messages', value: p.entry[0]!.messaging[0] }] }] });
+const asChange = (p: ReturnType<typeof inbound>) => ({
+  object: 'instagram',
+  entry: [{ id: p.entry[0]!.id, time: p.entry[0]!.time, changes: [{ field: 'messages', value: p.entry[0]!.messaging[0] }] }],
+});
 
 const conv = (s: S) => a!.conversations.findConversationByExternal(s.shopId, INSTAGRAM_CHANNEL, CUSTOMER);
 const msgs = (s: S) => a!.conversations.listMessages(s.shopId, conv(s)!.conversation.id, { limit: 100 }).items;
@@ -134,7 +150,12 @@ describe('connect flow', () => {
     const exchange = s.meta.calls.find((c) => c.url.includes('/oauth/access_token'))!;
     expect(exchange.method).toBe('GET');
     expect(exchange.url.startsWith('https://graph.facebook.com/v26.0/oauth/access_token?')).toBe(true);
-    expect(Object.fromEntries(new URL(exchange.url).searchParams)).toEqual({ client_id: 'app-1', client_secret: APP_SECRET, redirect_uri: 'https://hepson.example/public/instagram/callback', code: 'AQD-code' });
+    expect(Object.fromEntries(new URL(exchange.url).searchParams)).toEqual({
+      client_id: 'app-1',
+      client_secret: APP_SECRET,
+      redirect_uri: 'https://hepson.example/public/instagram/callback',
+      code: 'AQD-code',
+    });
     const accounts = s.meta.calls.find((c) => c.url.includes('/me/assigned_instagram_accounts'))!;
     expect(accounts.auth).toBe(`Bearer ${TOKEN_LONG}`);
 
@@ -331,17 +352,38 @@ describe('webhook', () => {
     await connected(s);
     expect((await webhook(inbound('m9', 'Hi', { igId: '999' }))).statusCode).toBe(200);
     expect((await webhook({ object: 'page', entry: [] })).statusCode).toBe(200);
-    expect((await webhook({ object: 'instagram', entry: [{ id: IG, messaging: [{ sender: { id: CUSTOMER }, recipient: { id: IG }, timestamp: 1, read: { mid: 'x' } }] }] })).statusCode).toBe(200);
+    expect(
+      (await webhook({ object: 'instagram', entry: [{ id: IG, messaging: [{ sender: { id: CUSTOMER }, recipient: { id: IG }, timestamp: 1, read: { mid: 'x' } }] }] })).statusCode,
+    ).toBe(200);
     expect(conv(s)).toBeUndefined();
   });
 
   it('attachment-only messages are stored with kinds and wait for a person when the model has nothing to say', async () => {
     const s = await setup({ script: [say('Бачу фото, уточніть, будь ласка, що саме цікавить?')] });
     await connected(s);
-    await webhook({ object: 'instagram', entry: [{ id: IG, messaging: [{ sender: { id: CUSTOMER }, recipient: { id: IG }, timestamp: Date.now(), message: { mid: 'mid.img', attachments: [{ type: 'image', payload: { url: 'https://cdn.example/x.jpg' } }, { type: 'story_mention' }] } }] }] });
+    await webhook({
+      object: 'instagram',
+      entry: [
+        {
+          id: IG,
+          messaging: [
+            {
+              sender: { id: CUSTOMER },
+              recipient: { id: IG },
+              timestamp: Date.now(),
+              message: { mid: 'mid.img', attachments: [{ type: 'image', payload: { url: 'https://cdn.example/x.jpg' } }, { type: 'story_mention' }] },
+            },
+          ],
+        },
+      ],
+    });
     const first = msgs(s)[0]!;
     expect(first.text).toBeNull();
-    expect(first.attachments).toEqual([{ kind: 'image' }, { kind: 'other' }]); // provider URLs are not stored
+    // The image URL is kept server-side only as `ref` for photo search (P9); the API never returns it.
+    expect(first.attachments).toEqual([{ kind: 'image', ref: 'https://cdn.example/x.jpg' }, { kind: 'story_mention' }]);
+    const api = await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/conversations/${conv(s)!.conversation.id}/messages`);
+    expect(api.status).toBe(200);
+    expect(JSON.stringify(api.body)).not.toContain('cdn.example');
   });
 
   it('timestamps in the future are clamped to the receive time', async () => {
@@ -519,7 +561,13 @@ describe('token lifecycle', () => {
 
   it('shared accounts: none or several are refused and nothing is stored or subscribed', async () => {
     const s = await setup();
-    for (const data of [[], [{ id: IG, username: 'a' }, { id: '17841400000000002', username: 'b' }]]) {
+    for (const data of [
+      [],
+      [
+        { id: IG, username: 'a' },
+        { id: '17841400000000002', username: 'b' },
+      ],
+    ]) {
       s.meta.accounts = () => json({ data });
       const r = await connect(s);
       expect(r.res.headers.location).toBe('https://dash.example/?instagram=select_one');
@@ -696,7 +744,7 @@ describe('deployment defaults', () => {
     expect(loadConfig({ HEPSON_DATA_DIR: '~other/h' }).dataDir).toBe(path.resolve('~other/h')); // only the current user's home
   });
 
-  it('keeps the production allow-list: a configured Graph host outside it is the operator\'s explicit choice, anything else is refused', async () => {
+  it("keeps the production allow-list: a configured Graph host outside it is the operator's explicit choice, anything else is refused", async () => {
     const s = await setup();
     await connected(s);
     // no outbound call in this test targeted a host other than the Graph host

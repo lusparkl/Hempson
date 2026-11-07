@@ -31,6 +31,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     openaiApiKey: env.OPENAI_API_KEY || undefined,
     openaiModel: env.HEPSON_OPENAI_MODEL || undefined,
     openaiBaseUrl: env.HEPSON_OPENAI_BASE_URL || undefined,
+    /** P9 photo search (D42): on when the OpenAI key is set and a vision-capable model is known (defaults to the agent model). */
+    photoSearch: bool(env.HEPSON_PHOTO_SEARCH, true),
+    visionModel: env.HEPSON_VISION_MODEL || env.HEPSON_OPENAI_MODEL || undefined,
+    embeddingModel: env.HEPSON_EMBEDDING_MODEL || 'text-embedding-3-small',
+    /** How often products without a current photo index entry are indexed (0 = only after catalog changes). */
+    photoIndexMinutes: int(env.HEPSON_PHOTO_INDEX_MINUTES, 10),
     /** Telegram notifications (Feature 8). One shared bot; each shop sets its own chat id. Never log the token. */
     telegramBotToken: env.HEPSON_TELEGRAM_BOT_TOKEN || undefined,
     telegramApiBaseUrl: env.HEPSON_TELEGRAM_API_BASE_URL || undefined,
@@ -44,8 +50,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     webChatMessagesPerIpPerMinute: int(env.HEPSON_WEBCHAT_MESSAGES_PER_IP_MINUTE, 40),
     webChatDailyMessagesPerShop: int(env.HEPSON_WEBCHAT_DAILY_MESSAGES_PER_SHOP, 2000),
     webChatSessionDays: int(env.HEPSON_WEBCHAT_SESSION_DAYS, 30),
-    /** Extra outbound hosts beyond the built-in allow-list (comma separated). The LLM and Telegram base URL hosts are added automatically. */
-    egressExtraHosts: (env.HEPSON_EGRESS_EXTRA_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean),
+    /** Extra outbound hosts beyond the built-in allow-list (comma separated). The LLM and Telegram base URL hosts are added automatically. An entry starting with a dot (`.cdninstagram.com`) allows `<one label>.<that suffix>`. */
+    egressExtraHosts: (env.HEPSON_EGRESS_EXTRA_HOSTS ?? '')
+      .split(',')
+      .map((h) => h.trim())
+      .filter(Boolean),
     /** Operator-level Meta app (D23, D29): the app's own id and secret (not an Instagram app id). Webhooks and the connect flow are off unless id, secret, verify token and config id are set. Never log the secret. */
     metaAppId: env.HEPSON_META_APP_ID || undefined,
     /** Facebook Login for Business configuration of the app's "API setup with Unified login" (not a secret). */

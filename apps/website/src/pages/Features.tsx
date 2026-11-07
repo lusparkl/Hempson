@@ -14,7 +14,6 @@ const ICON: Record<string, IconName> = {
   analytics: 'chart-no-axes-column',
   photo: 'camera',
   storefront: 'store',
-  wayforpay: 'wallet',
 };
 
 export function Features() {

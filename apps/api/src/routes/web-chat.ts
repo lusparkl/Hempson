@@ -29,6 +29,12 @@ export function registerWebChatRoutes(
 ) {
   const { shops, auth, webChat, svc, publicUrl } = deps;
   const requireRole = makeRequireRole(shops, auth);
+  const ownOrigin = new URL(publicUrl).origin.toLowerCase();
+  /** The page's origin. Browsers omit `Origin` on same-origin GETs, so the storefront page (P9) is recognised by `Sec-Fetch-Site`. */
+  const originOf = (req: FastifyRequest) => req.headers.origin ?? (req.headers['sec-fetch-site'] === 'same-origin' ? ownOrigin : undefined);
+  /** A shop's allowed origins, plus this server's own origin while the shop's storefront page is on (the widget runs there). */
+  const allowed = (cfg: WebChatConfigRow, origin: string | undefined) =>
+    svc.originAllowed(cfg, origin) || (!!origin && origin.toLowerCase() === ownOrigin && shops.get(cfg.shopId)?.storefrontEnabled === true);
 
   // CORS: only an allowed origin of an enabled widget gets Access-Control-Allow-Origin; everyone else is blocked by the browser and refused by the handlers.
   app.addHook('onRequest', async (req, reply) => {
@@ -36,7 +42,7 @@ export function registerWebChatRoutes(
     if (!m) return;
     const cfg = svc.config(safeDecode(m[1]!));
     const origin = req.headers.origin;
-    const ok = !!cfg && svc.originAllowed(cfg, origin);
+    const ok = !!cfg && allowed(cfg, origin);
     if (ok) {
       reply
         .header('access-control-allow-origin', origin!)
@@ -52,7 +58,7 @@ export function registerWebChatRoutes(
   const gate = (req: FastifyRequest, widgetKey: string): WebChatConfigRow => {
     const cfg = svc.config(widgetKey);
     if (!cfg) throw new ApiError('NOT_FOUND', 'Chat not found');
-    if (!svc.originAllowed(cfg, req.headers.origin)) throw new ApiError('FORBIDDEN', 'Origin not allowed');
+    if (!allowed(cfg, originOf(req))) throw new ApiError('FORBIDDEN', 'Origin not allowed');
     return cfg;
   };
   const token = (req: FastifyRequest) => {
