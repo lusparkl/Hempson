@@ -14,7 +14,7 @@ type ImportResult = {
   errors: { line: number; message: string }[];
   warnings: string[];
 };
-type Source = { path: string; label: string; body: { csv: string } | { url: string } };
+type Source = { path: string; label: string; body: { csv: string } | { file: string } | { url: string } };
 type StockFilter = 'all' | 'low' | 'out';
 
 const level = (n: number, active: boolean): [string, Tone, StockFilter | 'ok'] =>
@@ -112,7 +112,11 @@ export function Catalog() {
               </span>
             </div>
           ))}
-          {list.data && rows.length === 0 && <div className="panel-empty" style={{ padding: '48px 20px' }}>{all.length ? 'Нічого не знайдено' : 'Товарів ще немає. Додайте товар або імпортуйте каталог.'}</div>}
+          {list.data && rows.length === 0 && (
+            <div className="panel-empty" style={{ padding: '48px 20px' }}>
+              {all.length ? 'Нічого не знайдено' : 'Товарів ще немає. Додайте товар або імпортуйте каталог.'}
+            </div>
+          )}
         </div>
       </div>
       {drawer === 'import' && <ImportDrawer base={base} onClose={() => setDrawer('')} onDone={list.reload} />}
@@ -145,6 +149,14 @@ function Stepper({ value, label, onSet }: { value: number; label: string; onSet:
 }
 
 /** Pick or drop a CSV, or paste a Google Sheets link; a dry run previews, then "Імпортувати" applies. */
+/** File bytes as base64 for the JSON import body (chunked: spreading a large array overflows the call stack). */
+function toBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
 function ImportDrawer({ base, onClose, onDone }: { base: string; onClose: () => void; onDone: () => Promise<void> }) {
   const say = useToast();
   const [src, setSrc] = useState<Source | null>(null);
@@ -176,7 +188,9 @@ function ImportDrawer({ base, onClose, onDone }: { base: string; onClose: () => 
   const pick = async (f: File | undefined) => {
     setRes(null);
     if (!f) return;
-    const s = { path: `${base}/import`, label: f.name, body: { csv: await f.text() } };
+    const s: Source = /\.xlsx$/i.test(f.name)
+      ? { path: `${base}/import-xlsx`, label: f.name, body: { file: toBase64(await f.arrayBuffer()) } }
+      : { path: `${base}/import`, label: f.name, body: { csv: await f.text() } };
     setSrc(s);
     await send(s, true);
   };
@@ -192,7 +206,7 @@ function ImportDrawer({ base, onClose, onDone }: { base: string; onClose: () => 
 
   return (
     <Drawer
-      title="Імпорт з CSV або Google Sheets"
+      title="Імпорт з CSV, Excel або Google Sheets"
       onClose={onClose}
       footer={
         <>
@@ -228,14 +242,21 @@ function ImportDrawer({ base, onClose, onDone }: { base: string; onClose: () => 
         <span style={{ color: 'var(--brand-600)', display: 'flex' }}>
           <Icon name="file-spreadsheet" size={28} />
         </span>
-        <div style={{ fontWeight: 500, color: 'var(--ink-900)' }}>Перетягніть CSV-файл сюди</div>
+        <div style={{ fontWeight: 500, color: 'var(--ink-900)' }}>Перетягніть CSV- або Excel-файл (.xlsx) сюди</div>
         <div style={{ fontSize: 13 }} className="subtle">
           або
         </div>
         <Button variant="secondary" size="sm" onClick={() => file.current?.click()}>
           Обрати файл
         </Button>
-        <input ref={file} type="file" accept=".csv,text/csv" hidden onChange={(e) => void pick(e.target.files?.[0])} aria-label="CSV файл" />
+        <input
+          ref={file}
+          type="file"
+          accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          hidden
+          onChange={(e) => void pick(e.target.files?.[0])}
+          aria-label="CSV або Excel файл"
+        />
       </div>
       <div className="or">або посилання</div>
       <form onSubmit={(e) => void fromSheet(e)}>
@@ -249,7 +270,8 @@ function ImportDrawer({ base, onClose, onDone }: { base: string; onClose: () => 
         <div className="panel" style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 6, fontSize: 14 }}>
           <strong style={{ fontWeight: 500, color: 'var(--ink-900)' }}>{src.label}</strong>
           <span className="muted">
-            Рядків {res.rows}; нових товарів {res.created.products}, нових варіантів {res.created.variants}; оновлено товарів {res.updated.products}, варіантів {res.updated.variants}.
+            Рядків {res.rows}; нових товарів {res.created.products}, нових варіантів {res.created.variants}; оновлено товарів {res.updated.products}, варіантів{' '}
+            {res.updated.variants}.
           </span>
           <span>{res.applied ? 'Імпортовано.' : res.errors.length ? 'Не імпортовано: виправте помилки.' : 'Це перегляд, нічого не записано.'}</span>
           {res.warnings.map((w) => (
@@ -268,7 +290,8 @@ function ImportDrawer({ base, onClose, onDone }: { base: string; onClose: () => 
       <div className="howto">
         <div style={{ fontWeight: 500, color: 'var(--brand-800)', fontSize: 14 }}>Як працює імпорт</div>
         <div style={{ fontSize: 13, color: 'var(--ink-700)', lineHeight: 1.6 }}>
-          Обов’язкова колонка — <span className="mono">sku</span>. Додаткові: name, price, stock, description, active, group, options (size=M|color=red), variant_price.
+          Обов’язкова колонка — <span className="mono">sku</span>. В Excel читається перший аркуш, формули беруться як збережені значення. Додаткові: name, price, stock,
+          description, active, group, options (size=M|color=red), variant_price, images (посилання через |, перше — головне фото для пошуку за фото).
           <br />
           Артикул, що вже є, оновлюється. Порожні клітинки нічого не змінюють. Залишок встановлюється, а не додається. Усе або нічого.
         </div>
@@ -293,6 +316,7 @@ function NewDrawer({ base, currency, onClose, onDone }: { base: string; currency
         currency,
         sku: String(f.get('sku')),
         stock: Number(f.get('stock') || 0),
+        ...(String(f.get('image') ?? '').trim() ? { media: [String(f.get('image')).trim()] } : {}),
       });
       say('Товар додано до каталогу');
       await onDone();
@@ -323,9 +347,10 @@ function NewDrawer({ base, currency, onClose, onDone }: { base: string; currency
           <Input label="Артикул (SKU)" name="sku" required maxLength={64} pattern="[A-Za-z0-9._\-]+" placeholder="BAG-LN-01" />
         </div>
         <Input label="Залишок" name="stock" type="number" min={0} defaultValue={0} />
+        <Input label="Посилання на фото (необов’язково)" name="image" type="url" maxLength={2048} pattern="https?://.+" placeholder="https://…/photo.jpg" />
         {err && <div className="err">{err}</div>}
         <div style={{ fontSize: 13, lineHeight: 1.55 }} className="subtle">
-          Варіанти (розмір, колір) та опис поки додаються через API або імпорт.
+          Варіанти (розмір, колір), опис і кілька фото поки додаються через API або імпорт. Головне фото потрібне для пошуку за фото.
         </div>
         <button type="submit" hidden />
       </form>

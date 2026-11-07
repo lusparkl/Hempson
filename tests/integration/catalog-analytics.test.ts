@@ -3,6 +3,8 @@ import { WEB_CHANNEL } from '@hepson/database';
 import { call, makeApp, type TestApp } from '../helpers';
 import { ScriptedLlm } from '../fixtures/scripted-llm';
 import { NP } from '../fixtures/fake-nova-poshta';
+import { buildXlsx } from '../../apps/api/src/services/xlsx';
+import { excelLikeWorkbook } from '../fixtures/xlsx-zip';
 
 // Google's answers are modelled on public-sheet behaviour (export redirects to a googleusercontent host), not captured live.
 const PW = 'correct horse battery';
@@ -43,6 +45,49 @@ async function setup() {
   return { google, token, shopId, base: `/v1/shops/${shopId}` };
 }
 type S = Awaited<ReturnType<typeof setup>>;
+
+describe('XLSX import', () => {
+  const b64 = (b: Buffer) => b.toString('base64');
+  it('previews by default and applies on request with the CSV rules; row numbers in errors; owner only', async () => {
+    const s = await setup();
+    const file = buildXlsx('Товари', [
+      ['Артикул', 'Назва', 'Ціна', 'Залишок', 'group', 'options'],
+      ['DR-S', 'Сукня', 1299.5, 4, 'dress', 'size=S'],
+      ['DR-M', 'Сукня', 1299.5, 2, 'dress', 'size=M'],
+      [1001, 'Шарф', 350, 9, null, null],
+    ]);
+    const dry = await call(a!, s.token, 'POST', `${s.base}/products/import-xlsx`, { file: b64(file) });
+    expect(dry.status).toBe(200);
+    expect(dry.body).toMatchObject({ dryRun: true, applied: false, rows: 3, created: { products: 2, variants: 3 }, errors: [] });
+    expect(a!.catalog.findVariantBySku(s.shopId, 'DR-S')).toBeUndefined();
+
+    const run = await call(a!, s.token, 'POST', `${s.base}/products/import-xlsx`, { file: b64(file), dryRun: false });
+    expect(run.body).toMatchObject({ applied: true });
+    expect(a!.catalog.findVariantBySku(s.shopId, '1001')).toMatchObject({ stock: 9 });
+    expect(a!.catalog.findVariantBySku(s.shopId, 'DR-M')).toMatchObject({ stock: 2, options: { size: 'M' } });
+
+    const bad = excelLikeWorkbook(
+      '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="7"><c r="A7" t="s"><v>2</v></c><c r="B7"><v>12.345</v></c></row>',
+      ['<t>sku</t>', '<t>price</t>', '<t>X-1</t>'],
+    );
+    const r = await call(a!, s.token, 'POST', `${s.base}/products/import-xlsx`, { file: b64(bad), dryRun: false });
+    expect(r.body).toMatchObject({ applied: false, errors: [{ line: 7 }] });
+    expect(a!.catalog.findVariantBySku(s.shopId, 'X-1')).toBeUndefined();
+
+    const mgr = await login('m@example.com');
+    await call(a!, s.token, 'POST', `${s.base}/members`, { email: 'm@example.com', role: 'manager' });
+    expect((await call(a!, mgr, 'POST', `${s.base}/products/import-xlsx`, { file: b64(file) })).status).toBe(403);
+  });
+
+  it('a file that is not .xlsx gets an owner-readable error; nothing is fetched', async () => {
+    const s = await setup();
+    const csv = await call(a!, s.token, 'POST', `${s.base}/products/import-xlsx`, { file: b64(Buffer.from('sku\nA\n')) });
+    expect(csv.status).toBe(400);
+    expect(csv.body.error.message).toMatch(/not an \.xlsx file/);
+    expect((await call(a!, s.token, 'POST', `${s.base}/products/import-xlsx`, { file: 'not base64!' })).status).toBe(400);
+    expect(s.google.calls).toHaveLength(0);
+  });
+});
 
 describe('Google Sheets import', () => {
   it('previews by default, applies on request, through the CSV importer; owner only', async () => {

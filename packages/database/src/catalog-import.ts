@@ -15,7 +15,7 @@ export type ImportResult = {
   warnings: string[];
 };
 
-type Field = 'sku' | 'name' | 'price' | 'stock' | 'description' | 'active' | 'group' | 'options' | 'variantPrice';
+type Field = 'sku' | 'name' | 'price' | 'stock' | 'description' | 'active' | 'group' | 'options' | 'variantPrice' | 'images';
 const ALIASES: Record<string, Field> = {
   sku: 'sku',
   артикул: 'sku',
@@ -36,6 +36,9 @@ const ALIASES: Record<string, Field> = {
   опції: 'options',
   variant_price: 'variantPrice',
   ціна_варіанта: 'variantPrice',
+  images: 'images',
+  image: 'images',
+  фото: 'images',
 };
 
 /** RFC 4180 style: quoted fields, "" escapes, newlines inside quotes. Returns rows with their 1-based start line. */
@@ -95,7 +98,19 @@ function detectDelimiter(text: string): string {
   return best;
 }
 
-type Row = { line: number; sku: string; name?: string; priceMinor?: number; stock?: number; description?: string; active?: boolean; group: string; options?: Record<string, string>; variantPriceMinor?: number };
+type Row = {
+  line: number;
+  sku: string;
+  name?: string;
+  priceMinor?: number;
+  stock?: number;
+  description?: string;
+  active?: boolean;
+  group: string;
+  options?: Record<string, string>;
+  variantPriceMinor?: number;
+  images?: string;
+};
 
 /** "499", "499.5", "499,50". No thousands separators (ambiguous), so "1,299" is rejected rather than read as 1.299. */
 export function parsePriceMinor(s: string): number {
@@ -110,6 +125,13 @@ function parseBool(s: string): boolean {
   if (['false', '0', 'no', 'n', 'ні'].includes(v)) return false;
   throw new Error(`active "${s}": use true/false, yes/no, 1/0, так/ні`);
 }
+/** Product image links (P9): http(s) URLs separated by `|` or spaces; the first is the main image. Kept as one normalized string. */
+function parseImages(s: string): string {
+  const urls = s.split(/[|\s]+/).filter(Boolean);
+  if (urls.length > 20) throw new Error('images: at most 20 links');
+  for (const u of urls) if (!/^https?:\/\/\S+$/i.test(u) || u.length > 2048) throw new Error(`images "${u.slice(0, 60)}": use http(s) links separated by |`);
+  return urls.join('|');
+}
 function parseOptions(s: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const part of s.split('|')) {
@@ -122,10 +144,17 @@ function parseOptions(s: string): Record<string, string> {
   return out;
 }
 
+/** Rows of cells with the 1-based line (CSV) or row number (XLSX) each starts at. */
+export type CatalogTable = Array<{ line: number; cells: string[] }>;
+
 /** Turns CSV text into typed rows. Header errors throw; per-row problems are returned with their line. */
 export function readCatalogCsv(text: string): { rows: Row[]; errors: ImportError[]; warnings: string[] } {
-  const clean = text.replace(/^﻿/, '');
-  const table = parseCsv(clean, detectDelimiter(clean));
+  const clean = text.replace(/^\uFEFF/, '');
+  return readCatalogTable(parseCsv(clean, detectDelimiter(clean)));
+}
+
+/** Same as `readCatalogCsv` for an already split table (P8 XLSX import). */
+export function readCatalogTable(table: CatalogTable): { rows: Row[]; errors: ImportError[]; warnings: string[] } {
   if (!table.length) throw new CatalogValidationError(['file is empty']);
   if (table.length - 1 > MAX_IMPORT_ROWS) throw new CatalogValidationError([`too many rows: ${table.length - 1} (max ${MAX_IMPORT_ROWS})`]);
   const header = table[0]!.cells.map((h) => h.trim().toLowerCase().replace(/\s+/g, '_'));
@@ -160,6 +189,7 @@ export function readCatalogCsv(text: string): { rows: Row[]; errors: ImportError
       }
       if (get('active')) r.active = parseBool(get('active'));
       if (get('options')) r.options = parseOptions(get('options'));
+      if (get('images')) r.images = parseImages(get('images'));
       rows.push(r);
     } catch (e) {
       errors.push({ line, message: (e as Error).message });
@@ -182,7 +212,15 @@ class Rollback extends Error {
  * exactly what a real run would do.
  */
 export function importCatalogCsv(repo: CatalogRepository, shopId: string, text: string, opts: { dryRun: boolean; currency: string }): ImportResult {
-  const parsed = readCatalogCsv(text);
+  return applyImport(repo, shopId, readCatalogCsv(text), opts);
+}
+
+/** XLSX import (P8): the same rules as CSV, from a table read out of the first worksheet. */
+export function importCatalogTable(repo: CatalogRepository, shopId: string, table: CatalogTable, opts: { dryRun: boolean; currency: string }): ImportResult {
+  return applyImport(repo, shopId, readCatalogTable(table), opts);
+}
+
+function applyImport(repo: CatalogRepository, shopId: string, parsed: ReturnType<typeof readCatalogTable>, opts: { dryRun: boolean; currency: string }): ImportResult {
   const result: ImportResult = {
     dryRun: opts.dryRun,
     applied: false,
@@ -237,7 +275,7 @@ function applyGroup(repo: CatalogRepository, shopId: string, rows: Row[], curren
   if (productIds.size > 1) fail('skus of one group belong to different existing products');
 
   // Product-level fields must not disagree inside a group.
-  const pick = <K extends 'name' | 'description' | 'priceMinor'>(k: K): Row[K] => {
+  const pick = <K extends 'name' | 'description' | 'priceMinor' | 'images'>(k: K): Row[K] => {
     const vals = new Set(rows.map((r) => r[k]).filter((v) => v !== undefined));
     if (vals.size > 1) fail(`rows of one group disagree on ${k}; use variant_price for per-variant prices`);
     return rows.find((r) => r[k] !== undefined)?.[k];
@@ -245,6 +283,8 @@ function applyGroup(repo: CatalogRepository, shopId: string, rows: Row[], curren
   const name = pick('name');
   const description = pick('description');
   const priceMinor = pick('priceMinor');
+  const images = pick('images');
+  const media = images === undefined ? undefined : images.split('|');
 
   if (productIds.size === 1) {
     const productId = [...productIds][0]!;
@@ -252,8 +292,9 @@ function applyGroup(repo: CatalogRepository, shopId: string, rows: Row[], curren
     if (name !== undefined) patch.name = name;
     if (description !== undefined) patch.description = description;
     if (priceMinor !== undefined) patch.priceMinor = priceMinor;
+    if (media !== undefined) patch.media = media;
     const before = repo.getProduct(shopId, productId)!.product;
-    if (Object.keys(patch).some((k) => (before as Record<string, unknown>)[k] !== patch[k])) {
+    if (Object.keys(patch).some((k) => JSON.stringify((before as Record<string, unknown>)[k]) !== JSON.stringify(patch[k]))) {
       repo.updateProduct(shopId, productId, patch);
       out.updated.products++;
     }
@@ -285,6 +326,7 @@ function applyGroup(repo: CatalogRepository, shopId: string, rows: Row[], curren
     description: description ?? '',
     priceMinor: priceMinor!,
     currency,
+    ...(media ? { media } : {}),
     variants: rows.map((r) => ({ sku: r.sku, options: r.options ?? {}, priceMinor: r.variantPriceMinor ?? null, stock: r.stock ?? 0, active: r.active ?? true })),
   });
   out.created.products++;

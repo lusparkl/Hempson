@@ -20,7 +20,11 @@ const run = (csv: string, dryRun = false, shop = A) => importCatalogCsv(c, shop,
 describe('csv parsing', () => {
   it('handles quotes, escaped quotes, newlines in quotes, CRLF and blank lines', () => {
     const rows = parseCsv('a,b\r\n"x, y","say ""hi""\nthere"\r\n\r\nc,d\n', ',');
-    expect(rows.map((r) => r.cells)).toEqual([['a', 'b'], ['x, y', 'say "hi"\nthere'], ['c', 'd']]);
+    expect(rows.map((r) => r.cells)).toEqual([
+      ['a', 'b'],
+      ['x, y', 'say "hi"\nthere'],
+      ['c', 'd'],
+    ]);
     expect(rows.map((r) => r.line)).toEqual([1, 2, 5]);
   });
   it('rejects an unterminated quote', () => {
@@ -71,6 +75,16 @@ describe('importCatalogCsv', () => {
     const addV = run('sku,group,options,stock\nA1,g,size=S,9\nA2,g,size=M,3\n');
     expect(addV).toMatchObject({ applied: true, created: { products: 0, variants: 1 } });
     expect(c.getProduct(A, c.findVariantBySku(A, 'A1')!.productId)!.variants).toHaveLength(2);
+  });
+
+  it('images: links separated by |, the first is the main image; updates replace the list; bad links are row errors', () => {
+    expect(run('sku,name,price,images\nIMG-1,Сукня,100,https://a.example/1.jpg | https://a.example/2.jpg\n')).toMatchObject({ applied: true });
+    const v = c.findVariantBySku(A, 'IMG-1')!;
+    expect(c.getProduct(A, v.productId)!.product.media).toEqual(['https://a.example/1.jpg', 'https://a.example/2.jpg']);
+    expect(run('sku,фото\nIMG-1,https://a.example/3.jpg\n')).toMatchObject({ applied: true, updated: { products: 1 } });
+    expect(c.getProduct(A, v.productId)!.product.media).toEqual(['https://a.example/3.jpg']);
+    expect(run('sku,image\nIMG-1,https://a.example/3.jpg\n')).toMatchObject({ updated: { products: 0 } });
+    expect(run('sku,image\nIMG-1,javascript:alert(1)\n').errors).toEqual([{ line: 2, message: expect.stringMatching(/http\(s\) links/) }]);
   });
 
   it('dry run reports counts but writes nothing', () => {
