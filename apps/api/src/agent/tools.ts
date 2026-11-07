@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import {
   orderLabel,
   OrderValidationError,
@@ -410,7 +410,7 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
     }
   } catch (e) {
     if (e instanceof OrderValidationError) return out({ error: e.issues });
-    if (e instanceof ConnectorError) return out(npUnavailable);
+    if (e instanceof ApiError) return out(npUnavailable);
     return out({ error: 'tool failed' });
   }
 }

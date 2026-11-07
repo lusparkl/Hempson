@@ -1,5 +1,5 @@
 export * from './db';
-export * from './store';
+export * from './api-keys';
 export * as schema from './schema';
 export * from './shops';
 export * from './auth';

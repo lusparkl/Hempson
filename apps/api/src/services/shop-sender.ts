@@ -1,53 +1,25 @@
 import { randomUUID } from 'node:crypto';
-import { ConnectorError } from '@hepson/connector-core';
-import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type ConversationRepository, type ShopMessageRow, type Store } from '@hepson/database';
-import { channelOf } from './channel-bridge';
-import type { ConnectorService } from './connector-service';
+import { ApiError } from '../errors';
+import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type ConversationRepository, type ShopMessageRow } from '@hepson/database';
 import type { InstagramService } from './instagram';
 import type { TelegramService } from './telegram';
 
-/** How a reply leaves Hepson: through a connector account, the official Instagram or Telegram API, or (website chat) by being stored where the visitor reads it. */
-export type Delivery = { kind: 'connector'; accountId: string; providerConversationId: string } | { kind: 'instagram' } | { kind: 'telegram' } | { kind: 'internal' };
+/** How a reply leaves Hepson: through the official Instagram or Telegram API, or (website chat) by being stored where the visitor reads it. */
+export type Delivery = { kind: 'instagram' } | { kind: 'telegram' } | { kind: 'internal' };
+
+export type SenderDeps = { conversations: ConversationRepository; ig?: InstagramService; tg?: TelegramService };
 
 export type SendOutcome = { status: 'sent' | 'uncertain' | 'failed'; code: string | null; message: ShopMessageRow };
 
-/**
- * Sends the text of an already recorded `pending` shop-side message through the connector and reconciles the row.
- * `requestSend` throws only before anything is queued, so a throw means nothing was sent (row marked `failed`, error
- * rethrown for `rethrow`, else reported as a failed outcome). `uncertain` is never retried (connector rule).
- */
-export async function deliverPending(
-  d: { store: Store; svc: ConnectorService; conversations: ConversationRepository; ig?: InstagramService; tg?: TelegramService },
-  t: { shopId: string; message: ShopMessageRow; idempotencyKey: string } & Delivery,
-  opts: { rethrow?: boolean } = {},
-): Promise<SendOutcome> {
-  const { store, svc, conversations } = d;
+/** Sends the text of an already recorded `pending` shop-side message through its channel and reconciles the row. */
+export async function deliverPending(d: SenderDeps, t: { shopId: string; message: ShopMessageRow } & Delivery, opts: { rethrow?: boolean } = {}): Promise<SendOutcome> {
   if (t.kind === 'internal') {
     // Nothing external to acknowledge: the row is the message. The generated id marks it as ours, not a platform ack.
-    const message = conversations.setDeliveryStatus(t.shopId, t.message.id, 'sent', { externalId: `web:${randomUUID()}` });
+    const message = d.conversations.setDeliveryStatus(t.shopId, t.message.id, 'sent', { externalId: `web:${randomUUID()}` });
     return { status: 'sent', code: null, message };
   }
   if (t.kind === 'instagram') return deliverDirect(d.conversations, d.ig, 'Instagram', t, opts);
-  if (t.kind === 'telegram') return deliverDirect(d.conversations, d.tg, 'Telegram', t, opts);
-  const fail = (code: string) => {
-    const message = conversations.setDeliveryStatus(t.shopId, t.message.id, 'failed', { error: code });
-    return { status: 'failed' as const, code, message };
-  };
-  let outboxId: string | undefined;
-  try {
-    outboxId = (await svc.requestSend(t.accountId, t.providerConversationId, t.message.text ?? '', t.idempotencyKey, false)).outbox?.id;
-  } catch (e) {
-    const out = fail(e instanceof ConnectorError ? e.code : 'SEND_REJECTED');
-    if (opts.rethrow) throw e;
-    return out;
-  }
-  await svc.whenSendsIdle(t.accountId);
-  const ob = outboxId ? store.getOutbox(t.accountId, outboxId) : undefined;
-  const row = conversations.getMessage(t.shopId, t.message.id)!;
-  if (ob?.status === 'sent') return { status: 'sent', code: row.deliveryStatus === 'sent' ? null : 'MIRROR_PENDING', message: row };
-  if (ob?.status === 'uncertain') return { status: 'uncertain', code: ob.errorCode, message: row };
-  if (row.deliveryStatus === 'pending') return fail(ob?.errorCode ?? 'SEND_FAILED');
-  return { status: 'failed', code: ob?.errorCode ?? 'SEND_FAILED', message: row };
+  return deliverDirect(d.conversations, d.tg, 'Telegram', t, opts);
 }
 
 type DirectChannel = { send(shopId: string, conversationId: string, text: string): Promise<{ status: 'sent'; externalId: string } | { status: 'uncertain' | 'failed'; code: string }> };
@@ -72,13 +44,13 @@ async function deliverDirect(
   };
   if (!ch) {
     const out = settle('failed', 'ACCOUNT_NOT_CONNECTED');
-    if (opts.rethrow) throw new ConnectorError('ACCOUNT_NOT_CONNECTED', `${name} is not connected`);
+    if (opts.rethrow) throw new ApiError('ACCOUNT_NOT_CONNECTED', `${name} is not connected`);
     return out;
   }
   const r = await ch.send(t.shopId, t.message.conversationId, t.message.text ?? '');
   if (r.status === 'sent') return settle('sent', null, r.externalId);
   const out = settle(r.status, r.code);
-  if (opts.rethrow && r.status === 'failed' && (r.code === 'OUTSIDE_MESSAGING_WINDOW' || r.code === 'ACCOUNT_NOT_CONNECTED')) throw new ConnectorError(r.code, r.code === 'OUTSIDE_MESSAGING_WINDOW' ? 'The 24-hour Instagram messaging window has closed' : `${name} is not connected`);
+  if (opts.rethrow && r.status === 'failed' && (r.code === 'OUTSIDE_MESSAGING_WINDOW' || r.code === 'ACCOUNT_NOT_CONNECTED')) throw new ApiError(r.code, r.code === 'OUTSIDE_MESSAGING_WINDOW' ? 'The 24-hour Instagram messaging window has closed' : `${name} is not connected`);
   return out;
 }
 
@@ -87,30 +59,24 @@ async function deliverDirect(
  * it, recorded as a `system` message. One attempt, same rules as any reply; never throws.
  */
 export async function sendSystemMessage(
-  d: { store: Store; svc: ConnectorService; conversations: ConversationRepository; ig?: InstagramService; tg?: TelegramService },
+  d: SenderDeps,
   shopId: string,
   conversationId: string,
   text: string,
-  idempotencyKey: string,
 ): Promise<{ status: 'sent' | 'uncertain' | 'failed'; code: string | null }> {
   const conv = d.conversations.getConversation(shopId, conversationId);
   if (!conv) return { status: 'failed', code: 'NOT_FOUND' };
-  const thread = locateThread(d.store, shopId, conv.conversation.channel, conv.conversation.externalId, d.ig, d.tg);
+  const thread = locateThread(shopId, conv.conversation.channel, d.ig, d.tg);
   if (!thread) return { status: 'failed', code: 'ACCOUNT_NOT_CONNECTED' };
   const { message } = d.conversations.recordOutbound(shopId, conversationId, { senderType: 'system', text, deliveryStatus: 'pending' });
-  const r = await deliverPending(d, { shopId, ...thread, message, idempotencyKey });
+  const r = await deliverPending(d, { shopId, ...thread, message });
   return { status: r.status, code: r.code };
 }
 
-/** How to reach a shop conversation: the website channel is internal, Instagram and Telegram use the shop's connected official account or bot, other channels need a linked connector account that knows the thread. */
-export function locateThread(store: Store, shopId: string, channel: string, externalId: string, ig?: InstagramService, tg?: TelegramService): Delivery | undefined {
+/** How to reach a shop conversation: the website channel is internal, Instagram and Telegram use the shop's connected official account or bot. */
+export function locateThread(shopId: string, channel: string, ig?: InstagramService, tg?: TelegramService): Delivery | undefined {
   if (channel === WEB_CHANNEL) return { kind: 'internal' };
   if (channel === INSTAGRAM_CHANNEL) return ig?.isConnected(shopId) ? { kind: 'instagram' } : undefined;
   if (channel === TELEGRAM_CHANNEL) return tg?.isConnected(shopId) ? { kind: 'telegram' } : undefined;
-  for (const acc of store.listAccountsForShop(shopId)) {
-    if (channelOf(acc.connectorType) !== channel) continue;
-    const c = store.findConversationByProvider(acc.id, externalId);
-    if (c) return { kind: 'connector', accountId: acc.id, providerConversationId: c.id };
-  }
   return undefined;
 }

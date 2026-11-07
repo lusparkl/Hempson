@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import {
   CURRENCY_NUMERIC,
   CredentialDecryptError,
@@ -22,7 +22,7 @@ import type { Notifier, OrderEvent } from './notifier';
 
 type Logger = { info(o: object, m?: string): void; warn(o: object, m?: string): void };
 /** Sends a fixed server text to the customer of a conversation (recorded as a `system` message). */
-export type CustomerSender = (shopId: string, conversationId: string, text: string, idempotencyKey: string) => Promise<{ status: 'sent' | 'uncertain' | 'failed'; code: string | null }>;
+export type CustomerSender = (shopId: string, conversationId: string, text: string) => Promise<{ status: 'sent' | 'uncertain' | 'failed'; code: string | null }>;
 
 /** Printable ASCII, no spaces: what an X-Token can look like. Checked before any call. */
 const TOKEN_RE = /^[\x21-\x7e]{20,200}$/;
@@ -122,8 +122,8 @@ export class PaymentService {
 
   /** Runs one Monobank call with the shop's token. A refused token marks the credential and tells the owner once. */
   private async withToken<T>(shopId: string, fn: (token: string) => Promise<T>): Promise<T> {
-    if (!this.available) throw new ConnectorError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
-    if (!this.connected(shopId)) throw new ConnectorError('NOT_CONFIGURED', 'Monobank is not connected for this shop');
+    if (!this.available) throw new ApiError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
+    if (!this.connected(shopId)) throw new ApiError('NOT_CONFIGURED', 'Monobank is not connected for this shop');
     try {
       return await this.d.vault.withSecret(shopId, 'monobank', fn);
     } catch (e) {
@@ -132,25 +132,25 @@ export class PaymentService {
         this.d.repo.setLastError(shopId, 'TOKEN_REJECTED');
         this.d.notifier?.notify({ kind: 'channel_issue', shopId, channel: 'monobank', issue: 'needs_reconnect' });
       }
-      if (e instanceof CredentialMissingError || e instanceof CredentialsUnavailableError || e instanceof CredentialDecryptError) throw new ConnectorError('NOT_CONFIGURED', 'Monobank is not connected for this shop');
+      if (e instanceof CredentialMissingError || e instanceof CredentialsUnavailableError || e instanceof CredentialDecryptError) throw new ApiError('NOT_CONFIGURED', 'Monobank is not connected for this shop');
       throw e;
     }
   }
 
   private translate(e: unknown): never {
     if (e instanceof MonobankError) {
-      if (e.kind === 'auth') throw new ConnectorError('VALIDATION_ERROR', 'Monobank did not accept the token');
-      if (e.kind === 'unavailable') throw new ConnectorError('TEMPORARY_FAILURE', 'Monobank is not reachable, try again');
-      throw new ConnectorError('VALIDATION_ERROR', 'Monobank refused the request');
+      if (e.kind === 'auth') throw new ApiError('VALIDATION_ERROR', 'Monobank did not accept the token');
+      if (e.kind === 'unavailable') throw new ApiError('TEMPORARY_FAILURE', 'Monobank is not reachable, try again');
+      throw new ApiError('VALIDATION_ERROR', 'Monobank refused the request');
     }
-    if (e instanceof PaymentStateError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+    if (e instanceof PaymentStateError) throw new ApiError('VALIDATION_ERROR', e.message);
     throw e;
   }
 
   /** Checks the token by reading the merchant, fetches the webhook public key, then stores the token encrypted. */
   async connect(shopId: string, token: string): Promise<ReturnType<PaymentService['status']>> {
-    if (!this.available) throw new ConnectorError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
-    if (!TOKEN_RE.test(token)) throw new ConnectorError('VALIDATION_ERROR', 'This is not a Monobank acquiring token');
+    if (!this.available) throw new ApiError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
+    if (!TOKEN_RE.test(token)) throw new ApiError('VALIDATION_ERROR', 'This is not a Monobank acquiring token');
     try {
       const me = await this.d.api.merchantDetails(token);
       const pubKey = await this.d.api.pubKey(token);
@@ -210,11 +210,11 @@ export class PaymentService {
   async createLink(shopId: string, draftId: string): Promise<OrderPaymentRow> {
     const { repo, orders, log } = this.d;
     const d = orders.getDraft(shopId, draftId)?.draft;
-    if (!d) throw new ConnectorError('NOT_FOUND', 'order draft not found');
+    if (!d) throw new ApiError('NOT_FOUND', 'order draft not found');
     const fail = (code: string, notify = true): never => {
       log.warn({ shopId, draftId, code }, 'payment link not created');
       if (notify) this.notifyOrder(shopId, draftId, 'payment_link_failed');
-      throw new ConnectorError(code === 'NOT_CONNECTED' ? 'NOT_CONFIGURED' : 'VALIDATION_ERROR', code === 'NOT_CONNECTED' ? 'Monobank is not connected for this shop' : `The payment link could not be created (${code})`);
+      throw new ApiError(code === 'NOT_CONNECTED' ? 'NOT_CONFIGURED' : 'VALIDATION_ERROR', code === 'NOT_CONNECTED' ? 'Monobank is not connected for this shop' : `The payment link could not be created (${code})`);
     };
     if (!this.connected(shopId)) fail('NOT_CONNECTED');
     if (CURRENCY_NUMERIC[d.currency] === undefined) fail('CURRENCY_NOT_SUPPORTED');
@@ -258,7 +258,7 @@ export class PaymentService {
     const text = paymentText(kind, { language: this.d.shops.get(shopId)?.defaultLanguage ?? 'uk', order: orderLabel(d), amountMinor: pay.amountMinor, url: pay.pageUrl, expiresAt: pay.expiresAt });
     let r: { status: string; code: string | null };
     try {
-      r = await this.d.send(shopId, d.conversationId, text, `payment-${kind}:${pay.id}`);
+      r = await this.d.send(shopId, d.conversationId, text);
     } catch {
       r = { status: 'failed', code: 'SEND_ERROR' };
     }

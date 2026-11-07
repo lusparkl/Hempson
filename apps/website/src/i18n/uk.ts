@@ -383,4 +383,3 @@ export const uk = {
 };
 
 export type Dict = typeof uk;
-export type LegalDoc = Dict['pages']['privacy'];

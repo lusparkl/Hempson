@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import {
   AuthValidationError,
   LastOwnerError,
@@ -30,11 +30,11 @@ const shopView = (s: ShopRow, role: Role) => ({ shopId: s.id, name: s.name, slug
 
 /** Maps domain errors to API errors. */
 function translate(e: unknown): never {
-  if (e instanceof ShopValidationError || e instanceof AuthValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
-  if (e instanceof ShopSlugTakenError) throw new ConnectorError('VALIDATION_ERROR', 'Slug already in use');
-  if (e instanceof MembershipExistsError) throw new ConnectorError('VALIDATION_ERROR', e.message);
-  if (e instanceof LastOwnerError) throw new ConnectorError('VALIDATION_ERROR', e.message);
-  if (e instanceof MembershipNotFoundError || e instanceof ShopNotFoundError) throw new ConnectorError('NOT_FOUND', 'Not found');
+  if (e instanceof ShopValidationError || e instanceof AuthValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
+  if (e instanceof ShopSlugTakenError) throw new ApiError('VALIDATION_ERROR', 'Slug already in use');
+  if (e instanceof MembershipExistsError) throw new ApiError('VALIDATION_ERROR', e.message);
+  if (e instanceof LastOwnerError) throw new ApiError('VALIDATION_ERROR', e.message);
+  if (e instanceof MembershipNotFoundError || e instanceof ShopNotFoundError) throw new ApiError('NOT_FOUND', 'Not found');
   throw e;
 }
 
@@ -47,8 +47,8 @@ export function makeRequireRole(shops: ShopRepository, auth: AuthRepository) {
   return function requireRole(req: FastifyRequest, id: string, min: Role): { shop: ShopRow; role: Role } {
     const m = auth.getMembership(id, req.user!.user.id);
     const shop = m && shops.get(id);
-    if (!m || !shop) throw new ConnectorError('NOT_FOUND', 'Shop not found');
-    if (min === 'owner' && m.role !== 'owner') throw new ConnectorError('FORBIDDEN', 'Owner role required');
+    if (!m || !shop) throw new ApiError('NOT_FOUND', 'Shop not found');
+    if (min === 'owner' && m.role !== 'owner') throw new ApiError('FORBIDDEN', 'Owner role required');
     return { shop, role: m.role };
   };
 }
@@ -145,7 +145,7 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
       requireRole(req, params.shopId, 'owner');
       const email = emailSchema.safeParse(body.email);
       const user = email.success ? auth.getUserByEmail(email.data) : undefined;
-      if (!user) throw new ConnectorError('NOT_FOUND', 'No registered user with that email');
+      if (!user) throw new ApiError('NOT_FOUND', 'No registered user with that email');
       try {
         const m = auth.addMember(params.shopId, user.id, body.role);
         return { userId: user.id, email: user.email, displayName: user.displayName, role: m.role, since: m.createdAt };

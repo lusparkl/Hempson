@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import type { AuthRepository, ShopRepository } from '@hepson/database';
 import { InstagramAccountSelectionError, verifySignature, type InstagramService } from '../services/instagram';
 import { route } from './define';
@@ -84,9 +84,9 @@ export async function registerInstagramRoutes(
         return back('connected');
       } catch (e) {
         // Codes only: never the URL, token or Meta's message text.
-        req.log.warn({ err: e instanceof Error ? e.name : 'ERROR', code: e instanceof ConnectorError ? e.code : undefined }, 'instagram connect failed');
+        req.log.warn({ err: e instanceof Error ? e.name : 'ERROR', code: e instanceof ApiError ? e.code : undefined }, 'instagram connect failed');
         if (e instanceof InstagramAccountSelectionError) return back('select_one');
-        return back(e instanceof ConnectorError && e.code === 'VALIDATION_ERROR' ? 'taken' : 'error');
+        return back(e instanceof ApiError && e.code === 'VALIDATION_ERROR' ? 'taken' : 'error');
       }
     },
   });
@@ -102,7 +102,7 @@ export async function registerInstagramRoutes(
     query: handshakeQ,
     handler: ({ query, reply }) => {
       const given = query['hub.verify_token'];
-      if (query['hub.mode'] !== 'subscribe' || !given || !sameSecret(given, verifyToken)) throw new ConnectorError('FORBIDDEN', 'Verification failed');
+      if (query['hub.mode'] !== 'subscribe' || !given || !sameSecret(given, verifyToken)) throw new ApiError('FORBIDDEN', 'Verification failed');
       reply.type('text/plain');
       return query['hub.challenge'] ?? '';
     },
@@ -121,12 +121,12 @@ export async function registerInstagramRoutes(
       handler: ({ req }) => {
         const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
         const sig = req.headers['x-hub-signature-256'];
-        if (!verifySignature(raw, typeof sig === 'string' ? sig : undefined, appSecret)) throw new ConnectorError('UNAUTHORIZED', 'Invalid signature');
+        if (!verifySignature(raw, typeof sig === 'string' ? sig : undefined, appSecret)) throw new ApiError('UNAUTHORIZED', 'Invalid signature');
         let payload: unknown;
         try {
           payload = JSON.parse(raw.toString('utf8'));
         } catch {
-          throw new ConnectorError('VALIDATION_ERROR', 'Body is not JSON');
+          throw new ApiError('VALIDATION_ERROR', 'Body is not JSON');
         }
         ig.handleWebhook(payload);
         return { ok: true };

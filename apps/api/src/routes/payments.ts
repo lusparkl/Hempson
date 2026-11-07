@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import { PaymentValidationError, type AuthRepository, type PaymentRepository, type ShopRepository } from '@hepson/database';
 import type { PaymentService } from '../services/payments';
 import { route } from './define';
@@ -74,7 +74,7 @@ export async function registerPaymentRoutes(app: FastifyInstance, deps: { shops:
       try {
         paymentRepo.updateSettings(params.shopId, body);
       } catch (e) {
-        if (e instanceof PaymentValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+        if (e instanceof PaymentValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
         throw e;
       }
       return payments.status(params.shopId);
@@ -94,7 +94,7 @@ export async function registerPaymentRoutes(app: FastifyInstance, deps: { shops:
       handler: async ({ req, params }) => {
         const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
         const sig = req.headers['x-sign'];
-        if (!(await payments.handleWebhook(params.webhookId, raw, typeof sig === 'string' ? sig : undefined))) throw new ConnectorError('UNAUTHORIZED', 'Invalid signature');
+        if (!(await payments.handleWebhook(params.webhookId, raw, typeof sig === 'string' ? sig : undefined))) throw new ApiError('UNAUTHORIZED', 'Invalid signature');
         return { ok: true };
       },
     });

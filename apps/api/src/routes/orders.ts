@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import {
   ORDER_STATUSES,
   OrderNotFoundError,
@@ -115,8 +115,8 @@ const draftView = ({ draft: d, items }: OrderDraft, pay?: OrderPaymentRow, notic
 const eventView = (e: OrderEventRow) => ({ from: e.fromStatus, to: e.toStatus, actor: e.actor, note: e.note, at: e.createdAt });
 
 function translate(e: unknown): never {
-  if (e instanceof OrderNotFoundError) throw new ConnectorError('NOT_FOUND', e.message);
-  if (e instanceof OrderValidationError || e instanceof OrderStateError || e instanceof OrderStockError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+  if (e instanceof OrderNotFoundError) throw new ApiError('NOT_FOUND', e.message);
+  if (e instanceof OrderValidationError || e instanceof OrderStateError || e instanceof OrderStockError) throw new ApiError('VALIDATION_ERROR', e.message);
   throw e;
 }
 
@@ -163,10 +163,10 @@ export function registerOrderRoutes(
       const { shop } = requireRole(req, params.shopId, 'manager');
       const to = query.to ? new Date(query.to) : new Date();
       const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 86_400_000);
-      if (from >= to) throw new ConnectorError('VALIDATION_ERROR', 'from must be before to');
-      if (to.getTime() - from.getTime() > EXPORT_MAX_DAYS * 86_400_000) throw new ConnectorError('VALIDATION_ERROR', `the period is at most ${EXPORT_MAX_DAYS} days`);
+      if (from >= to) throw new ApiError('VALIDATION_ERROR', 'from must be before to');
+      if (to.getTime() - from.getTime() > EXPORT_MAX_DAYS * 86_400_000) throw new ApiError('VALIDATION_ERROR', `the period is at most ${EXPORT_MAX_DAYS} days`);
       const list = orders.listForExport(params.shopId, { from: from.toISOString(), to: to.toISOString(), status: query.status, limit: EXPORT_LIMIT + 1 });
-      if (list.length > EXPORT_LIMIT) throw new ConnectorError('VALIDATION_ERROR', `more than ${EXPORT_LIMIT} orders in this period: choose a shorter one`);
+      if (list.length > EXPORT_LIMIT) throw new ApiError('VALIDATION_ERROR', `more than ${EXPORT_LIMIT} orders in this period: choose a shorter one`);
       const uk = shop.defaultLanguage.toLowerCase().startsWith('uk');
       const rows: Cell[][] = [uk ? EXPORT_HEADERS.uk : EXPORT_HEADERS.en];
       for (const { draft: d, items, paidAt } of list)
@@ -205,7 +205,7 @@ export function registerOrderRoutes(
     handler: ({ req, params }) => {
       requireRole(req, params.shopId, 'manager');
       const d = orders.getDraft(params.shopId, params.draftId);
-      if (!d) throw new ConnectorError('NOT_FOUND', 'order draft not found');
+      if (!d) throw new ApiError('NOT_FOUND', 'order draft not found');
       return view(d);
     },
   });
@@ -299,7 +299,7 @@ export function registerOrderRoutes(
     params: draftP,
     handler: ({ req, params }) => {
       requireRole(req, params.shopId, 'manager');
-      if (!orders.getDraft(params.shopId, params.draftId)) throw new ConnectorError('NOT_FOUND', 'order draft not found');
+      if (!orders.getDraft(params.shopId, params.draftId)) throw new ApiError('NOT_FOUND', 'order draft not found');
       return {
         items: paymentRepo.listFor(params.shopId, params.draftId).map((p) => ({
           ...paymentView(p),
@@ -318,7 +318,7 @@ export function registerOrderRoutes(
     params: draftP,
     handler: ({ req, params }) => {
       requireRole(req, params.shopId, 'manager');
-      if (!orders.getDraft(params.shopId, params.draftId)) throw new ConnectorError('NOT_FOUND', 'order draft not found');
+      if (!orders.getDraft(params.shopId, params.draftId)) throw new ApiError('NOT_FOUND', 'order draft not found');
       return { items: orders.listEvents(params.shopId, params.draftId).map(eventView) };
     },
   });

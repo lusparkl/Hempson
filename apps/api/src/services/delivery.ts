@@ -1,4 +1,4 @@
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import {
   CredentialDecryptError,
   CredentialMissingError,
@@ -80,8 +80,8 @@ export class DeliveryService {
 
   /** Runs one NP call with the shop's key. A refused key marks the credential and tells the owner once. */
   private async withKey<T>(shopId: string, fn: (key: string) => Promise<T>): Promise<T> {
-    if (!this.available) throw new ConnectorError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
-    if (!this.connected(shopId)) throw new ConnectorError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
+    if (!this.available) throw new ApiError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
+    if (!this.connected(shopId)) throw new ApiError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
     try {
       return await this.d.vault.withSecret(shopId, 'nova_poshta', fn);
     } catch (e) {
@@ -90,24 +90,24 @@ export class DeliveryService {
         this.d.repo.setLastError(shopId, 'KEY_REJECTED');
         this.d.notifier?.notify({ kind: 'channel_issue', shopId, channel: 'nova_poshta', issue: 'needs_reconnect' });
       }
-      if (e instanceof CredentialMissingError || e instanceof CredentialsUnavailableError || e instanceof CredentialDecryptError) throw new ConnectorError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
+      if (e instanceof CredentialMissingError || e instanceof CredentialsUnavailableError || e instanceof CredentialDecryptError) throw new ApiError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
       throw e;
     }
   }
 
   private translate(e: unknown): never {
     if (e instanceof NovaPoshtaError) {
-      if (e.kind === 'auth') throw new ConnectorError('VALIDATION_ERROR', 'Nova Poshta did not accept the API key');
-      if (e.kind === 'unavailable') throw new ConnectorError('TEMPORARY_FAILURE', 'Nova Poshta is not reachable, try again');
-      throw new ConnectorError('VALIDATION_ERROR', 'Nova Poshta refused the request');
+      if (e.kind === 'auth') throw new ApiError('VALIDATION_ERROR', 'Nova Poshta did not accept the API key');
+      if (e.kind === 'unavailable') throw new ApiError('TEMPORARY_FAILURE', 'Nova Poshta is not reachable, try again');
+      throw new ApiError('VALIDATION_ERROR', 'Nova Poshta refused the request');
     }
     throw e;
   }
 
   /** Checks the key by reading the sender identity, then stores the key encrypted and the sender refs in settings. */
   async connect(shopId: string, apiKey: string): Promise<ReturnType<DeliveryService['status']>> {
-    if (!this.available) throw new ConnectorError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
-    if (!KEY_RE.test(apiKey)) throw new ConnectorError('VALIDATION_ERROR', 'This is not a Nova Poshta API key');
+    if (!this.available) throw new ApiError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
+    if (!KEY_RE.test(apiKey)) throw new ApiError('VALIDATION_ERROR', 'This is not a Nova Poshta API key');
     try {
       const me = await this.d.api.senderIdentity(apiKey);
       this.d.repo.db.transaction(() => {
@@ -177,13 +177,13 @@ export class DeliveryService {
   async createTtn(shopId: string, draftId: string): Promise<OrderDraft> {
     const { orders, repo, log } = this.d;
     const settings = repo.getSettings(shopId);
-    if (!this.connected(shopId)) throw new ConnectorError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
-    if (!repo.senderComplete(settings)) throw new ConnectorError('VALIDATION_ERROR', 'Set the sender city and branch in the Nova Poshta settings first');
+    if (!this.connected(shopId)) throw new ApiError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
+    if (!repo.senderComplete(settings)) throw new ApiError('VALIDATION_ERROR', 'Set the sender city and branch in the Nova Poshta settings first');
     let d: OrderDraftRow;
     try {
       d = orders.claimTtn(shopId, draftId).draft;
     } catch (e) {
-      if (e instanceof OrderStateError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+      if (e instanceof OrderStateError) throw new ApiError('VALIDATION_ERROR', e.message);
       throw e;
     }
     const fail = (state: 'failed' | 'uncertain', code: string) => {
@@ -212,7 +212,7 @@ export class DeliveryService {
       return orders.completeTtn(shopId, draftId, { ttn: res.ttn, documentRef: res.ref });
     } catch (e) {
       // Before the document call nothing can exist at NP; after it, only a definite refusal is safe to retry.
-      if (!sent || (e instanceof NovaPoshtaError && e.kind !== 'unavailable') || e instanceof EgressDeniedError || e instanceof ConnectorError)
+      if (!sent || (e instanceof NovaPoshtaError && e.kind !== 'unavailable') || e instanceof EgressDeniedError || e instanceof ApiError)
         return fail('failed', e instanceof NovaPoshtaError ? `NP_${e.kind.toUpperCase()}${e.codes[0] ? `_${e.codes[0]}` : ''}` : e instanceof EgressDeniedError ? 'EGRESS_DENIED' : 'NP_NOT_CONNECTED');
       return fail('uncertain', e instanceof NovaPoshtaError ? `NP_NO_ANSWER${e.codes[0] ? `_${e.codes[0]}` : ''}` : 'NP_NO_ANSWER');
     }

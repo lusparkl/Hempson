@@ -1,13 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import type { UserRow } from '@hepson/database';
 import type { z } from 'zod';
 
-export type Principal = { keyId: string; accountId: string | null };
+export type Principal = { keyId: string };
 export type SessionUser = { sessionId: string; user: UserRow };
 declare module 'fastify' {
   interface FastifyRequest {
-    /** Phase 1 connector API key (`hep_…`). */
+    /** Operator API key (`hep_…`). */
     principal?: Principal;
     /** Dashboard user session (`hsu_…`). */
     user?: SessionUser;
@@ -19,8 +19,8 @@ export type RouteDef<P extends z.ZodType, Q extends z.ZodType, B extends z.ZodTy
   url: string;
   summary: string;
   tag: string;
-  /** none = public; admin = key with no account scope; account = admin or key scoped to :accountId; user = dashboard user session (API keys are rejected) */
-  auth: 'none' | 'any' | 'admin' | 'account' | 'user';
+  /** none = public; admin = operator API key; user = dashboard user session (API keys are rejected) */
+  auth: 'none' | 'admin' | 'user';
   params?: P;
   query?: Q;
   body?: B;
@@ -36,7 +36,7 @@ export const registry: Array<RouteDef<z.ZodType, z.ZodType, z.ZodType>> = [];
 function parse<T extends z.ZodType>(schema: T | undefined, value: unknown, where: string): z.infer<T> {
   if (!schema) return undefined as z.infer<T>;
   const r = schema.safeParse(value ?? {});
-  if (!r.success) throw new ConnectorError('VALIDATION_ERROR', `${where}: ${r.error.issues.map((i) => `${i.path.join('.') || '(root)'} ${i.message}`).join('; ')}`);
+  if (!r.success) throw new ApiError('VALIDATION_ERROR', `${where}: ${r.error.issues.map((i) => `${i.path.join('.') || '(root)'} ${i.message}`).join('; ')}`);
   return r.data;
 }
 
@@ -50,14 +50,9 @@ export function route<P extends z.ZodType, Q extends z.ZodType, B extends z.ZodT
       const principal = req.principal ?? null;
       const params = parse(def.params, req.params, 'params');
       if (def.auth === 'user') {
-        if (!req.user) throw new ConnectorError('UNAUTHORIZED', 'Missing or invalid session token');
-      } else if (def.auth !== 'none') {
-        if (!principal) throw new ConnectorError('UNAUTHORIZED', 'Missing or invalid API key');
-        if (def.auth === 'admin' && principal.accountId !== null) throw new ConnectorError('FORBIDDEN', 'Admin key required');
-        if (def.auth === 'account') {
-          const id = (params as { accountId?: string }).accountId;
-          if (principal.accountId !== null && principal.accountId !== id) throw new ConnectorError('FORBIDDEN', 'API key is not valid for this account');
-        }
+        if (!req.user) throw new ApiError('UNAUTHORIZED', 'Missing or invalid session token');
+      } else if (def.auth === 'admin' && !principal) {
+        throw new ApiError('UNAUTHORIZED', 'Missing or invalid API key');
       }
       const query = parse(def.query, req.query, 'query');
       const body = parse(def.body, req.body, 'body');

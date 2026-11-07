@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import { WebChatValidationError, type AuthRepository, type ShopRepository, type WebChatConfigRow, type WebChatRepository } from '@hepson/database';
 import type { WebChatService } from '../services/web-chat';
 import { visitorView } from '../services/web-chat';
@@ -51,8 +51,8 @@ export function registerWebChatRoutes(
   /** Unknown/disabled key = 404 (no existence leak); wrong or missing Origin = 403. */
   const gate = (req: FastifyRequest, widgetKey: string): WebChatConfigRow => {
     const cfg = svc.config(widgetKey);
-    if (!cfg) throw new ConnectorError('NOT_FOUND', 'Chat not found');
-    if (!svc.originAllowed(cfg, req.headers.origin)) throw new ConnectorError('FORBIDDEN', 'Origin not allowed');
+    if (!cfg) throw new ApiError('NOT_FOUND', 'Chat not found');
+    if (!svc.originAllowed(cfg, req.headers.origin)) throw new ApiError('FORBIDDEN', 'Origin not allowed');
     return cfg;
   };
   const token = (req: FastifyRequest) => {
@@ -119,7 +119,7 @@ export function registerWebChatRoutes(
     return { enabled: c?.enabled ?? false, widgetKey: c?.widgetKey ?? null, allowedOrigins: c?.allowedOrigins ?? [], snippet, updatedAt: c?.updatedAt ?? null };
   };
   const translate = (e: unknown): never => {
-    if (e instanceof WebChatValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+    if (e instanceof WebChatValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
     throw e;
   };
 

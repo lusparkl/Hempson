@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import {
   ConversationValidationError,
   CredentialDecryptError,
@@ -66,7 +66,7 @@ function eventTime(ts: unknown, now: Date): string {
 
 /**
  * The official Instagram channel (D23): connect flow, webhook ingest, sends and token upkeep. Writes straight into the
- * shop tables (like the website chat, D19); it does not use the Phase 1 connector layer.
+ * shop tables (like the website chat, D19).
  */
 export class InstagramService {
   private inflight = new Set<Promise<unknown>>();
@@ -112,7 +112,7 @@ export class InstagramService {
   }
 
   private requireEnabled(): void {
-    if (!this.enabled) throw new ConnectorError('NOT_CONFIGURED', 'Instagram connection is not configured on this server');
+    if (!this.enabled) throw new ApiError('NOT_CONFIGURED', 'Instagram connection is not configured on this server');
   }
 
   startConnect(shopId: string, userId: string): { authorizeUrl: string } {
@@ -124,13 +124,13 @@ export class InstagramService {
   async completeConnect(code: string, state: string): Promise<{ shopId: string }> {
     this.requireEnabled();
     const st = this.d.repo.consumeState(state);
-    if (!st) throw new ConnectorError('FORBIDDEN', 'Connect link expired or already used');
+    if (!st) throw new ApiError('FORBIDDEN', 'Connect link expired or already used');
     const { graph, vault, repo, log } = this.d;
-    if (this.connectionOperations.has(st.shopId)) throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram connection is already in progress');
+    if (this.connectionOperations.has(st.shopId)) throw new ApiError('TEMPORARY_FAILURE', 'Instagram connection is already in progress');
     const operation = { kind: 'connect' as const };
     this.connectionOperations.set(st.shopId, operation);
     const requireCurrent = () => {
-      if (this.connectionOperations.get(st.shopId) !== operation) throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram connection was canceled');
+      if (this.connectionOperations.get(st.shopId) !== operation) throw new ApiError('TEMPORARY_FAILURE', 'Instagram connection was canceled');
     };
     let step = 'exchange_code';
     try {
@@ -146,7 +146,7 @@ export class InstagramService {
       if (existing && existing.shopId !== st.shopId) throw new InstagramAccountTakenError();
       const expiresAt = tok.expiresInSec > 0 ? new Date(this.now().getTime() + tok.expiresInSec * 1000).toISOString() : null;
       step = 'subscribe';
-      if (this.connectingAccounts.has(me.userId)) throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram connection is already in progress');
+      if (this.connectingAccounts.has(me.userId)) throw new ApiError('TEMPORARY_FAILURE', 'Instagram connection is already in progress');
       this.connectingAccounts.add(me.userId);
       try {
         await graph.subscribe(tok.accessToken, me.userId);
@@ -169,10 +169,10 @@ export class InstagramService {
       }
       return { shopId: st.shopId };
     } catch (e) {
-      if (e instanceof InstagramAccountTakenError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+      if (e instanceof InstagramAccountTakenError) throw new ApiError('VALIDATION_ERROR', e.message);
       if (e instanceof GraphError) {
         log.warn({ shopId: st.shopId, step, kind: e.kind, status: e.status, graphCode: e.graphCode, graphSubcode: e.graphSubcode }, 'instagram connect: graph call failed');
-        throw new ConnectorError(e.kind === 'unavailable' ? 'TEMPORARY_FAILURE' : 'LOGIN_REQUIRED', 'Instagram did not accept the connection');
+        throw new ApiError(e.kind === 'unavailable' ? 'TEMPORARY_FAILURE' : 'LOGIN_REQUIRED', 'Instagram did not accept the connection');
       }
       throw e;
     } finally {
@@ -181,7 +181,7 @@ export class InstagramService {
   }
 
   async disconnect(shopId: string): Promise<void> {
-    if (this.connectionOperations.get(shopId)?.kind === 'disconnect') throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram disconnection is already in progress');
+    if (this.connectionOperations.get(shopId)?.kind === 'disconnect') throw new ApiError('TEMPORARY_FAILURE', 'Instagram disconnection is already in progress');
     // Replacing the identity cancels a pending callback before any asynchronous unsubscribe work begins.
     const operation = { kind: 'disconnect' as const };
     this.connectionOperations.set(shopId, operation);
@@ -244,7 +244,7 @@ export class InstagramService {
         }
       }
     }
-    if (retryableFailure) throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram webhook processing failed; retry delivery');
+    if (retryableFailure) throw new ApiError('TEMPORARY_FAILURE', 'Instagram webhook processing failed; retry delivery');
     return stored;
   }
 
@@ -284,7 +284,7 @@ export class InstagramService {
         try {
           this.d.onInbound(ch.shopId, incoming.conversation.id, incoming.message.id);
         } catch {
-          throw new ConnectorError('TEMPORARY_FAILURE', 'Instagram inbound dispatch failed');
+          throw new ApiError('TEMPORARY_FAILURE', 'Instagram inbound dispatch failed');
         }
       }
       return incoming;

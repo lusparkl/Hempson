@@ -2,7 +2,7 @@
 
 Base: `http://127.0.0.1:8787` (loopback by default). OpenAPI with every route and schema: `GET /v1/openapi.json` or `pnpm openapi` → `docs/openapi.json`.
 
-## Shop API (Phase 2, P1-P5)
+## Shop API
 Dashboard users authenticate with `Authorization: Bearer hsu_…` from `POST /v1/auth/login` (or `/register`). These routes reject `hep_` API keys. Every `/v1/shops/:shopId/...` route checks membership; a shop the user is not a member of is `404`, an owner-only write by a manager is `403`.
 ```
 GET    /health · /ready
@@ -18,7 +18,7 @@ nova poshta (P4): GET .../nova-poshta, PUT|DELETE .../nova-poshta/key {apiKey}, 
          GET .../nova-poshta/cities?q, GET .../nova-poshta/branches?cityRef&q,
          GET|POST .../customers/:customerId/refusals, DELETE .../customers/:customerId/refusals/:refusalId
 monobank (P5): GET .../monobank, PUT|DELETE .../monobank/token {token}, PUT .../monobank/settings {paymentTimeoutHours, reminderHoursBefore}
-other:   GET .../channels, GET|PUT .../notifications, GET .../stats?from&to (includes `usage`, `funnel`, `orderSources`), GET .../usage, PUT .../plan {plan, customCap?} (admin key), GET|PUT .../web-chat, POST .../web-chat/rotate-key
+other:   GET|PUT .../notifications, GET .../stats?from&to (includes `usage`, `funnel`, `orderSources`), GET .../usage, PUT .../plan {plan, customCap?} (admin key), GET|PUT .../web-chat, POST .../web-chat/rotate-key
 instagram (official, D29): GET|DELETE .../instagram, POST .../instagram/connect
 telegram (shop bot, D27): GET|PUT {token}|DELETE .../telegram
 public:  POST /public/web-chat/:widgetKey/session, POST|GET /public/web-chat/:widgetKey/messages, GET /widget/web-chat.js
@@ -27,75 +27,19 @@ public:  POST /public/web-chat/:widgetKey/session, POST|GET /public/web-chat/:wi
          POST /webhooks/monobank/:webhookId (x-sign ECDSA signature over the raw body required)
 ```
 
-# Phase 1 connector API (frozen, D22)
-
-The `/v1/accounts` API below serves the mock and the frozen browser adapter. Creating or connecting an `instagram-browser` account is refused unless `HEPSON_ENABLE_BROWSER_ADAPTER=true`.
-
-## Authentication (connector)
-`Authorization: Bearer hep_…` on everything except `GET /health`, `GET /v1/openapi.json`.
-- **Admin key** (`pnpm bootstrap-key`): any account, may create accounts and keys.
-- **Account key** (`pnpm bootstrap-key --account <uuid>` or `POST /v1/accounts/:id/api-keys`): valid only for that account. Other accounts → `403 FORBIDDEN`; foreign conversation/outbox ids → `404`. `accountId` is only ever taken from the URL path, never the body.
-Keys are shown once; only SHA-256 hashes are stored.
+## Operator API key
+`PUT /v1/shops/:shopId/plan {plan, customCap?}` takes `Authorization: Bearer hep_…`, an operator key from `pnpm bootstrap-key [name]` (shown once; only its SHA-256 hash is stored). It is a fallback for setting a shop's plan by hand (D41). Every other `/v1/shops/...` route rejects these keys, and this route rejects user sessions.
 
 ## Errors
-Always `{ "error": { "code", "message", "retryable" } }`.
+Always `{ "error": { "code", "message", "retryable" } }` (`apps/api/src/errors.ts`).
 
 | code | HTTP | meaning |
 |---|---|---|
-| `LOGIN_REQUIRED` | 409 | Instagram session invalid; owner must log in (visible window) |
-| `CHECKPOINT_REQUIRED` | 409 | Instagram security check; owner must complete manually |
-| `UI_CHANGED` | 502 | page did not match `selectors.ts`; operation aborted (never guessed) |
-| `UNSUPPORTED_CONTENT` | 422 | content type not readable |
-| `TEMPORARY_FAILURE` | 503 | transient, `retryable:true` |
-| `RATE_LIMITED_OR_BLOCKED` | 429 | Instagram throttled/blocked; worker stopped |
 | `UNAUTHORIZED` 401 · `FORBIDDEN` 403 · `NOT_FOUND` 404 · `VALIDATION_ERROR` 400 | | |
-| `OUTBOUND_DISABLED` | 403 | `outboundEnabled=false` |
-| `CONSENT_REQUIRED` | 400 | real account without owner consent |
-| `IDEMPOTENCY_CONFLICT` | 409 | key reused with different conversation/text |
-| `ACCOUNT_NOT_CONNECTED` · `IDENTITY_MISMATCH` · `PROFILE_LOCKED` | 409 | |
-| `CONFIRMATION_REQUIRED` | 400 | destructive action needs `confirmLabel` = account label |
-
-## Routes
-```
-GET    /health
-GET    /v1/accounts                                   (scoped key sees only its account)
-POST   /v1/accounts                                   admin  { label, connectorType: "mock"|"instagram-browser", consentConfirmed, expectedInstagramHandle? }
-GET    /v1/accounts/:id/status
-POST   /v1/accounts/:id/session/start                 { interactive?: true }  → 202; opens visible window if login needed
-POST   /v1/accounts/:id/session/pause|resume|disconnect   (profile kept)
-DELETE /v1/accounts/:id/session/profile               { confirmLabel }  FORGETS saved login (deletes profile)
-PATCH  /v1/accounts/:id/settings                      { outboundEnabled }
-GET    /v1/accounts/:id/conversations?limit&cursor
-GET    /v1/accounts/:id/conversations/:cid/messages?limit&cursor
-POST   /v1/accounts/:id/conversations/:cid/messages   { text, idempotencyKey, dryRun? } → 202 { outboxId, status }
-GET    /v1/accounts/:id/outbox  ·  /outbox/:oid  ·  POST /outbox/:oid/review
-GET    /v1/accounts/:id/events?afterSequence&limit    replay
-GET    /v1/accounts/:id/events/stream                 SSE
-GET    /v1/accounts/:id/export  ·  DELETE /data {confirmLabel}  ·  POST /retention/purge
-POST   /v1/accounts/:id/api-keys                      admin { name }
-# dev/mock only (HEPSON_ENABLE_DEV_ROUTES): /v1/dev/accounts/:id/{inject-incoming,set-status,plan-sends,sync}
-```
-Status values: `disconnected | login_required | connecting | connected | degraded | checkpoint_required | failed`. The status view also reports `restoredFromSavedLogin`, `hasSavedLogin`, `awaitingOwnerAction`, `dataSource` (MOCK/REAL).
-
-## Pagination
-Conversations: newest first, opaque `cursor`. Messages: each page is oldest→newest; `nextCursor` fetches **older** pages (`null` = end of the cache). Pages reflect Hepson's cache of what the UI exposed, not guaranteed complete history.
-
-## Events & replay
-`{ id (uuid), accountId, sequence, type, occurredAt, payload }`. `sequence` is gapless and monotonic **per account** starting at 1. Events are written to SQLite **before** being published. Types: `message.received`, `message.sent`, `conversation.updated`, `session.connected`, `session.login_required`, `session.checkpoint_required`, `connector.degraded`, `connector.error`.
-SSE: `GET …/events/stream?afterSequence=N` (or `Last-Event-ID`) first replays persisted events > N, then streams live ones with `id: <sequence>`; no gaps, no duplicates. Use `fetch` streaming (EventSource cannot send the Authorization header). A pre-existing history is *not* emitted as `message.received` on first sync (`HEPSON_BACKFILL_EVENTS=true` to change).
-
-## Sending & idempotency
-- One text per request, to an existing conversation. No bulk endpoint exists.
-- `idempotencyKey` (8–128 chars) is unique per account. Same key + same body → returns the original outbox (`Idempotent-Replay: true`), **no second send**. Same key + different body → 409. Same text with a new key → sent again (intentional).
-- Outbox: `queued → sending → sent | failed | uncertain`. `uncertain` = the send click may have happened but the message was not confirmed in the UI. It is **never retried automatically**; `needsReview=true` until a human checks Instagram and calls `/review`. If a later sync observes the message, the entry resolves to `sent` without a duplicate.
-- Process crash while `sending` → recorded as `uncertain` on next start; `queued` → `failed`.
-- `dryRun:true` validates (auth, consent/outbound, text, conversation, connection) and returns `200 {dryRun:true}` without sending.
-
-```bash
-KEY=hep_…; A=<account uuid>; BASE=http://127.0.0.1:8787
-curl -s $BASE/v1/accounts/$A/status -H "authorization: Bearer $KEY"
-curl -s -XPATCH $BASE/v1/accounts/$A/settings -H "authorization: Bearer $KEY" -H 'content-type: application/json' -d '{"outboundEnabled":true}'
-curl -s -XPOST $BASE/v1/accounts/$A/conversations/$C/messages -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
-  -d '{"text":"Вітаю! Так, є в наявності.","idempotencyKey":"'$(uuidgen)'"}'
-curl -N "$BASE/v1/accounts/$A/events/stream?afterSequence=0" -H "authorization: Bearer $KEY"
-```
+| `LOGIN_REQUIRED` | 409 | Instagram did not accept the connection; the owner connects again |
+| `ACCOUNT_NOT_CONNECTED` | 409 | no connected channel can reach the conversation |
+| `OUTSIDE_MESSAGING_WINDOW` | 409 | Instagram's 24-hour messaging window has closed |
+| `NOT_CONFIGURED` | 503 | the operator has not configured this integration |
+| `TEMPORARY_FAILURE` | 503 | transient, `retryable:true` |
+| `RATE_LIMITED_OR_BLOCKED` | 429 | rate limited (`Retry-After` on website chat) |
+| `INTERNAL` | 500 | unexpected error |

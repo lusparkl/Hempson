@@ -98,14 +98,14 @@ describe('registration and login', () => {
 });
 
 describe('credential separation', () => {
-  it('requires a session for shop routes; connector API keys and junk tokens are rejected', async () => {
+  it('requires a session for shop routes; operator API keys and junk tokens are rejected', async () => {
     expect((await call(a, null, 'GET', '/v1/shops')).status).toBe(401);
     expect((await call(a, a.admin, 'GET', '/v1/shops')).status).toBe(401);
     expect((await call(a, 'hsu_junk', 'GET', '/v1/shops')).status).toBe(401);
   });
-  it('session tokens do not open connector routes', async () => {
+  it('session tokens do not open operator routes', async () => {
     const { token } = await signup('u@example.com');
-    expect((await call(a, token, 'GET', '/v1/accounts')).status).toBe(401);
+    expect((await call(a, token, 'PUT', `/v1/shops/${crypto.randomUUID()}/plan`, { plan: 'unlimited' })).status).toBe(401);
   });
 });
 

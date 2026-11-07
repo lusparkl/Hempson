@@ -696,16 +696,6 @@ describe('deployment defaults', () => {
     expect(loadConfig({ HEPSON_DATA_DIR: '~other/h' }).dataDir).toBe(path.resolve('~other/h')); // only the current user's home
   });
 
-  it('the browser adapter is off by default and creating a browser account is refused', async () => {
-    expect(loadConfig({}).enableBrowserAdapter).toBe(false);
-    expect(loadConfig({ HEPSON_ENABLE_BROWSER_ADAPTER: 'true' }).enableBrowserAdapter).toBe(true);
-    a = await makeApp({ enableBrowserAdapter: false });
-    const r = await call(a, a.admin, 'POST', '/v1/accounts', { label: 'x', connectorType: 'instagram-browser', consentConfirmed: true });
-    expect(r.status).toBe(403);
-    expect(r.body.error.message).toContain('deprecated');
-    expect((await call(a, a.admin, 'POST', '/v1/accounts', { label: 'm', connectorType: 'mock', consentConfirmed: false })).status).toBe(201);
-  });
-
   it('keeps the production allow-list: a configured Graph host outside it is the operator\'s explicit choice, anything else is refused', async () => {
     const s = await setup();
     await connected(s);

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { INSTAGRAM_CHANNEL, Keyring, TELEGRAM_CHANNEL, WEB_CHANNEL } from '@hepson/database';
-import { call, makeApp, mockAccount, type TestApp } from '../helpers';
+import { call, makeApp, type TestApp } from '../helpers';
 import { ScriptedLlm } from '../fixtures/scripted-llm';
 import { NP } from '../fixtures/fake-nova-poshta';
 import { noticeText } from '../../apps/api/src/services/customer-notices';
@@ -320,24 +320,6 @@ describe('restarts', () => {
     expect(a.noticeRepo.listFor(shopId, id)).toMatchObject([{ state: 'sent' }]);
     expect(a.noticeRepo.listFor(shopId, id2)).toMatchObject([{ state: 'uncertain', code: 'INTERRUPTED' }]);
     expect(systemMessages(s, a.orders.getDraft(shopId, id2)!.draft.conversationId)).toHaveLength(0);
-  });
-});
-
-describe('connector channel', () => {
-  it('the mirrored copy of a notice adopts the system row instead of adding a human duplicate', async () => {
-    const s = await setup();
-    const acc = await mockAccount(a!);
-    await a!.svc.syncOnce(acc);
-    await call(a!, a!.admin, 'PUT', `/v1/accounts/${acc}/shop`, { shopId: s.shopId });
-    await call(a!, a!.admin, 'PATCH', `/v1/accounts/${acc}/settings`, { outboundEnabled: true });
-    const conv = a!.conversations.listConversations(s.shopId, {}).items[0]!.conversation.id;
-    const id = draftFor(s, conv);
-    await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/approve`, {});
-    await settle();
-    await a!.svc.syncOnce(acc);
-    const text = noticeText('confirmed', draftRow(s, id), 'uk');
-    const copies = a!.conversations.listMessages(s.shopId, conv, { limit: 100 }).items.filter((m) => m.text === text);
-    expect(copies).toEqual([expect.objectContaining({ senderType: 'system', deliveryStatus: 'sent' })]);
   });
 });
 

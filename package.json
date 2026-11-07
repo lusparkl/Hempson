@@ -1,5 +1,5 @@
 {
-  "name": "hepson-instagram-connector",
+  "name": "hepson",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,11 +10,10 @@
     "bootstrap-key": "tsx scripts/bootstrap-key.ts",
     "dev:api": "tsx watch apps/api/src/index.ts",
     "start:api": "tsx apps/api/src/index.ts",
-    "dev:console": "pnpm --filter @hepson/dev-console dev",
     "dev:dashboard": "pnpm --filter @hepson/dashboard dev",
     "dev:website": "pnpm --filter @hepson/website dev",
     "build:website": "pnpm --filter @hepson/website build",
-    "build": "pnpm --filter @hepson/dev-console build && pnpm --filter @hepson/dashboard build",
+    "build": "pnpm --filter @hepson/dashboard build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:browser": "vitest run --config vitest.browser.config.ts",
@@ -22,9 +21,7 @@
     "openapi": "tsx scripts/gen-openapi.ts",
     "backup": "tsx scripts/backup.ts",
     "rewrap-credentials": "tsx scripts/rewrap-credentials.ts",
-    "gen-master-key": "tsx scripts/gen-master-key.ts",
-    "calibrate": "tsx scripts/calibrate-selectors.ts",
-    "smoke:live": "tsx scripts/live-smoke.ts"
+    "gen-master-key": "tsx scripts/gen-master-key.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
@@ -33,6 +30,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "drizzle-kit": "^0.31.11",
+    "playwright": "^1.64.1",
     "prettier": "^3.9.10",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
@@ -42,15 +40,10 @@
     "vitest": "^5.0.5"
   },
   "dependencies": {
-    "@hepson/connector-core": "workspace:*",
     "@hepson/database": "workspace:*",
-    "@hepson/instagram-browser": "workspace:*",
-    "@hepson/mock-adapter": "workspace:*",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.4",
     "fastify": "^5.12.7",
-    "pino": "^10.4.0",
-    "playwright": "^1.64.1",
     "zod": "^4.6.7"
   }
 }

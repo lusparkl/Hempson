@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import { AuthValidationError, EmailTakenError, displayNameSchema, emailSchema, type AuthRepository, type UserRow } from '@hepson/database';
 import { hashPassword, verifyPassword, DUMMY_HASH } from '../auth/password';
 import type { LoginThrottle } from '../auth/throttle';
@@ -22,16 +22,16 @@ export function registerAuthRoutes(app: FastifyInstance, auth: AuthRepository, o
     body: registerBody,
     status: 201,
     handler: async ({ body }) => {
-      if (!opts.allowRegistration) throw new ConnectorError('FORBIDDEN', 'Registration is disabled');
+      if (!opts.allowRegistration) throw new ApiError('FORBIDDEN', 'Registration is disabled');
       const email = emailSchema.safeParse(body.email);
       const name = displayNameSchema.safeParse(body.displayName);
-      if (!email.success || !name.success) throw new ConnectorError('VALIDATION_ERROR', [!email.success && 'email invalid', !name.success && 'displayName invalid'].filter(Boolean).join('; '));
+      if (!email.success || !name.success) throw new ApiError('VALIDATION_ERROR', [!email.success && 'email invalid', !name.success && 'displayName invalid'].filter(Boolean).join('; '));
       const hash = await hashPassword(body.password);
       try {
         return publicUser(auth.createUser({ email: email.data, displayName: name.data }, hash));
       } catch (e) {
-        if (e instanceof EmailTakenError) throw new ConnectorError('VALIDATION_ERROR', 'Email already registered');
-        if (e instanceof AuthValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+        if (e instanceof EmailTakenError) throw new ApiError('VALIDATION_ERROR', 'Email already registered');
+        if (e instanceof AuthValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
         throw e;
       }
     },
@@ -46,12 +46,12 @@ export function registerAuthRoutes(app: FastifyInstance, auth: AuthRepository, o
     body: loginBody,
     handler: async ({ body }) => {
       const key = body.email.trim().toLowerCase();
-      if (opts.throttle.blocked(key)) throw new ConnectorError('RATE_LIMITED_OR_BLOCKED', 'Too many failed logins; try again later');
+      if (opts.throttle.blocked(key)) throw new ApiError('RATE_LIMITED_OR_BLOCKED', 'Too many failed logins; try again later');
       const user = auth.getUserByEmail(key);
       const ok = await verifyPassword(body.password, user?.passwordHash ?? DUMMY_HASH);
       if (!user || !ok) {
         opts.throttle.fail(key);
-        throw new ConnectorError('UNAUTHORIZED', 'Invalid email or password');
+        throw new ApiError('UNAUTHORIZED', 'Invalid email or password');
       }
       opts.throttle.reset(key);
       const s = auth.createSession(user.id, opts.sessionTtlMs);

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import { StatsValidationError, type AuthRepository, type PlanRepository, type ShopRepository, type StatsRepository } from '@hepson/database';
 import { route } from './define';
 import { makeRequireRole } from './shops';
@@ -29,7 +29,7 @@ export function registerStatsRoutes(app: FastifyInstance, deps: { shops: ShopRep
       try {
         return { ...stats.forShop(params.shopId, query), usage: plans.usage(params.shopId) };
       } catch (e) {
-        if (e instanceof StatsValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+        if (e instanceof StatsValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
         throw e;
       }
     },

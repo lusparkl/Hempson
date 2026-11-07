@@ -138,7 +138,7 @@ export class CustomerNoticeService {
     if (!text) return skip('MISSING_DATA');
     let r: { status: 'sent' | 'uncertain' | 'failed'; code: string | null };
     try {
-      r = await this.d.send(n.shopId, d.conversationId, text, `notice:${n.id}`);
+      r = await this.d.send(n.shopId, d.conversationId, text);
     } catch {
       r = { status: 'failed', code: 'SEND_ERROR' };
     }

@@ -1,12 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { WEB_CHANNEL } from '@hepson/database';
 import { buildApp, type App } from '../apps/api/src/server';
 
 export async function makeApp(over: Parameters<typeof buildApp>[0] & { dir?: string } = {}) {
   const dir = over.dir ?? mkdtempSync(path.join(os.tmpdir(), 'hepson-test-'));
-  const a = await buildApp({ dataDir: dir, dbFile: path.join(dir, 'hepson.db'), logger: false, autostart: false, pollIntervalMs: 3_600_000, browserHeadless: true, enableBrowserAdapter: true, ...over });
-  const admin = a.store.createApiKey('admin', null).key;
+  const a = await buildApp({ dataDir: dir, dbFile: path.join(dir, 'hepson.db'), logger: false, ...over });
+  const admin = a.apiKeys.create('admin').key;
   return { ...a, dir, admin, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 export type TestApp = Awaited<ReturnType<typeof makeApp>>;
@@ -25,9 +27,13 @@ const safeJson = (s: string) => {
   }
 };
 
-export async function mockAccount(a: TestApp, label = 'mock-shop', start = true) {
-  const r = await call(a, a.admin, 'POST', '/v1/accounts', { label, connectorType: 'mock', consentConfirmed: false });
-  const id = r.body.accountId as string;
-  if (start) await call(a, a.admin, 'POST', `/v1/accounts/${id}/session/start`, {});
-  return id;
+/**
+ * A customer message arriving on a channel, as a channel service records it: stored in the shop tables, then handed to
+ * the agent. Default channel is the website chat (replies are delivered internally); returns the shop conversation id.
+ */
+export async function customerWrites(a: TestApp, shopId: string, thread: string, text: string, channel = WEB_CHANNEL) {
+  const r = a.conversations.ingestMessage(shopId, { channel, conversationExternalId: thread, customer: { externalId: thread, displayName: 'Олена' }, externalId: `in:${randomUUID()}`, text });
+  a.salesAgent?.trigger(shopId, r.conversation.id, r.message.id);
+  await a.salesAgent?.whenIdle();
+  return r.conversation.id;
 }

@@ -3,7 +3,7 @@
 ## Vision and positioning (updated 2026-10-29, D22)
 Hepson is a Ukrainian-first B2B SaaS AI sales assistant for online shops (initially clothing, shoes, accessories; keep the model category-neutral). It answers customer questions from verified product and policy data, prepares orders, and carries them from message to paid order to Nova Poshta waybill (TTN). Shop members monitor chats, pause the AI, take over and review orders; owners manage products, policies, channels, team and AI settings in a web dashboard. Multi-tenant: independent shops.
 
-**Direction.** Compete with NovaSale on official APIs only. Instagram through Meta's official API (D23), Telegram through the Bot API (D27), a website chat widget (built, D19). The Phase 1 browser-based Instagram connector is frozen and deprecated (D22).
+**Direction.** Compete with NovaSale on official APIs only. Instagram through Meta's official API (D23), Telegram through the Bot API (D27), a website chat widget (built, D19). The Phase 1 browser-based Instagram connector was frozen (D22) and then removed (D41).
 
 ### Competitor: NovaSale (novasale.app)
 Ukrainian AI-CRM for e-commerce: "an AI manager that sells in Instagram, from message to waybill (TTN)". A Meta Tech Provider on the official API. Today it ships:
@@ -31,9 +31,8 @@ Meta Business Verification and App Review for Advanced Access need a business; H
 - Design rule: moving to Advanced Access is configuration (app credentials, approved scopes), not a rewrite.
 
 ## Architecture (modular monolith)
-- Phase 1 (done, **frozen**, D22): Instagram Direct connector via browser. Packages `connector-core`, `database`, `mock-adapter`, `instagram-browser`; `apps/api` (Fastify `/v1`, `ConnectorService`); `apps/dev-console`. Kept with its tests; disabled by default since P1 (`HEPSON_ENABLE_BROWSER_ADAPTER`); deleted only after `instagram-official` is live-verified. See `AGENTS.md`.
-- Phase 2 (built, F1-F12): shops, auth, catalog, conversations, OpenAI agent with narrow tools, order drafts, takeover, Telegram operator notifications, stats, website chat, owner dashboard.
-- Pivot layers (P1 built: official Instagram, credential store, egress guard; P2-P9 planned): channel adapters for Instagram (official) and Telegram (normalize and ingest, no AI logic) · per-shop encrypted credential store (D28) · egress allow-list (D22) · policies tool · checkout data and Nova Poshta · payment links and verified webhooks · order state machine with events (D25) · customer notifications · quotas · imports/exports and funnel analytics.
+- SaaS core (built, F1-F12): shops, auth, catalog, conversations, OpenAI agent with narrow tools, order drafts, takeover, Telegram operator notifications, stats, website chat, owner dashboard.
+- Official channels and integrations (built, P1-P10; P8 XLSX import and parts of P9 open): Instagram (official) and Telegram channel services write straight into shop tables (no AI logic) · per-shop encrypted credential store (D28) · egress allow-list (D22) · policies tool · checkout data and Nova Poshta · payment links and verified webhooks · order state machine with events (D25) · customer notifications · quotas · imports/exports and funnel analytics. The old browser connector (Phase 1) was removed (D41).
 - DB: SQLite via better-sqlite3 + Drizzle in `packages/database` (D1). All new tables live in the same migration chain.
 
 ## Rules

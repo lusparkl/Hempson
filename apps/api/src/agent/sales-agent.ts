@@ -1,13 +1,10 @@
-import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, type AiUsage, AiRunStatus, CatalogRepository, ConversationRepository, DeliveryRepository, OrderRepository, type PaymentRepository, type PlanRepository, PolicyRepository, RunPatch, ShopMessageRow, ShopRepository, Store } from '@hepson/database';
+import { INSTAGRAM_CHANNEL, TELEGRAM_CHANNEL, WEB_CHANNEL, type AgentRepository, type AiUsage, AiRunStatus, CatalogRepository, ConversationRepository, DeliveryRepository, OrderRepository, type PaymentRepository, type PlanRepository, PolicyRepository, RunPatch, ShopMessageRow, ShopRepository } from '@hepson/database';
 import type { DeliveryService } from '../services/delivery';
 import type { PaymentService } from '../services/payments';
-import { channelOf } from '../services/channel-bridge';
-import type { ConnectorService } from '../services/connector-service';
-import type { EventBus, PublicEvent } from '../services/event-bus';
 import type { InstagramService } from '../services/instagram';
 import type { Notifier } from '../services/notifier';
 import type { TelegramService } from '../services/telegram';
-import { deliverPending, sendSystemMessage } from '../services/shop-sender';
+import { deliverPending, sendSystemMessage, type Delivery } from '../services/shop-sender';
 import { checkReply } from './guard';
 import { LlmError, type ChatMessage, type LlmClient } from './llm';
 import { buildSystemPrompt } from './prompt';
@@ -22,9 +19,6 @@ const HISTORY = 20;
 const HISTORY_CHARS = 1000;
 
 export type SalesAgentDeps = {
-  store: Store;
-  bus: EventBus;
-  svc: ConnectorService;
   shops: ShopRepository;
   conversations: ConversationRepository;
   catalog: CatalogRepository;
@@ -45,43 +39,25 @@ export type SalesAgentDeps = {
   telegram?: TelegramService;
 };
 
-/** `connector`: reply through a Phase 1 account. `internal`: a channel Hepson itself hosts (website chat): the stored reply is the delivery. */
-type Delivery = { kind: 'connector'; accountId: string; providerConversationId: string } | { kind: 'instagram' } | { kind: 'telegram' } | { kind: 'internal' };
 type Target = { shopId: string; shopConversationId: string; trigger: ShopMessageRow; delivery: Delivery };
 
 /**
- * The AI sales agent (Feature 6). Reacts only to `message.received` events, which the connector emits for genuinely new
- * inbound messages (never for backfilled history). One run per trigger message (DB-unique), conversations are handled
- * one at a time, and a reply is sent only if the trigger is still the newest message when the reply is ready.
+ * The AI sales agent (Feature 6). Channels call `trigger` for each genuinely new inbound message (never for backfilled
+ * history). One run per trigger message (DB-unique), conversations are handled one at a time, and a reply is sent only
+ * if the trigger is still the newest message when the reply is ready.
  * The model never sends anything itself: it proposes text, the server validates it (`checkReply`) and sends it once.
  */
 export class SalesAgent {
   private chains = new Map<string, Promise<void>>();
-  private off: (() => void) | null = null;
 
   constructor(private d: SalesAgentDeps) {}
 
-  start(): void {
-    this.off ??= this.d.bus.subscribeAll((ev) => this.onEvent(ev));
-  }
-  stop(): void {
-    this.off?.();
-    this.off = null;
-  }
   /** Resolves when no run is in flight (tests, shutdown). */
   async whenIdle(): Promise<void> {
     while (this.chains.size) await Promise.allSettled([...this.chains.values()]);
   }
 
-  private onEvent(ev: PublicEvent): void {
-    if (ev.type !== 'message.received') return;
-    const m = ev.payload.message as { id?: string; conversationId?: string; direction?: string } | undefined;
-    if (!m?.id || !m.conversationId || m.direction !== 'incoming') return;
-    const target = this.resolve(ev.accountId, m.conversationId, m.id);
-    if (target) this.enqueue(target);
-  }
-
-  /** A new inbound message stored directly in the shop tables (website chat, Instagram, Telegram). Same rules as a connector message. */
+  /** A new inbound message stored in the shop tables (website chat, Instagram, Telegram). */
   trigger(shopId: string, conversationId: string, triggerMessageId: string): void {
     if (!this.d.agent.getSettings(shopId).enabled) return;
     const trigger = this.d.conversations.getMessage(shopId, triggerMessageId);
@@ -101,19 +77,6 @@ export class SalesAgent {
         if (this.chains.get(target.shopConversationId) === next) this.chains.delete(target.shopConversationId);
       });
     this.chains.set(target.shopConversationId, next);
-  }
-
-  private resolve(accountId: string, p1ConversationId: string, p1MessageId: string): Target | null {
-    const { store, conversations, agent } = this.d;
-    const acc = store.getAccount(accountId);
-    if (!acc?.shopId || !agent.getSettings(acc.shopId).enabled) return null;
-    const p1 = store.getConversation(accountId, p1ConversationId);
-    if (!p1) return null;
-    const providerConversationId = p1.providerId ?? p1.id;
-    const conv = conversations.findConversationByExternal(acc.shopId, channelOf(acc.connectorType), providerConversationId);
-    const trigger = conv && conversations.findMessageByExternal(acc.shopId, conv.conversation.id, p1MessageId);
-    if (!conv || !trigger || trigger.direction !== 'incoming') return null;
-    return { shopId: acc.shopId, shopConversationId: conv.conversation.id, trigger, delivery: { kind: 'connector', accountId, providerConversationId: p1.id } };
   }
 
   private async process(t: Target): Promise<void> {
@@ -219,13 +182,13 @@ export class SalesAgent {
    * fixed holding text (never silence), and the owner gets one notice per shop and month instead of one per escalation.
    */
   private async atCap(t: Target, runId: string, u: AiUsage, language: string): Promise<void> {
-    const { agent, conversations, svc, store } = this.d;
+    const { agent, conversations } = this.d;
     const uk = language.toLowerCase().startsWith('uk');
     const reason = uk ? 'Ліміт відповідей ШІ на цей місяць вичерпано: дайте відповідь клієнту.' : 'The monthly AI reply limit is reached: please answer the customer.';
     const e = agent.escalate(t.shopId, t.shopConversationId, reason, runId);
     if (e.created) {
       const text = uk ? 'Дякуємо за повідомлення! Менеджер відповість вам найближчим часом.' : 'Thank you for your message! A manager will reply to you shortly.';
-      await sendSystemMessage({ store, svc, conversations, ig: this.d.instagram, tg: this.d.telegram }, t.shopId, t.shopConversationId, text, `ai-cap:${runId}`);
+      await sendSystemMessage({ conversations, ig: this.d.instagram, tg: this.d.telegram }, t.shopId, t.shopConversationId, text);
     }
     if (u.aiReplyCap !== null && this.d.plans.claimCapNotice(t.shopId, u.month)) this.d.notifier?.notify({ kind: 'ai_quota', shopId: t.shopId, month: u.month, cap: u.aiReplyCap });
     this.d.log.info({ shopId: t.shopId, runId, month: u.month, cap: u.aiReplyCap }, 'ai reply cap reached');
@@ -233,7 +196,7 @@ export class SalesAgent {
   }
 
   private async send(t: Target, runId: string, text: string, escalated: boolean, usage: { model: string; modelRequests: number; inputTokens: number; outputTokens: number }): Promise<void> {
-    const { conversations, agent, svc, store } = this.d;
+    const { conversations, agent } = this.d;
     const done = (status: 'replied' | 'send_uncertain' | 'escalated' | 'failed' | 'superseded', detail: string | null, replyMessageId: string | null = null) =>
       agent.updateRun(t.shopId, runId, { ...usage, status, detail, replyMessageId });
     const ok = escalated ? 'escalated' : 'replied';
@@ -246,10 +209,7 @@ export class SalesAgent {
       return;
     }
     const { message } = conversations.recordOutbound(t.shopId, t.shopConversationId, { senderType: 'ai', text, deliveryStatus: 'pending' });
-    const r = await deliverPending(
-      { store, svc, conversations, ig: this.d.instagram, tg: this.d.telegram },
-      { shopId: t.shopId, ...t.delivery, message, idempotencyKey: `ai:${t.trigger.id}` },
-    );
+    const r = await deliverPending({ conversations, ig: this.d.instagram, tg: this.d.telegram }, { shopId: t.shopId, ...t.delivery, message });
     if (r.status === 'sent') return void done(ok, r.code, message.id);
     if (r.status === 'uncertain') return void done('send_uncertain', r.code, message.id);
     if (r.code === 'OUTSIDE_MESSAGING_WINDOW') {

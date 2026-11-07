@@ -1,6 +1,6 @@
 # Hepson: inventory of what exists
 
-Snapshot of the repository at commit `87349cd` (branch `feat/redesign`, 2026-11-04). It lists what is built, where it lives, what each screen and page does, and what is verified versus only tested against fakes. Built from the source tree, not only from the other docs. For reasoning see `docs/DECISIONS.md` (D1–D40), for plans `docs/ROADMAP.md`, for the current working state `docs/AI_HANDOFF.md`.
+Snapshot of the repository at commit `87349cd` (branch `feat/redesign`, 2026-11-04), updated on 2026-11-06 for the Phase 1 removal (D41). It lists what is built, where it lives, what each screen and page does, and what is verified versus only tested against fakes. Built from the source tree, not only from the other docs. For reasoning see `docs/DECISIONS.md` (D1–D40), for plans `docs/ROADMAP.md`, for the current working state `docs/AI_HANDOFF.md`.
 
 Legend used below:
 - **Built** = code and automated tests exist.
@@ -14,12 +14,12 @@ Legend used below:
 Hepson is a Ukrainian-first, multi-shop SaaS AI sales assistant for small online shops. A customer writes in Instagram Direct, the shop's Telegram bot or a chat widget on the shop's website. The AI agent answers from verified catalog data and shop-written policy texts, recommends products, collects checkout data (name, phone, Nova Poshta city and branch, payment method) and creates an **order draft**. A person approves the draft (or the server auto-confirms it under a sum limit). After approval the system can create a Nova Poshta waybill (TTN), send a Monobank payment link, track the parcel and notify the customer at each step.
 
 Hard rules that shape everything:
-- Official APIs only (D22). The original browser-automation Instagram connector is frozen and off by default.
+- Official APIs only (D22). The original browser-automation Instagram connector was removed (D41).
 - The AI never handles money, never invents prices, stock, policies, parcel status or payment status (reply guard), never confirms orders on its own unless the shop enabled `auto_confirm` (D26).
 - Every shop's provider credentials are encrypted in `CredentialVault` and never read back (D28).
 - Payment state changes only from verified provider events (D24).
 - All outbound HTTP goes through an allow-list (`services/egress.ts`).
-- Every query is scoped to a shop (or to an account for the frozen Phase 1 API).
+- Every query is scoped to a shop.
 
 Competitive target: NovaSale (Ukrainian AI sales assistant), on trust and price.
 
@@ -29,7 +29,7 @@ Competitive target: NovaSale (Ukrainian AI sales assistant), on trust and price.
 
 | Area | Status | Verified how |
 |---|---|---|
-| F0 Phase 1 browser Instagram connector | Built, **frozen**, off by default | Live-verified on one account (2026-10-28) |
+| F0 Phase 1 browser Instagram connector | **Removed** 2026-11-06 (D41) | Was live-verified on one account (2026-10-28) |
 | F1–F12 SaaS core (shops, auth, catalog, conversations, agent, orders, takeover, stats, website chat, dashboard, CSV import) | Built | Tests; one live OpenAI smoke run |
 | P1 Official Instagram (Unified login) | Built | Live: connect, polling intake, AI reply, echo on one tester account. **Webhook delivery from Meta not working** (D30) |
 | P2 Telegram customer channel (bot per shop) | Built | Live: connect, one message, one AI reply. Disconnect not live-checked |
@@ -57,23 +57,19 @@ pnpm workspace (`apps/*`, `packages/*`), Node ≥22 (dev on 24), TypeScript stri
 apps/
   api/            Fastify 5 server: routes, services, AI agent, website-chat widget
   dashboard/      React + Vite shop-owner cabinet (port 5174)
-  dev-console/    React + Vite admin tool for the frozen Phase 1 connector
   website/        Prerendered public marketing site, Ukrainian only (port 5175)
 packages/
-  connector-core/     Phase 1 types, errors, events, message fingerprint
-  database/           Drizzle schema, SQL migrations 0000–0016, repositories, CredentialVault
-  mock-adapter/       In-memory connector (tests and demos)
-  instagram-browser/  FROZEN Playwright adapter for instagram.com
+  database/           Drizzle schema, SQL migrations 0000–0017, repositories, CredentialVault
   ui/                 Shared design system: tokens, components, icons, fonts, animated embeds
-scripts/          migrate, bootstrap-key, backup, gen-openapi, gen-master-key, rewrap-credentials, calibrate-selectors, live-smoke
-tests/            unit/ (19 files), integration/ (21 files), e2e/ (3 files + helpers), fixtures/ (fake Instagram, fake Monobank, fake Nova Poshta, scripted LLM)
-docs/             AI_HANDOFF, API, DECISIONS, LIMITATIONS, MANUAL_INSTAGRAM_TEST, OVERVIEW, PROJECT_CONTEXT, ROADMAP, openapi.json, INVENTORY (this file)
+scripts/          migrate, bootstrap-key, backup, gen-openapi, gen-master-key, rewrap-credentials
+tests/            unit/ (16 files), integration/ (19 files), e2e/ (1 file), fixtures/ (fake Monobank, fake Nova Poshta, scripted LLM)
+docs/             AI_HANDOFF, API, DECISIONS, LIMITATIONS, OVERVIEW, PROJECT_CONTEXT, ROADMAP, openapi.json, INVENTORY (this file)
 ```
 
 Root tooling: `drizzle.config.ts`, `vitest.config.ts`, `vitest.browser.config.ts`, `tsconfig.json`, `.prettierrc.json`, `.env.example` (every setting documented, nothing auto-loaded).
 
 ### Main dependencies
-Runtime: `fastify` 5, `zod` 4, `better-sqlite3` + `drizzle-orm`, `pino`, `playwright` (frozen adapter only). Front ends: `react` 19, `vite` 8, `@vitejs/plugin-react`. Dev: `typescript`, `vitest`, `tsx`, `drizzle-kit`, `prettier`. No auth library, no HTTP client library, no XLSX library (own writer), no OpenAI SDK (plain `fetch`).
+Runtime: `fastify` 5 (with its own `pino` logger), `zod` 4, `better-sqlite3` + `drizzle-orm`. Front ends: `react` 19, `vite` 8, `@vitejs/plugin-react`. Dev: `typescript`, `vitest`, `tsx`, `drizzle-kit`, `prettier`, `playwright` (widget browser test only). No auth library, no HTTP client library, no XLSX library (own writer), no OpenAI SDK (plain `fetch`).
 
 ---
 
@@ -83,8 +79,7 @@ Entry: `src/index.ts` → `src/server.ts` (builds the app, wires services, timer
 
 ### 4.1 Authentication
 - **Dashboard users:** email + password (scrypt, `auth/password.ts`), opaque bearer session token `hsu_…` (only its hash is stored), login throttle (`auth/throttle.ts`). Roles per shop: `owner` and `manager`. Last owner cannot be removed. Session TTL `HEPSON_SESSION_TTL_DAYS` (30). Self-registration toggle `HEPSON_ALLOW_REGISTRATION`.
-- **Phase 1 API keys:** `hep_…` admin key (`pnpm bootstrap-key`) or account-scoped keys. Shop routes reject API keys; account routes reject user sessions.
-- **Operator admin key** is also how plans are assigned (`PUT .../plan`).
+- **Operator API keys:** `hep_…` (`pnpm bootstrap-key`), accepted only by `PUT .../plan` (fallback; D41). Shop routes reject API keys; that route rejects user sessions.
 - Cross-shop access returns `404`; a manager doing an owner-only write gets `403`.
 
 ### 4.2 HTTP routes (all built)
@@ -109,7 +104,6 @@ Shop API (user session, `/v1/shops/:shopId/...` checks membership):
 | Team notifications (Telegram chat) | `GET/PUT .../notifications` |
 | Notification centre | `GET .../notification-feed`, `POST .../notification-feed/seen` |
 | Stats & plans | `GET .../stats?from&to` (incl. usage, funnel, order sources, dense daily series), `GET .../usage`, `PUT .../plan` (admin key) |
-| Channels | `GET .../channels`; admin `PUT/DELETE /v1/accounts/:accountId/shop` (link frozen connector account to shop) |
 
 Public and webhook routes:
 
@@ -122,7 +116,7 @@ Public and webhook routes:
 | `POST /webhooks/telegram/:webhookId` | Shop bot updates (opaque path + secret header) |
 | `POST /webhooks/monobank/:webhookId` | Payment status (`x-sign` ECDSA over raw body) |
 
-Frozen Phase 1 connector API (`/v1/accounts/...`, API keys): accounts list/create, status, session start/pause/resume/disconnect, forget profile, settings, conversations, messages, send with idempotency, outbox and review, events replay and SSE stream, export, data wipe, retention purge, API keys; dev-only `/v1/dev/accounts/:id/{inject-incoming,set-status,plan-sends,sync}`. Documented in `docs/API.md`.
+The Phase 1 connector API (`/v1/accounts/...`) was removed (D41).
 
 Error envelope everywhere: `{ "error": { "code", "message", "retryable" } }`.
 
@@ -136,7 +130,7 @@ Error envelope everywhere: `{ "error": { "code", "message", "retryable" } }`.
 | `telegram-bot.ts` | Bot API client: `getMe`, `setWebhook`, `deleteWebhook`, `sendMessage` |
 | `telegram.ts` | `TelegramService`: connect by token paste, webhook registration with random secret (stored hashed), ingest of private chats only, send; 401/404 → `needs_reconnect`, 403 → `BOT_BLOCKED` |
 | `web-chat.ts` | `WebChatService`: visitor sessions, messages, limits |
-| `shop-sender.ts` | One send path for all channels (Instagram Send API, Telegram, website internal, frozen browser queue); `sendSystemMessage` for fixed templates |
+| `shop-sender.ts` | One send path for all channels (Instagram Send API, Telegram, website internal); `sendSystemMessage` for fixed templates |
 | `notifier.ts` | `TelegramNotifier`: tells the shop's team chat about new escalations, new order drafts, payment/TTN problems, quota reached (operator-wide bot `HEPSON_TELEGRAM_BOT_TOKEN`) |
 | `nova-poshta.ts` | NP API client: cities, warehouses, sender counterparty/contact, `Counterparty.save`, `InternetDocument.save`, `getStatusDocuments` |
 | `delivery.ts` | `DeliveryService`: lookups, TTN creation (DB claim first, at most one per order, `uncertain` never retried), tracking timer (`HEPSON_NOVA_POSHTA_POLL_MINUTES`), `afterPaid` for prepaid orders |
@@ -147,7 +141,6 @@ Error envelope everywhere: `{ "error": { "code", "message", "retryable" } }`.
 | `xlsx.ts` | Dependency-free one-sheet XLSX writer for order export |
 | `rate-limit.ts` | In-memory limiter for website chat |
 | `event-bus.ts` | In-process pub/sub (`message.received` etc.) |
-| `connector-service.ts`, `channel-bridge.ts`, `profile-admin.ts` | Frozen Phase 1: worker/send queue per account, mirroring account conversations into shop tables, profile deletion |
 
 ### 4.4 AI sales agent (`src/agent/`)
 - `llm.ts`: provider-neutral interface; `OpenAiClient` over `fetch` (chat completions with tools). Active only when `OPENAI_API_KEY` and `HEPSON_OPENAI_MODEL` are both set (tested: `gpt-5.4-nano`, `gpt-4o-mini`, `gpt-4.1-mini`).
@@ -167,7 +160,7 @@ Error envelope everywhere: `{ "error": { "code", "message", "retryable" } }`.
 - `guard.ts` (reply guard): blocks any price/stock figure no tool returned; any period, clock time, returns/payment/free-delivery/hours claim not backed by `get_policy` in the same run; any parcel status or TTN not from `get_order_status`; any "paid" claim or payment link not from `get_order_status`. One repair attempt, then escalate and send nothing.
 
 ### 4.5 Background timers
-- Instagram polling (optional), Nova Poshta tracking (60 min), payment reconciliation/reminders/expiry (5 min), customer notice sender, expired website-chat session purge, dead user-session purge (6-hourly), Instagram token expiry check, Phase 1 worker loops (when enabled).
+- Instagram polling (optional), Nova Poshta tracking (60 min), payment reconciliation/reminders/expiry (5 min), customer notice sender, expired website-chat session purge, dead user-session purge (6-hourly), Instagram token expiry check.
 
 ### 4.6 Website chat widget (`src/widget/web-chat.js`)
 Plain script served at `/widget/web-chat.js`. Shadow DOM, `textContent` only (no HTML injection), visitor token in `localStorage` (`hepson-chat-<key>`), polls every 3 s. No typing indicator, uploads or styling options.
@@ -182,7 +175,7 @@ SQLite through better-sqlite3 + Drizzle (`schema.ts`, ~900 lines). Migrations `0
 
 | Group | Tables |
 |---|---|
-| Phase 1 (frozen) | `store_accounts` (now with `shop_id`), `connector_state`, `api_keys`, `conversations`, `messages`, `outbox`, `events` |
+| Operator | `api_keys` (admin keys only; the Phase 1 tables were dropped by `0017_drop_phase1`, D41) |
 | Shops & users | `shops`, `users`, `memberships`, `user_sessions` |
 | Catalog | `products` (incl. `media` URL list), `product_variants` (SKU unique per shop, stock CHECK ≥ 0, integer minor-unit prices) |
 | Conversations | `customers` (+ `note`, note author/time), `shop_conversations` (+ AI pause fields), `shop_messages` (direction, sender `customer/ai/human/system`, delivery status), `conversation_reads` (per-member unread marker) |
@@ -195,7 +188,7 @@ SQLite through better-sqlite3 + Drizzle (`schema.ts`, ~900 lines). Migrations `0
 | Credentials & plans | `shop_credentials` (envelope-encrypted), `shop_plans` |
 
 ### 5.2 Repositories (one per area)
-`shops.ts`, `auth.ts`, `catalog.ts`, `catalog-import.ts`, `conversations.ts`, `agent.ts`, `orders.ts`, `stats.ts`, `webchat.ts`, `instagram.ts`, `telegram.ts`, `policies.ts`, `delivery.ts`, `payments.ts`, `notices.ts`, `notifications.ts`, `plans.ts`, `store.ts` (Phase 1), `credentials.ts` (`CredentialVault` + `Keyring`: AES envelope encryption, master-key versions, rotation via `pnpm rewrap-credentials`, no read-back API).
+`shops.ts`, `auth.ts`, `catalog.ts`, `catalog-import.ts`, `conversations.ts`, `agent.ts`, `orders.ts`, `stats.ts`, `webchat.ts`, `instagram.ts`, `telegram.ts`, `policies.ts`, `delivery.ts`, `payments.ts`, `notices.ts`, `notifications.ts`, `plans.ts`, `api-keys.ts` (operator keys), `credentials.ts` (`CredentialVault` + `Keyring`: AES envelope encryption, master-key versions, rotation via `pnpm rewrap-credentials`, no read-back API).
 
 ### 5.3 Enumerations (`order-kinds.ts`, `credential-kinds.ts`)
 - Order statuses (D25): `pending_approval`, `approved`, `awaiting_payment`, `cod_confirmed`, `paid`, `shipped`, `delivered`, `returning`, `returned`, `rejected`, `cancelled`, `refund_requested`.
@@ -214,7 +207,7 @@ SQLite through better-sqlite3 + Drizzle (`schema.ts`, ~900 lines). Migrations `0
 - **Official Instagram (P1):** owner clicks "Підключити Instagram" → Meta Unified login → callback stores long-lived token encrypted and the account id. Intake by signed webhook or polling (polling is what works in development; Meta sent no real webhook POSTs). Send only inside the 24-hour window; outside it nothing is sent and the shop is notified. One Instagram account can belong to only one shop. Development mode only: testers, no App Review yet.
 - **Telegram bot per shop (P2):** owner pastes a BotFather token; server checks `getMe`, registers webhook (needs https `HEPSON_PUBLIC_URL` and the master key). Private chats only; groups, edits, service messages dropped. Media messages not handled.
 - **Website chat (F10):** owner enables it, lists allowed site origins, copies the `<script>` snippet. Limits: sessions per IP per hour (20), messages per session per minute (10), per IP per minute (40), per shop per day (2000), 1000 chars per message.
-- **Frozen browser connector (Phase 1):** Playwright headed Chromium on instagram.com, one persistent profile per account. Off unless `HEPSON_ENABLE_BROWSER_ADAPTER=true`.
+- **Browser connector (Phase 1):** removed 2026-11-06 (D41). Leftover browser profiles under `$HEPSON_DATA_DIR/profiles/` must be deleted by hand.
 
 ### Conversations and human takeover
 - All channels land in `customers` / `shop_conversations` / `shop_messages`.
@@ -284,8 +277,8 @@ Files: `App.tsx` (auth, shell, nav), `api.ts` (typed client), `ui.tsx` (Panel, D
 
 ---
 
-## 8. Dev console: `apps/dev-console`
-Small React app for the frozen Phase 1 connector with an admin `hep_` key: list/create accounts, start/pause/resume session, status, conversations, send with idempotency, outbox review, live events. Not for shop owners.
+## 8. Dev console
+Removed with the Phase 1 connector (D41).
 
 ---
 
@@ -331,7 +324,7 @@ Imported by relative path from dashboard and website (D38).
 | Command | Does |
 |---|---|
 | `pnpm migrate` | Apply SQL migrations |
-| `pnpm bootstrap-key [--account <uuid>]` | Create a Phase 1 admin or account API key |
+| `pnpm bootstrap-key [name]` | Create an operator API key (plan fallback route only) |
 | `pnpm dev:api` / `pnpm start:api` | Run the API (watch / plain) |
 | `pnpm dev:dashboard` / `pnpm dev:console` / `pnpm dev:website` | Front ends |
 | `pnpm build` | Build dev console and dashboard |
@@ -341,7 +334,6 @@ Imported by relative path from dashboard and website (D38).
 | `pnpm openapi` | Regenerate `docs/openapi.json` |
 | `pnpm backup [dest]` | Online SQLite backup (mode 0600, skips browser profiles) |
 | `pnpm gen-master-key` / `pnpm rewrap-credentials` | Credential master key and rotation |
-| `pnpm calibrate <uuid>` / `pnpm smoke:live` | Frozen browser adapter tools |
 | `pnpm format` | Prettier (not clean repo-wide; do not run blindly) |
 
 ---
@@ -350,7 +342,7 @@ Imported by relative path from dashboard and website (D38).
 
 Nothing auto-loads `.env`; run with `tsx --env-file=.env`. Full commented list in `.env.example`.
 
-- Core: `HEPSON_DATA_DIR`, `HEPSON_DB_FILE`, `HEPSON_HOST`, `HEPSON_PORT`, `HEPSON_LOG_LEVEL`, `HEPSON_MAX_MESSAGE_LENGTH`, `HEPSON_ENABLE_DEV_ROUTES`, `HEPSON_PUBLIC_URL`, `HEPSON_DASHBOARD_URL`, `HEPSON_TRUST_PROXY`.
+- Core: `HEPSON_DATA_DIR`, `HEPSON_DB_FILE`, `HEPSON_HOST`, `HEPSON_PORT`, `HEPSON_LOG_LEVEL`, `HEPSON_MAX_MESSAGE_LENGTH`, `HEPSON_PUBLIC_URL`, `HEPSON_DASHBOARD_URL`, `HEPSON_TRUST_PROXY`.
 - Users: `HEPSON_ALLOW_REGISTRATION`, `HEPSON_SESSION_TTL_DAYS`.
 - AI: `OPENAI_API_KEY`, `HEPSON_OPENAI_MODEL`, `HEPSON_OPENAI_BASE_URL`.
 - Team notifications: `HEPSON_TELEGRAM_BOT_TOKEN`, `HEPSON_TELEGRAM_API_BASE_URL`.
@@ -361,18 +353,17 @@ Nothing auto-loads `.env`; run with `tsx --env-file=.env`. Full commented list i
 - Monobank: `HEPSON_MONOBANK_BASE_URL`, `HEPSON_PAYMENT_CHECK_MINUTES`.
 - Plans: `HEPSON_DEFAULT_PLAN`.
 - Egress: `HEPSON_EGRESS_EXTRA_HOSTS`.
-- Frozen Phase 1: `HEPSON_ENABLE_BROWSER_ADAPTER`, `HEPSON_POLL_INTERVAL_MS`, `HEPSON_RETENTION_DAYS`, `HEPSON_MAX_CONVERSATIONS_PER_SYNC`, `HEPSON_BACKFILL_EVENTS`, `HEPSON_AUTOSTART`, `HEPSON_MAX_BROWSERS`, `HEPSON_BROWSER_HEADLESS`, `HEPSON_INSTAGRAM_BASE_URL`, `HEPSON_LOGIN_WAIT_MS`.
 - Front ends (Vite): `VITE_SITE_URL`, `VITE_DASHBOARD_URL`.
 
 ---
 
 ## 13. Tests
 
-`pnpm test` — 490 tests in 40 files (2026-11-04).
-- **Unit (19):** catalog, catalog-import, conversations, credentials, egress, fingerprint, google-sheets, guard, instagram-graph, mock-adapter-contract, monobank, notifier, nova-poshta, openai-client, orders, parsers, shops, website, xlsx.
-- **Integration (21, `app.inject`):** api (Phase 1), auth-shops, catalog-analytics, catalog-api, channels, checkout-delivery, conversations-api, customer-notices, instagram, instagram-connect-race, instagram-http, instagram-ingest-recovery, mock-e2e, p10-parity, payments, plans, policies, sales-agent, takeover-stats, telegram, web-chat.
-- **E2E (`pnpm test:browser`, 24 tests):** browser-io, browser-lifecycle (frozen adapter vs local fake Instagram), web-chat-widget (real Chromium).
-- **Fixtures:** `fake-instagram.ts`, `fake-monobank.ts`, `fake-nova-poshta.ts` (written from public docs), `scripted-llm.ts`.
+`pnpm test` — 438 tests in 35 files (2026-11-06).
+- **Unit (16):** catalog, catalog-import, conversations, credentials, egress, google-sheets, guard, instagram-graph, monobank, notifier, nova-poshta, openai-client, orders, shops, website, xlsx.
+- **Integration (19, `app.inject`):** auth-shops, catalog-analytics, catalog-api, checkout-delivery, conversations-api, customer-notices, drop-phase1, instagram, instagram-connect-race, instagram-http, instagram-ingest-recovery, p10-parity, payments, plans, policies, sales-agent, takeover-stats, telegram, web-chat.
+- **E2E (`pnpm test:browser`, 2 tests):** web-chat-widget (real Chromium).
+- **Fixtures:** `fake-monobank.ts`, `fake-nova-poshta.ts` (written from public docs), `scripted-llm.ts`.
 - No automated dashboard UI tests.
 
 ---
@@ -404,3 +395,4 @@ Nothing auto-loads `.env`; run with `tsx --env-file=.env`. Full commented list i
 | 2026-11-01 | `41d18eb`…`31ff0d5` | P5 Monobank, P6 notices, P7 quotas, P8 Sheets/Excel/funnel, P9 suggestions, W1 website structure |
 | 2026-11-02 | `e3ff517`, `cf26c6d`, `86c9875` | Design system, Dashboard v3, Home v2 (D38); Russian removed (D39) |
 | 2026-11-04 | `f73a3a6`, `87349cd` | Website inner pages, footer, CTA; P10 dashboard parity (D40) |
+| 2026-11-06 | (this branch) | Phase 1 browser connector removed (D41) |

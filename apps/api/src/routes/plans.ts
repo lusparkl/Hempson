@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import { PLAN_NAMES, PlanValidationError, type AuthRepository, type PlanRepository, type ShopRepository } from '@hepson/database';
 import { route } from './define';
 import { makeRequireRole } from './shops';
@@ -34,11 +34,11 @@ export function registerPlanRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     params: shopP,
     body: z.strictObject({ plan: z.enum(PLAN_NAMES), customCap: z.number().int().min(0).max(1_000_000).nullable().optional() }),
     handler: ({ params, body }) => {
-      if (!shops.get(params.shopId)) throw new ConnectorError('NOT_FOUND', 'Shop not found');
+      if (!shops.get(params.shopId)) throw new ApiError('NOT_FOUND', 'Shop not found');
       try {
         plans.set(params.shopId, body);
       } catch (e) {
-        if (e instanceof PlanValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+        if (e instanceof PlanValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
         throw e;
       }
       return plans.usage(params.shopId);

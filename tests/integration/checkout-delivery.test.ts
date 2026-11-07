@@ -1,14 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Keyring } from '@hepson/database';
-import { call, makeApp, mockAccount, type TestApp } from '../helpers';
+import { Keyring, WEB_CHANNEL } from '@hepson/database';
+import { call, customerWrites as writes, makeApp, type TestApp } from '../helpers';
 import { ScriptedLlm, lastToolResult, say, useTool, type Entry } from '../fixtures/scripted-llm';
 import { NP, NP_KEY, fakeNovaPoshta, npLookups, npOrder, type FakeNp } from '../fixtures/fake-nova-poshta';
 import type { Notification, Notifier } from '../../apps/api/src/services/notifier';
 
 // Nova Poshta behaviour below is the fake in tests/fixtures/fake-nova-poshta.ts, written from NP's documentation.
 const PW = 'correct horse battery';
-const THREAD = 'mock-thread-olena';
+const THREAD = 'thread-olena';
 let a: TestApp | undefined;
 afterEach(async () => {
   await a?.close();
@@ -37,21 +37,15 @@ async function setup(script: Entry[] = [], o: { connect?: boolean; sender?: bool
   const token = await login('o@example.com');
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Магазин', slug: 'shop-one' })).body.shopId as string;
   a.catalog.createProduct(shopId, { name: 'Худі Classic', priceMinor: 129_900, currency: 'UAH', variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 3 }] });
-  const acc = await mockAccount(a);
-  await a.svc.syncOnce(acc);
-  await call(a, a.admin, 'PUT', `/v1/accounts/${acc}/shop`, { shopId });
-  await call(a, a.admin, 'PATCH', `/v1/accounts/${acc}/settings`, { outboundEnabled: true });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/ai`, { enabled: true });
   if (o.connect !== false) expect((await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/key`, { apiKey: NP_KEY })).status).toBe(200);
   if (o.sender !== false && o.connect !== false)
     await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/settings`, { senderCityRef: NP.kyivRef, senderCityName: 'Київ', senderWarehouseRef: NP.branch12Ref, senderWarehouseName: 'Відділення №12' });
-  return { np, llm, notifier, token, shopId, acc, base: `/v1/shops/${shopId}` };
+  return { np, llm, notifier, token, shopId, base: `/v1/shops/${shopId}` };
 }
 type S = Awaited<ReturnType<typeof setup>>;
 const customerWrites = async (s: S, text: string, thread = THREAD) => {
-  a!.mock.devInjectIncoming(s.acc, thread, text);
-  await a!.svc.syncOnce(s.acc);
-  await a!.salesAgent!.whenIdle();
+  await writes(a!, s.shopId, thread, text);
   await a!.delivery.whenIdle();
 };
 const lastRun = (s: S) => a!.agentRepo.listRuns(s.shopId).items[0]!;
@@ -240,7 +234,7 @@ describe('approval, TTN and tracking', () => {
 
   it('at the refusal limit the server refuses a COD draft whatever the model says', async () => {
     const s = await setup([npLookups(), useTool('create_order_draft', ORDER), (req) => (expect(lastToolResult(req).error).toEqual(['checkout.paymentMethod: cash on delivery is not available for this customer']), useTool('escalate', { reason: 'COD недоступний' })), say('Передам менеджеру.')]);
-    const conv = a!.conversations.listConversations(s.shopId).items.find((x) => x.conversation.externalId === THREAD)!;
+    const conv = a!.conversations.ensureConversation(s.shopId, { channel: WEB_CHANNEL, conversationExternalId: THREAD, customer: { externalId: THREAD, displayName: 'Олена' } });
     await call(a!, s.token, 'POST', `${s.base}/customers/${conv.customer.id}/refusals`, { note: 'відмова в минулому' });
     await customerWrites(s, 'Беру, накладений платіж');
     expect(a!.orders.listDrafts(s.shopId).total).toBe(0);

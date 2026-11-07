@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { makeApp, call, mockAccount, type TestApp } from '../helpers';
+import { makeApp, call, customerWrites as writes, type TestApp } from '../helpers';
 import { randomBytes } from 'node:crypto';
-import { Keyring } from '@hepson/database';
+import { Keyring, TELEGRAM_CHANNEL, WEB_CHANNEL } from '@hepson/database';
 import { ScriptedLlm, say, useTool } from '../fixtures/scripted-llm';
 import { NP_KEY, fakeNovaPoshta, npLookups, npOrder } from '../fixtures/fake-nova-poshta';
 import type { Notification, Notifier } from '../../apps/api/src/services/notifier';
 
 const PW = 'correct horse battery';
-const THREAD = 'mock-thread-olena';
+const THREAD = 'thread-olena';
 const order = npOrder([{ sku: 'HOODIE-M', quantity: 2 }]);
 let a: TestApp | undefined;
 afterEach(async () => {
@@ -29,27 +29,21 @@ async function login(email: string) {
   return (await call(a!, null, 'POST', '/v1/auth/login', { email, password: PW })).body.token as string;
 }
 
-async function setup(llm: ScriptedLlm, o: { outbound?: boolean } = {}) {
+/** Shop with a catalog and the AI on; one existing conversation with Olena on `channel` (default: website chat). */
+async function setup(llm: ScriptedLlm, o: { channel?: string } = {}) {
   const notifier = new FakeNotifier();
   a = await makeApp({ llm, notifier, keyring: new Keyring(1, randomBytes(32)), fetchImpl: fakeNovaPoshta().fetchFor() });
   const token = await login('o@example.com');
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Магазин', slug: 'shop-one' })).body.shopId as string;
   a.catalog.createProduct(shopId, { name: 'Худі Classic', description: 'Бавовна', priceMinor: 129_900, currency: 'UAH', variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 3 }] });
-  const acc = await mockAccount(a);
-  await a.svc.syncOnce(acc);
-  await call(a, a.admin, 'PUT', `/v1/accounts/${acc}/shop`, { shopId });
-  if (o.outbound !== false) await call(a, a.admin, 'PATCH', `/v1/accounts/${acc}/settings`, { outboundEnabled: true });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/ai`, { enabled: true });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/key`, { apiKey: NP_KEY });
-  const conversationId = a.conversations.listConversations(shopId).items.find((x) => x.conversation.externalId === THREAD)!.conversation.id;
-  return { token, shopId, acc, llm, notifier, conversationId, base: `/v1/shops/${shopId}/conversations/${conversationId}` };
+  const channel = o.channel ?? WEB_CHANNEL;
+  const conversationId = a.conversations.ensureConversation(shopId, { channel, conversationExternalId: THREAD, customer: { externalId: THREAD, displayName: 'Олена' } }).conversation.id;
+  return { token, shopId, channel, llm, notifier, conversationId, base: `/v1/shops/${shopId}/conversations/${conversationId}` };
 }
 type S = Awaited<ReturnType<typeof setup>>;
-const customerWrites = async (s: S, text: string) => {
-  a!.mock.devInjectIncoming(s.acc, THREAD, text);
-  await a!.svc.syncOnce(s.acc);
-  await a!.salesAgent!.whenIdle();
-};
+const customerWrites = (s: S, text: string) => writes(a!, s.shopId, THREAD, text, s.channel);
 const msgs = (s: S) => a!.conversations.listMessages(s.shopId, s.conversationId, { limit: 200 }).items;
 
 describe('human takeover', () => {
@@ -84,7 +78,7 @@ describe('human takeover', () => {
     expect(list.filter((c) => c.aiPaused)).toHaveLength(1);
   });
 
-  it('a human reply goes out through the account, is attributed to the member, pauses the AI and is not duplicated', async () => {
+  it('a human reply goes out through the channel, is attributed to the member, pauses the AI and is not duplicated', async () => {
     const llm = new ScriptedLlm([]);
     const s = await setup(llm);
     const r = await call(a!, s.token, 'POST', `${s.base}/messages`, { text: '  Вітаю, це менеджер.  ' });
@@ -102,15 +96,14 @@ describe('human takeover', () => {
   });
 
   it('refuses before recording or pausing when the channel cannot send; validates text; hides other shops', async () => {
-    const s = await setup(new ScriptedLlm([]), { outbound: false });
+    const s = await setup(new ScriptedLlm([]), { channel: TELEGRAM_CHANNEL });
     const before = msgs(s).length;
     const r = await call(a!, s.token, 'POST', `${s.base}/messages`, { text: 'Привіт' });
-    expect(r.status).toBe(403);
-    expect(r.body.error.code).toBe('OUTBOUND_DISABLED');
+    expect(r.status).toBe(409);
+    expect(r.body.error.code).toBe('ACCOUNT_NOT_CONNECTED');
     expect(msgs(s)).toHaveLength(before);
     expect((await call(a!, s.token, 'GET', s.base)).body.aiPaused).toBe(false);
 
-    await call(a!, a!.admin, 'PATCH', `/v1/accounts/${s.acc}/settings`, { outboundEnabled: true });
     expect((await call(a!, s.token, 'POST', `${s.base}/messages`, { text: '   ' })).status).toBe(400);
     expect((await call(a!, s.token, 'POST', `${s.base}/messages`, { text: 'x'.repeat(1001) })).status).toBe(400);
     expect((await call(a!, s.token, 'POST', `${s.base}/messages`, { text: 'hi', senderType: 'ai' })).status).toBe(400);
@@ -120,14 +113,6 @@ describe('human takeover', () => {
     expect((await call(a!, outsider, 'PUT', `${s.base}/ai`, { paused: true })).status).toBe(404);
     expect((await call(a!, a!.admin, 'POST', `${s.base}/messages`, { text: 'hi' })).status).toBe(401);
     expect((await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${crypto.randomUUID()}/messages`, { text: 'hi' })).status).toBe(404);
-  });
-
-  it('409 when no linked account reaches the conversation (account unlinked)', async () => {
-    const s = await setup(new ScriptedLlm([]));
-    await call(a!, a!.admin, 'DELETE', `/v1/accounts/${s.acc}/shop`);
-    const r = await call(a!, s.token, 'POST', `${s.base}/messages`, { text: 'hi' });
-    expect(r.status).toBe(409);
-    expect(r.body.error.code).toBe('ACCOUNT_NOT_CONNECTED');
   });
 });
 

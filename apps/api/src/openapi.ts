@@ -26,21 +26,9 @@ export function buildOpenApi(defs: AnyDef[]) {
     if (d.body) op.requestBody = { required: true, content: { 'application/json': { schema: z.toJSONSchema(d.body, { io: 'input', unrepresentable: 'any' }) } } };
     (paths[url] ??= {})[d.method.toLowerCase()] = op;
   }
-  paths['/v1/accounts/{accountId}/events/stream'] = {
-    get: {
-      summary: 'Server-sent events; supports afterSequence / Last-Event-ID replay',
-      tags: ['events'],
-      security: [{ bearer: [] }],
-      parameters: [
-        { name: 'accountId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
-        { name: 'afterSequence', in: 'query', schema: { type: 'integer' } },
-      ],
-      responses: { '200': { description: 'text/event-stream' } },
-    },
-  };
   return {
     openapi: '3.1.0',
-    info: { title: 'Hepson Instagram Connector API', version: '1.0.0', description: 'Provider-agnostic DM connector. Browser adapter is experimental.' },
+    info: { title: 'Hepson API', version: '1.0.0', description: 'Multi-shop AI sales assistant: shops, catalog, conversations, orders, channels (official APIs only).' },
     servers: [{ url: 'http://127.0.0.1:8787' }],
     components: {
       securitySchemes: { bearer: { type: 'http', scheme: 'bearer' } },

@@ -8,18 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@hepson/connector-core':
-        specifier: workspace:*
-        version: link:packages/connector-core
       '@hepson/database':
         specifier: workspace:*
         version: link:packages/database
-      '@hepson/instagram-browser':
-        specifier: workspace:*
-        version: link:packages/instagram-browser
-      '@hepson/mock-adapter':
-        specifier: workspace:*
-        version: link:packages/mock-adapter
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -29,12 +20,6 @@ importers:
       fastify:
         specifier: ^5.12.7
         version: 5.12.7
-      pino:
-        specifier: ^10.4.0
-        version: 10.4.0
-      playwright:
-        specifier: ^1.64.1
-        version: 1.64.1
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -57,6 +42,9 @@ importers:
       drizzle-kit:
         specifier: ^0.31.11
         version: 0.31.11
+      playwright:
+        specifier: ^1.64.1
+        version: 1.64.1
       prettier:
         specifier: ^3.9.10
         version: 3.9.10
@@ -83,17 +71,9 @@ importers:
 
   apps/dashboard: {}
 
-  apps/dev-console: {}
-
   apps/website: {}
 
-  packages/connector-core: {}
-
   packages/database: {}
-
-  packages/instagram-browser: {}
-
-  packages/mock-adapter: {}
 
 packages:
 

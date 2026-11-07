@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import { WEB_CHANNEL, type ConversationRepository, type ShopMessageRow, type WebChatConfigRow, type WebChatRepository, type WebChatSessionRow } from '@hepson/database';
 import { RateLimiter } from './rate-limit';
 
 /** 429 that tells the client how long to wait (sent as `Retry-After`). */
-export class RateLimitedError extends ConnectorError {
+export class RateLimitedError extends ApiError {
   constructor(readonly retryAfterSec: number) {
     super('RATE_LIMITED_OR_BLOCKED', 'Too many requests, try again later');
   }
@@ -78,7 +78,7 @@ export class WebChatService {
 
   session(cfg: WebChatConfigRow, token: string | undefined): WebChatSessionRow {
     const s = token ? this.repo.findSession(cfg.shopId, token) : undefined;
-    if (!s) throw new ConnectorError('UNAUTHORIZED', 'Chat session missing or expired');
+    if (!s) throw new ApiError('UNAUTHORIZED', 'Chat session missing or expired');
     return s;
   }
 

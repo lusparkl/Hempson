@@ -2,11 +2,11 @@
 
 Status: TODO / IN PROGRESS / DONE / BLOCKED. Only mark DONE when code and tests exist.
 
-**Direction changed on 2026-10-29 (D22).** Features 0-12 below are history and stay as built. Everything forward-looking is the P-series in "Pivot roadmap" further down; older "next features" lists elsewhere are superseded by it. The P-series order is binding: one narrowly scoped feature per session.
+**Direction changed on 2026-10-29 (D22).** Features 0-12 below are history and stay as built, except that the Phase 1 connector and its bridge (Features 0 and 5) were removed on 2026-11-06 (D41). Everything forward-looking is the P-series in "Pivot roadmap" further down; older "next features" lists elsewhere are superseded by it. The P-series order is binding: one narrowly scoped feature per session.
 
 | # | Feature | Status | Depends on |
 |---|---------|--------|-----------|
-| 0 | Phase 1 Instagram connector (browser, mock, API, console) | DONE, frozen (live-verified on one account; see `docs/MANUAL_INSTAGRAM_TEST.md`) | - |
+| 0 | Phase 1 Instagram connector (browser, mock, API, console) | DONE, frozen (live-verified on one account, 2026-10-28); REMOVED 2026-11-06 (D41) | - |
 | 1 | Shop persistence foundation | DONE | - |
 | 2 | Authentication and shop memberships (owner/manager, cross-shop denial) | DONE | 1 |
 | 3 | Catalog backend: products, variants, stock >= 0, SKU unique per shop, search | DONE | 1, 2 |
@@ -164,7 +164,4 @@ DONE 2026-11-04. The parts of "Hepson Dashboard v3" that had no backend now do; 
 - Tests: `tests/integration/p10-parity.test.ts` (API, tenant isolation, migration backfill), stats and notifier tests.
 
 ## Later (needs a registered business)
-Meta Business Verification; App Review for Advanced Access (privacy policy URL, data-deletion callback, screencast); Tech Provider status; Hepson's own subscription billing; Human Agent feature approval. Moving from Development mode to Advanced Access is configuration, not a rewrite (D22).
-
-# Appendix: frozen Phase 1 backlog (browser adapter, D22)
-No new work. Kept for reference only: live-test media, groups, a non-English UI, a second account, `uncertain` sends, concurrent sends, reboot recovery; on `UI_CHANGED` run `pnpm calibrate <uuid>` and fix only `selectors.ts` and `parsers.ts`, keeping `tests/fixtures/fake-instagram.ts` in sync. Deletion of `packages/instagram-browser` is considered only after `instagram-official` is live-verified.
+Meta Business Verification; App Review for Advanced Access (privacy policy URL, data-deletion callback, screencast); Tech Provider status; Hepson's own subscription billing, with the shop choosing its plan on the website (the operator key route `PUT /v1/shops/:shopId/plan` stays as a fallback, D41); Human Agent feature approval. Moving from Development mode to Advanced Access is configuration, not a rewrite (D22).

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import { POLICY_TOPICS, PolicyValidationError, type AuthRepository, type PolicyRepository, type PolicyRow, type ShopRepository } from '@hepson/database';
 import { route } from './define';
 import { makeRequireRole } from './shops';
@@ -42,7 +42,7 @@ export function registerPolicyRoutes(app: FastifyInstance, deps: { shops: ShopRe
       try {
         return view(policies.save(params.shopId, params.topic, b.text, req.user!.user.id));
       } catch (e) {
-        if (e instanceof PolicyValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+        if (e instanceof PolicyValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
         throw e;
       }
     },

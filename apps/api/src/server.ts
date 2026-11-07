@@ -1,15 +1,10 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
-import { AgentRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, CustomerNoticeRepository, onCustomerNoticeQueued, PlanRepository, DeliveryRepository, InstagramRepository, Keyring, NotificationRepository, OrderRepository, PaymentRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, Store, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
-import { MockAdapter } from '@hepson/mock-adapter';
-import { BrowserInstagramAdapter } from '@hepson/instagram-browser';
+import { ApiError } from './errors';
+import { AgentRepository, ApiKeyRepository, AuthRepository, CatalogRepository, ConversationRepository, CredentialVault, CustomerNoticeRepository, onCustomerNoticeQueued, PlanRepository, DeliveryRepository, InstagramRepository, Keyring, NotificationRepository, OrderRepository, PaymentRepository, PolicyRepository, openDb, runMigrations, SESSION_PREFIX, ShopRepository, StatsRepository, TelegramRepository, WebChatRepository, type DbHandle } from '@hepson/database';
 import { loadConfig, type Config } from './config';
-import { registerAccountRoutes } from './routes/accounts';
 import { registerAuthRoutes } from './routes/auth';
-import { ChannelBridge } from './services/channel-bridge';
 import { registerCatalogRoutes } from './routes/catalog';
-import { registerChannelRoutes } from './routes/channels';
 import { registerConversationRoutes } from './routes/conversations';
 import { registerShopRoutes } from './routes/shops';
 import { SalesAgent } from './agent/sales-agent';
@@ -41,14 +36,10 @@ import { TelegramBotApi } from './services/telegram-bot';
 import { LoginThrottle } from './auth/throttle';
 import { registry, route } from './routes/define';
 import { buildOpenApi } from './openapi';
-import { ConnectorService, type AdapterRegistry } from './services/connector-service';
-import { EventBus } from './services/event-bus';
-import { ProfileAdmin } from './services/profile-admin';
 
 export type App = {
   app: FastifyInstance;
-  svc: ConnectorService;
-  store: Store;
+  apiKeys: ApiKeyRepository;
   shops: ShopRepository;
   auth: AuthRepository;
   catalog: CatalogRepository;
@@ -73,7 +64,6 @@ export type App = {
   plans: PlanRepository;
   notifier: Notifier | null;
   salesAgent: SalesAgent | null;
-  mock: MockAdapter;
   handle: DbHandle;
   cfg: Config;
   close(): Promise<void>;
@@ -113,11 +103,11 @@ export const REDACT_PATHS = [
   '*.body',
 ];
 
-export async function buildApp(overrides: Partial<Config> & { adapters?: Partial<AdapterRegistry>; logger?: boolean; llm?: LlmClient; notifier?: Notifier; keyring?: Keyring | null; fetchImpl?: typeof fetch; logStream?: NodeJS.WritableStream } = {}): Promise<App> {
+export async function buildApp(overrides: Partial<Config> & { logger?: boolean; llm?: LlmClient; notifier?: Notifier; keyring?: Keyring | null; fetchImpl?: typeof fetch; logStream?: NodeJS.WritableStream } = {}): Promise<App> {
   const cfg: Config = { ...loadConfig(), ...overrides };
   const handle = openDb(cfg.dbFile);
   runMigrations(handle);
-  const store = new Store(handle);
+  const apiKeys = new ApiKeyRepository(handle);
   const shops = new ShopRepository(handle);
   const auth = new AuthRepository(handle);
   const catalog = new CatalogRepository(handle);
@@ -141,32 +131,12 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     extraHosts: [...cfg.egressExtraHosts, cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl, cfg.novaPoshtaBaseUrl, cfg.monobankBaseUrl].flatMap((u) => (u ? [hostOf(u) ?? ''] : [])).filter(Boolean),
     fetchImpl: overrides.fetchImpl,
   });
-  const bus = new EventBus(store);
-  const mock = new MockAdapter();
-  const adapters: AdapterRegistry = {
-    mock,
-    // Frozen and deprecated (D22): not even constructed unless HEPSON_ENABLE_BROWSER_ADAPTER is set.
-    'instagram-browser': cfg.enableBrowserAdapter
-      ? new BrowserInstagramAdapter({
-          dataDir: cfg.dataDir,
-          baseUrl: cfg.instagramBaseUrl,
-          headless: cfg.browserHeadless,
-          loginWaitMs: cfg.loginWaitMs,
-          maxConcurrent: cfg.maxConcurrentBrowsers,
-        })
-      : undefined,
-    'instagram-official': undefined,
-    ...overrides.adapters,
-  };
   const app = Fastify({
     logger: overrides.logger === false ? false : { level: cfg.logLevel, redact: { paths: REDACT_PATHS, censor: '[redacted]' }, serializers: { req: logReq }, ...(overrides.logStream ? { stream: overrides.logStream } : {}) },
     bodyLimit: 64 * 1024,
     trustProxy: cfg.trustProxy,
   });
   const log = app.log;
-  const bridge = new ChannelBridge(store, conversations, log);
-  const svc = new ConnectorService(store, bus, adapters, cfg, log, bridge);
-  const profiles = new ProfileAdmin(cfg.dataDir);
   const llm = overrides.llm ?? (cfg.openaiApiKey && cfg.openaiModel ? new OpenAiClient({ apiKey: cfg.openaiApiKey, model: cfg.openaiModel, baseUrl: cfg.openaiBaseUrl, fetch: egress }) : null);
   const notifier: Notifier | null =
     overrides.notifier ?? (cfg.telegramBotToken ? new TelegramNotifier({ token: cfg.telegramBotToken, agent: agentRepo, shops, conversations, orders, log, baseUrl: cfg.telegramApiBaseUrl, fetchImpl: egress }) : null);
@@ -211,7 +181,7 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     agent: agentRepo,
     shops,
     delivery,
-    send: (shopId, conversationId, text, key) => sendSystemMessage({ store, svc, conversations, ig, tg }, shopId, conversationId, text, key),
+    send: (shopId, conversationId, text) => sendSystemMessage({ conversations, ig, tg }, shopId, conversationId, text),
     log,
     publicUrl: cfg.publicUrl,
     notifier: notifier ?? undefined,
@@ -220,14 +190,14 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     repo: noticeRepo,
     orders,
     shops,
-    send: (shopId, conversationId, text, key) => sendSystemMessage({ store, svc, conversations, ig, tg }, shopId, conversationId, text, key),
+    send: (shopId, conversationId, text) => sendSystemMessage({ conversations, ig, tg }, shopId, conversationId, text),
     log,
     notifier: notifier ?? undefined,
   });
   // Any repository instance on this database may queue a notice (P6); the sender wakes after the transition commits.
   const stopNoticeListener = onCustomerNoticeQueued(handle, () => notices.kick());
   const salesAgent = llm
-    ? new SalesAgent({ store, bus, svc, shops, conversations, catalog, orders, agent: agentRepo, policies, plans, deliveryRepo, delivery, paymentRepo, payments, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg })
+    ? new SalesAgent({ shops, conversations, catalog, orders, agent: agentRepo, policies, plans, deliveryRepo, delivery, paymentRepo, payments, llm, log, maxMessageLength: cfg.maxMessageLength, notifier: notifier ?? undefined, instagram: ig, telegram: tg })
     : null;
 
   const webChatSvc = new WebChatService(
@@ -257,18 +227,18 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
       const s = auth.findSession(m[1]!);
       if (s) req.user = s;
     } else if (m) {
-      const row = store.findApiKey(m[1]!);
-      if (row) req.principal = { keyId: row.id, accountId: row.accountId };
+      const row = apiKeys.find(m[1]!);
+      if (row) req.principal = { keyId: row.id };
     }
   });
   app.setErrorHandler((err, _req, reply) => {
-    let ce: ConnectorError;
-    if (err instanceof ConnectorError) ce = err;
-    else if (err instanceof ZodError) ce = new ConnectorError('VALIDATION_ERROR', err.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; '));
-    else if ((err as { statusCode?: number }).statusCode && (err as { statusCode: number }).statusCode < 500) ce = new ConnectorError('VALIDATION_ERROR', (err as Error).message);
+    let ce: ApiError;
+    if (err instanceof ApiError) ce = err;
+    else if (err instanceof ZodError) ce = new ApiError('VALIDATION_ERROR', err.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; '));
+    else if ((err as { statusCode?: number }).statusCode && (err as { statusCode: number }).statusCode < 500) ce = new ApiError('VALIDATION_ERROR', (err as Error).message);
     else {
       app.log.error({ err: (err as Error).message }, 'unhandled');
-      ce = new ConnectorError('INTERNAL', 'Internal error', { retryable: false });
+      ce = new ApiError('INTERNAL', 'Internal error', { retryable: false });
     }
     if (reply.sent) return;
     if (ce instanceof RateLimitedError) reply.header('retry-after', String(ce.retryAfterSec));
@@ -293,12 +263,10 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     },
   });
   route(app, { method: 'GET', url: '/health', summary: 'Liveness', tag: 'meta', auth: 'none', handler: () => ({ ok: true, time: new Date().toISOString() }) });
-  registerAccountRoutes(app, svc, profiles, { retentionDays: cfg.retentionDays, enableDev: cfg.enableDevRoutes, maxMessageLength: cfg.maxMessageLength, browserAdapter: cfg.enableBrowserAdapter });
   registerAuthRoutes(app, auth, { allowRegistration: cfg.allowRegistration, sessionTtlMs: cfg.sessionTtlDays * 86_400_000, throttle: new LoginThrottle() });
   registerShopRoutes(app, { shops, auth, handle });
   registerCatalogRoutes(app, { shops, auth, catalog, egress });
-  registerConversationRoutes(app, { shops, auth, conversations, store, svc, maxMessageLength: cfg.maxMessageLength, ig, tg });
-  registerChannelRoutes(app, { store, shops, auth, bridge });
+  registerConversationRoutes(app, { shops, auth, conversations, maxMessageLength: cfg.maxMessageLength, ig, tg });
   registerAiRoutes(app, { shops, auth, agent: agentRepo, aiAvailable: salesAgent !== null, telegramAvailable: notifier !== null });
   registerStatsRoutes(app, { shops, auth, stats, plans });
   registerNotificationFeedRoutes(app, { shops, auth, feed });
@@ -313,13 +281,9 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   const spec = buildOpenApi(registry);
   app.get('/v1/openapi.json', async () => spec);
 
-  svc.recoverInterruptedSends();
   notices.start();
   agentRepo.failInterruptedRuns();
-  salesAgent?.start();
-  bridge.backfillAll();
   const timer = setInterval(() => {
-    for (const a of store.listAccounts()) store.purgeOlderThan(a.id, cfg.retentionDays);
     webChat.purgeExpiredSessions();
     auth.purgeDeadSessions();
     igRepo.purgeExpiredStates();
@@ -337,8 +301,7 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
   let closed = false;
   return {
     app,
-    svc,
-    store,
+    apiKeys,
     shops,
     auth,
     catalog,
@@ -363,7 +326,6 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
     plans,
     notifier,
     salesAgent,
-    mock,
     handle,
     cfg,
     async close() {
@@ -373,7 +335,6 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
       if (pollTimer) clearInterval(pollTimer);
       if (npTimer) clearInterval(npTimer);
       if (payTimer) clearInterval(payTimer);
-      salesAgent?.stop();
       await salesAgent?.whenIdle();
       await ig.whenIdle();
       await payments.whenIdle();
@@ -382,7 +343,6 @@ export async function buildApp(overrides: Partial<Config> & { adapters?: Partial
       await notices.whenIdle();
       notices.stop();
       await notifier?.whenIdle();
-      await svc.shutdown();
       await app.close();
       handle.close();
     },

@@ -154,12 +154,13 @@ describe('P10 order numbers', () => {
   it('the migration numbers existing orders and marks existing history as seen', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'hepson-mig-'));
     try {
-      // Migrations folder without 0016, as before the upgrade.
+      // Migrations folder up to 0015, as before the upgrade.
       const old = path.join(dir, 'migrations');
       mkdirSync(path.join(old, 'meta'), { recursive: true });
-      for (const f of readdirSync(MIGRATIONS_DIR)) if (f.endsWith('.sql') && !f.startsWith('0016')) copyFileSync(path.join(MIGRATIONS_DIR, f), path.join(old, f));
+      const before = (name: string) => Number(name.slice(0, 4)) < 16;
+      for (const f of readdirSync(MIGRATIONS_DIR)) if (f.endsWith('.sql') && before(f)) copyFileSync(path.join(MIGRATIONS_DIR, f), path.join(old, f));
       const journal = JSON.parse(readFileSync(path.join(MIGRATIONS_DIR, 'meta', '_journal.json'), 'utf8')) as { entries: Array<{ tag: string }> };
-      writeFileSync(path.join(old, 'meta', '_journal.json'), JSON.stringify({ ...journal, entries: journal.entries.filter((e) => !e.tag.startsWith('0016')) }));
+      writeFileSync(path.join(old, 'meta', '_journal.json'), JSON.stringify({ ...journal, entries: journal.entries.filter((e) => before(e.tag)) }));
       const h = openDb(path.join(dir, 'db.sqlite'));
       migrate(h.db, { migrationsFolder: old });
       const ts = (i: number) => `2026-10-0${i}T10:00:00.000Z`;

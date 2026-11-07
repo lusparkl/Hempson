@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import {
   CatalogNotFoundError,
   CatalogValidationError,
@@ -85,10 +85,10 @@ const productView = ({ product: p, variants }: ProductWithVariants) => ({
 });
 
 function translate(e: unknown): never {
-  if (e instanceof CatalogValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
-  if (e instanceof SkuTakenError) throw new ConnectorError('VALIDATION_ERROR', e.message);
-  if (e instanceof InsufficientStockError) throw new ConnectorError('VALIDATION_ERROR', e.message);
-  if (e instanceof CatalogNotFoundError) throw new ConnectorError('NOT_FOUND', e.message);
+  if (e instanceof CatalogValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
+  if (e instanceof SkuTakenError) throw new ApiError('VALIDATION_ERROR', e.message);
+  if (e instanceof InsufficientStockError) throw new ApiError('VALIDATION_ERROR', e.message);
+  if (e instanceof CatalogNotFoundError) throw new ApiError('NOT_FOUND', e.message);
   throw e;
 }
 
@@ -142,7 +142,7 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopR
     handler: ({ req, params }) => {
       requireRole(req, params.shopId, 'manager');
       const p = catalog.getProduct(params.shopId, params.productId);
-      if (!p) throw new ConnectorError('NOT_FOUND', 'product not found');
+      if (!p) throw new ApiError('NOT_FOUND', 'product not found');
       return productView(p);
     },
   });
@@ -253,15 +253,15 @@ export function registerCatalogRoutes(app: FastifyInstance, deps: { shops: ShopR
     handler: async ({ req, params, body }) => {
       const { shop } = requireRole(req, params.shopId, 'owner');
       const ref = parseSheetUrl(body.url);
-      if (!ref) throw new ConnectorError('VALIDATION_ERROR', 'Paste a Google Sheets link (https://docs.google.com/spreadsheets/d/...)');
+      if (!ref) throw new ApiError('VALIDATION_ERROR', 'Paste a Google Sheets link (https://docs.google.com/spreadsheets/d/...)');
       let csv: string;
       try {
         csv = await fetchSheetCsv(egress, ref, { maxBytes: 2_000_000 });
       } catch (e) {
-        if (e instanceof SheetsError) throw new ConnectorError(e.kind === 'unavailable' ? 'TEMPORARY_FAILURE' : 'VALIDATION_ERROR', SHEET_ERRORS[e.kind]);
+        if (e instanceof SheetsError) throw new ApiError(e.kind === 'unavailable' ? 'TEMPORARY_FAILURE' : 'VALIDATION_ERROR', SHEET_ERRORS[e.kind]);
         throw e;
       }
-      if (!csv.trim()) throw new ConnectorError('VALIDATION_ERROR', 'The sheet is empty');
+      if (!csv.trim()) throw new ApiError('VALIDATION_ERROR', 'The sheet is empty');
       try {
         return importCatalogCsv(catalog, shop.id, csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency });
       } catch (e) {

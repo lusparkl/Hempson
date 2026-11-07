@@ -23,17 +23,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     host: env.HEPSON_HOST ?? '127.0.0.1',
     port: int(env.HEPSON_PORT, 8787),
     logLevel: env.HEPSON_LOG_LEVEL ?? 'info',
-    pollIntervalMs: int(env.HEPSON_POLL_INTERVAL_MS, 20_000),
-    retentionDays: int(env.HEPSON_RETENTION_DAYS, 30),
     maxMessageLength: int(env.HEPSON_MAX_MESSAGE_LENGTH, 1000),
-    maxConversationsPerSync: int(env.HEPSON_MAX_CONVERSATIONS_PER_SYNC, 30),
-    /** Emit message.received for pre-existing history on the first sync. Default off. */
-    backfillEvents: bool(env.HEPSON_BACKFILL_EVENTS, false),
-    enableDevRoutes: bool(env.HEPSON_ENABLE_DEV_ROUTES, true),
-    autostart: bool(env.HEPSON_AUTOSTART, true),
-    maxConcurrentBrowsers: int(env.HEPSON_MAX_BROWSERS, 3),
-    browserHeadless: bool(env.HEPSON_BROWSER_HEADLESS, false),
-    instagramBaseUrl: env.HEPSON_INSTAGRAM_BASE_URL ?? 'https://www.instagram.com',
     /** Dashboard users may self-register (creates a user only; no shop access). */
     allowRegistration: bool(env.HEPSON_ALLOW_REGISTRATION, true),
     sessionTtlDays: int(env.HEPSON_SESSION_TTL_DAYS, 30),
@@ -54,8 +44,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     webChatMessagesPerIpPerMinute: int(env.HEPSON_WEBCHAT_MESSAGES_PER_IP_MINUTE, 40),
     webChatDailyMessagesPerShop: int(env.HEPSON_WEBCHAT_DAILY_MESSAGES_PER_SHOP, 2000),
     webChatSessionDays: int(env.HEPSON_WEBCHAT_SESSION_DAYS, 30),
-    /** The Instagram web-UI adapter is frozen and deprecated (D22): off unless explicitly enabled. */
-    enableBrowserAdapter: bool(env.HEPSON_ENABLE_BROWSER_ADAPTER, false),
     /** Extra outbound hosts beyond the built-in allow-list (comma separated). The LLM and Telegram base URL hosts are added automatically. */
     egressExtraHosts: (env.HEPSON_EGRESS_EXTRA_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean),
     /** Operator-level Meta app (D23, D29): the app's own id and secret (not an Instagram app id). Webhooks and the connect flow are off unless id, secret, verify token and config id are set. Never log the secret. */
@@ -79,6 +67,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     defaultPlan: planName(env.HEPSON_DEFAULT_PLAN),
     /** Where the browser is sent after the connect flow (the dashboard). */
     dashboardUrl: (env.HEPSON_DASHBOARD_URL || env.HEPSON_PUBLIC_URL || `http://${env.HEPSON_HOST ?? '127.0.0.1'}:${int(env.HEPSON_PORT, 8787)}`).replace(/\/+$/, ''),
-    loginWaitMs: int(env.HEPSON_LOGIN_WAIT_MS, 10 * 60_000),
   };
 }

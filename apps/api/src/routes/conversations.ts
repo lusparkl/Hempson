@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import {
   ConversationNotFoundError,
   ConversationValidationError,
@@ -11,10 +11,8 @@ import {
   type LastMessage,
   type ShopMessageRow,
   type ShopRepository,
-  type Store,
 } from '@hepson/database';
 import { route } from './define';
-import type { ConnectorService } from '../services/connector-service';
 import type { InstagramService } from '../services/instagram';
 import type { TelegramService } from '../services/telegram';
 import { deliverPending, locateThread } from '../services/shop-sender';
@@ -77,9 +75,9 @@ const messageView = (m: ShopMessageRow) => ({
  */
 export function registerConversationRoutes(
   app: FastifyInstance,
-  deps: { shops: ShopRepository; auth: AuthRepository; conversations: ConversationRepository; store: Store; svc: ConnectorService; maxMessageLength: number; ig?: InstagramService; tg?: TelegramService },
+  deps: { shops: ShopRepository; auth: AuthRepository; conversations: ConversationRepository; maxMessageLength: number; ig?: InstagramService; tg?: TelegramService },
 ) {
-  const { shops, auth, conversations, store, svc, maxMessageLength, ig, tg } = deps;
+  const { shops, auth, conversations, maxMessageLength, ig, tg } = deps;
   const requireRole = makeRequireRole(shops, auth);
   const sendBody = z.strictObject({ text: z.string().trim().min(1).max(maxMessageLength) });
   /** Views of conversations with their newest message and this member's unread state. */
@@ -90,8 +88,8 @@ export function registerConversationRoutes(
     return items.map((i) => conversationView(i, { lastMessage: last.get(i.conversation.id) ?? null, unread: unread.has(i.conversation.id) }));
   };
   const notFound = (e: unknown): never => {
-    if (e instanceof ConversationNotFoundError) throw new ConnectorError('NOT_FOUND', e.message);
-    if (e instanceof ConversationValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+    if (e instanceof ConversationNotFoundError) throw new ApiError('NOT_FOUND', e.message);
+    if (e instanceof ConversationValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
     throw e;
   };
 
@@ -148,7 +146,7 @@ export function registerConversationRoutes(
     handler: ({ req, params }) => {
       requireRole(req, params.shopId, 'manager');
       const c = conversations.getCustomer(params.shopId, params.customerId);
-      if (!c) throw new ConnectorError('NOT_FOUND', 'customer not found');
+      if (!c) throw new ApiError('NOT_FOUND', 'customer not found');
       return { ...customerView(c), profile: conversations.customerProfile(params.shopId, c.id) };
     },
   });
@@ -201,7 +199,7 @@ export function registerConversationRoutes(
     handler: ({ req, params }) => {
       requireRole(req, params.shopId, 'manager');
       const c = conversations.getConversation(params.shopId, params.conversationId);
-      if (!c) throw new ConnectorError('NOT_FOUND', 'conversation not found');
+      if (!c) throw new ApiError('NOT_FOUND', 'conversation not found');
       return views(params.shopId, req.user!.user.id, [c])[0];
     },
   });
@@ -216,7 +214,7 @@ export function registerConversationRoutes(
     query: messagesQuery,
     handler: ({ req, params, query }) => {
       requireRole(req, params.shopId, 'manager');
-      if (!conversations.getConversation(params.shopId, params.conversationId)) throw new ConnectorError('NOT_FOUND', 'conversation not found');
+      if (!conversations.getConversation(params.shopId, params.conversationId)) throw new ApiError('NOT_FOUND', 'conversation not found');
       const r = conversations.listMessages(params.shopId, params.conversationId, query);
       return { hasMore: r.hasMore, items: r.items.map(messageView) };
     },
@@ -243,7 +241,7 @@ export function registerConversationRoutes(
   route(app, {
     method: 'POST',
     url: '/v1/shops/:shopId/conversations/:conversationId/messages',
-    summary: 'Reply to the customer as a human through the linked channel account; pauses the AI in this conversation (any member)',
+    summary: 'Reply to the customer as a human through the conversation channel; pauses the AI in this conversation (any member)',
     tag: 'conversations',
     auth: 'user',
     params: convP,
@@ -252,17 +250,15 @@ export function registerConversationRoutes(
     handler: async ({ req, params, body }) => {
       requireRole(req, params.shopId, 'manager');
       const conv = conversations.getConversation(params.shopId, params.conversationId);
-      if (!conv) throw new ConnectorError('NOT_FOUND', 'conversation not found');
-      const thread = locateThread(store, params.shopId, conv.conversation.channel, conv.conversation.externalId, ig, tg);
-      if (!thread) throw new ConnectorError('ACCOUNT_NOT_CONNECTED', 'no linked channel account can reach this conversation');
-      // Dry run: the connector's own checks (outbound enabled, account connected, length) run before anything is recorded or paused.
-      if (thread.kind === 'connector') await svc.requestSend(thread.accountId, thread.providerConversationId, body.text, `check:${params.conversationId}`, true);
+      if (!conv) throw new ApiError('NOT_FOUND', 'conversation not found');
+      const thread = locateThread(params.shopId, conv.conversation.channel, ig, tg);
+      if (!thread) throw new ApiError('ACCOUNT_NOT_CONNECTED', 'no connected channel can reach this conversation');
       if (thread.kind === 'instagram') {
-        // Same rule as the dry run above: refuse before anything is recorded or paused.
+        // Refuse before anything is recorded or paused.
         const blocked = ig?.blockReason(params.shopId, params.conversationId);
-        if (blocked) throw new ConnectorError(blocked, blocked === 'OUTSIDE_MESSAGING_WINDOW' ? 'The 24-hour Instagram messaging window has closed' : 'Instagram is not connected');
+        if (blocked) throw new ApiError(blocked, blocked === 'OUTSIDE_MESSAGING_WINDOW' ? 'The 24-hour Instagram messaging window has closed' : 'Instagram is not connected');
       }
-      if (thread.kind === 'telegram' && tg?.blockReason(params.shopId)) throw new ConnectorError('ACCOUNT_NOT_CONNECTED', 'Telegram is not connected');
+      if (thread.kind === 'telegram' && tg?.blockReason(params.shopId)) throw new ApiError('ACCOUNT_NOT_CONNECTED', 'Telegram is not connected');
       const userId = req.user!.user.id;
       let message: ShopMessageRow;
       try {
@@ -273,7 +269,7 @@ export function registerConversationRoutes(
       } catch (e) {
         return notFound(e);
       }
-      const r = await deliverPending({ store, svc, conversations, ig, tg }, { shopId: params.shopId, ...thread, message, idempotencyKey: `human:${message.id}` });
+      const r = await deliverPending({ conversations, ig, tg }, { shopId: params.shopId, ...thread, message });
       return { ...messageView(r.message), aiPaused: true };
     },
   });

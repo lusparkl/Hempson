@@ -73,7 +73,6 @@ const createInput = z.strictObject({
 const decisionNote = z.string().trim().max(500).optional();
 
 export type CreateOrderDraftInput = z.input<typeof createInput>;
-export type CheckoutInput = z.input<typeof checkoutInput>;
 
 /** States that hold stock taken at approval; cancelling from one of them restores it (D25). */
 const STOCK_HELD: OrderStatus[] = ['approved', 'awaiting_payment', 'cod_confirmed', 'paid'];

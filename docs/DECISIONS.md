@@ -300,3 +300,16 @@ Real Instagram message webhooks were not delivered in repeated live tests (Live 
 - Geist and Geist Mono are self-hosted variable woff2 files in `packages/ui/src/fonts` (from `@fontsource-variable/geist` 5.2.8 and `geist-mono` 5.2.7, SIL OFL 1.1, licence next to them). No page requests a third-party font host any more (D37).
 
 **Not taken.** A notifications table written by every service: many writers, easy to miss one. Customer-level phone/city columns: a second copy of order data. Per-currency daily revenue: one shop currency covers the KPI card; other currencies keep their period totals.
+
+## D41 (2026-11-06): Phase 1 browser connector removed
+**Context.** The browser-automation Instagram connector (Phase 1) was frozen and off by default since D22. Official Instagram (P1), Telegram (P2) and the website chat all write straight into the shop tables. The owner asked to delete the scraping engine and the code only it used.
+
+**Decision.**
+- Deleted: `packages/instagram-browser`, `packages/mock-adapter`, `packages/connector-core`, `apps/dev-console`, the `/v1/accounts` and `/v1/dev` APIs, `ConnectorService`, `EventBus`, `ChannelBridge`, `ProfileAdmin`, `Store`, the `calibrate` and `smoke:live` scripts, the browser e2e tests and the fake Instagram fixture, and the config `HEPSON_ENABLE_BROWSER_ADAPTER`, `HEPSON_POLL_INTERVAL_MS`, `HEPSON_RETENTION_DAYS`, `HEPSON_MAX_CONVERSATIONS_PER_SYNC`, `HEPSON_BACKFILL_EVENTS`, `HEPSON_ENABLE_DEV_ROUTES`, `HEPSON_AUTOSTART`, `HEPSON_MAX_BROWSERS`, `HEPSON_BROWSER_HEADLESS`, `HEPSON_INSTAGRAM_BASE_URL`, `HEPSON_LOGIN_WAIT_MS`. This supersedes the browser and bridge parts of D12, D13 and D22.
+- Migration `0017_drop_phase1` drops `store_accounts`, `conversations`, `messages`, `outbox`, `events` and `connector_state`. `api_keys` is rebuilt without `account_id`; only admin keys survive, so an account-scoped key can never turn into an admin key.
+- Operator API keys stay (`ApiKeyRepository`, `pnpm bootstrap-key`), only for `PUT /v1/shops/:shopId/plan`. Route auth modes are `none`, `user` and `admin`. This route is a fallback: the main way a shop gets its plan will be choosing it on the website (self-serve, needs billing and therefore the FOP).
+- `ConnectorError` from `connector-core` is now `ApiError` in `apps/api/src/errors.ts`, without the browser-only codes. The reply path (`shop-sender.ts`) knows three deliveries: `instagram`, `telegram`, `internal`; the idempotency key that only the connector used is gone from `CustomerSender`.
+- Shop conversations mirrored from linked connector accounts (channel `instagram` or `mock`) stay in the shop tables as history. No channel reaches them any more, so a reply there is refused with `ACCOUNT_NOT_CONNECTED`.
+- Browser profiles under `$HEPSON_DATA_DIR/profiles/` are not touched by code. They hold Instagram session cookies; the operator deletes them by hand.
+
+**Not taken.** Keeping the tables and dropping only the code: dead tables with account-scoped keys in them. Removing API keys entirely: the operator needs a fallback to set a plan until self-serve billing exists.

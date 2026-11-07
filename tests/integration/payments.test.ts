@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Keyring } from '@hepson/database';
-import { call, makeApp, mockAccount, type TestApp } from '../helpers';
+import { Keyring, TELEGRAM_CHANNEL, WEB_CHANNEL } from '@hepson/database';
+import { call, customerWrites as writes, makeApp, type TestApp } from '../helpers';
 import { ScriptedLlm, lastToolResult, say, useTool, type Entry } from '../fixtures/scripted-llm';
 import { NP, NP_KEY, fakeNovaPoshta, npLookups, npOrder } from '../fixtures/fake-nova-poshta';
 import { MONO_TOKEN, fakeMonobank, newEcKey, type FakeMono } from '../fixtures/fake-monobank';
@@ -10,7 +10,7 @@ import type { Notification, Notifier } from '../../apps/api/src/services/notifie
 
 // Monobank behaviour below is the fake in tests/fixtures/fake-monobank.ts, written from Monobank's acquiring documentation.
 const PW = 'correct horse battery';
-const THREAD = 'mock-thread-olena';
+const THREAD = 'thread-olena';
 const PUBLIC = 'https://hepson.example';
 let a: TestApp | undefined;
 afterEach(async () => {
@@ -32,7 +32,7 @@ async function login(email: string) {
   return (await call(a!, null, 'POST', '/v1/auth/login', { email, password: PW })).body.token as string;
 }
 
-async function setup(script: Entry[] = [], o: { mono?: boolean } = {}) {
+async function setup(script: Entry[] = [], o: { mono?: boolean; channel?: string } = {}) {
   const np = fakeNovaPoshta();
   const mono = fakeMonobank();
   const llm = new ScriptedLlm(script);
@@ -41,21 +41,16 @@ async function setup(script: Entry[] = [], o: { mono?: boolean } = {}) {
   const token = await login('o@example.com');
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Магазин', slug: 'shop-one' })).body.shopId as string;
   a.catalog.createProduct(shopId, { name: 'Худі Classic', priceMinor: 129_900, currency: 'UAH', variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 3 }] });
-  const acc = await mockAccount(a);
-  await a.svc.syncOnce(acc);
-  await call(a, a.admin, 'PUT', `/v1/accounts/${acc}/shop`, { shopId });
-  await call(a, a.admin, 'PATCH', `/v1/accounts/${acc}/settings`, { outboundEnabled: true });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/ai`, { enabled: true });
   const base = `/v1/shops/${shopId}`;
   expect((await call(a, token, 'PUT', `${base}/nova-poshta/key`, { apiKey: NP_KEY })).status).toBe(200);
   await call(a, token, 'PUT', `${base}/nova-poshta/settings`, { senderCityRef: NP.kyivRef, senderCityName: 'Київ', senderWarehouseRef: NP.branch12Ref, senderWarehouseName: 'Відділення №12', prepaidEnabled: true });
   if (o.mono !== false) expect((await call(a, token, 'PUT', `${base}/monobank/token`, { token: MONO_TOKEN })).status).toBe(200);
-  return { np, mono, llm, notifier, token, shopId, acc, base };
+  return { np, mono, llm, notifier, token, shopId, channel: o.channel ?? WEB_CHANNEL, base };
 }
 type S = Awaited<ReturnType<typeof setup>>;
 const customerWrites = async (s: S, text: string) => {
-  a!.mock.devInjectIncoming(s.acc, THREAD, text);
-  await a!.svc.syncOnce(s.acc);
+  await writes(a!, s.shopId, THREAD, text, s.channel);
   await settle();
 };
 const settle = async () => {
@@ -172,9 +167,9 @@ describe('payment link', () => {
   });
 
   it('a link the customer cannot receive is passed to the shop', async () => {
-    const s = await setup(orderScript());
+    // The customer writes on Telegram, but the shop's bot is not connected: nothing can reach them.
+    const s = await setup(orderScript(), { channel: TELEGRAM_CHANNEL });
     await customerWrites(s, 'Беру');
-    await call(a!, a!.admin, 'PATCH', `/v1/accounts/${s.acc}/settings`, { outboundEnabled: false });
     await call(a!, s.token, 'POST', `${s.base}/order-drafts/${draft(s).id}/approve`, {});
     await settle();
     const p = a!.paymentRepo.activeFor(s.shopId, draft(s).id)!;

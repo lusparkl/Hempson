@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import { DeliveryValidationError, RefusalNotFoundError, type AuthRepository, type ConversationRepository, type DeliveryRepository, type OrderRepository, type RefusalRow, type ShopRepository } from '@hepson/database';
 import type { DeliveryService } from '../services/delivery';
 import { route } from './define';
@@ -38,8 +38,8 @@ export function registerDeliveryRoutes(
   const { shops, auth, delivery, deliveryRepo, orders, conversations } = deps;
   const requireRole = makeRequireRole(shops, auth);
   const translate = (e: unknown): never => {
-    if (e instanceof DeliveryValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
-    if (e instanceof RefusalNotFoundError) throw new ConnectorError('NOT_FOUND', e.message);
+    if (e instanceof DeliveryValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
+    if (e instanceof RefusalNotFoundError) throw new ApiError('NOT_FOUND', e.message);
     throw e;
   };
 
@@ -142,7 +142,7 @@ export function registerDeliveryRoutes(
     return { customerId, phone, refusals: pm.refusals, codBlocked: pm.codBlocked, limit: deliveryRepo.getSettings(shopId).refusalLimit, items: deliveryRepo.listRefusals(shopId, { phone, customerId }).map(refusalView) };
   };
   const requireCustomer = (shopId: string, customerId: string) => {
-    if (!conversations.getCustomer(shopId, customerId)) throw new ConnectorError('NOT_FOUND', 'customer not found');
+    if (!conversations.getCustomer(shopId, customerId)) throw new ApiError('NOT_FOUND', 'customer not found');
   };
 
   route(app, {

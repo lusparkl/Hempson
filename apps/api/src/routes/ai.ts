@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import { AgentNotFoundError, AgentValidationError, type AgentRepository, type AiRunRow, type AuthRepository, type EscalationRow, type ShopRepository } from '@hepson/database';
 import { route } from './define';
 import { makeRequireRole } from './shops';
@@ -44,8 +44,8 @@ const escalationView = (e: EscalationRow) => ({
 });
 
 function translate(e: unknown): never {
-  if (e instanceof AgentValidationError) throw new ConnectorError('VALIDATION_ERROR', e.message);
-  if (e instanceof AgentNotFoundError) throw new ConnectorError('NOT_FOUND', e.message);
+  if (e instanceof AgentValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
+  if (e instanceof AgentNotFoundError) throw new ApiError('NOT_FOUND', e.message);
   throw e;
 }
 

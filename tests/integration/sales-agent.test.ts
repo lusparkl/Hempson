@@ -1,13 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { makeApp, call, mockAccount, type TestApp } from '../helpers';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { makeApp, call, customerWrites as writes, type TestApp } from '../helpers';
 import { LlmError } from '../../apps/api/src/agent/llm';
 import { randomBytes } from 'node:crypto';
-import { Keyring, WEB_CHANNEL } from '@hepson/database';
+import { Keyring, TELEGRAM_CHANNEL, WEB_CHANNEL } from '@hepson/database';
 import { ScriptedLlm, lastToolResult, say, useTool } from '../fixtures/scripted-llm';
 import { NP, NP_KEY, fakeNovaPoshta, npLookups, type FakeNp } from '../fixtures/fake-nova-poshta';
 
 const PW = 'correct horse battery';
-const THREAD = 'mock-thread-olena';
+const THREAD = 'thread-olena';
 let a: TestApp | undefined;
 afterEach(async () => {
   await a?.close();
@@ -15,8 +15,8 @@ afterEach(async () => {
   a = undefined;
 });
 
-/** Shop with a catalog, a linked mock account (history already synced), outbound on and the AI switched on. */
-async function setup(llm: ScriptedLlm, o: { aiOn?: boolean; outbound?: boolean } = {}) {
+/** Shop with a catalog, Nova Poshta configured and the AI switched on. Customers write through the website chat. */
+async function setup(llm: ScriptedLlm, o: { aiOn?: boolean } = {}) {
   np = fakeNovaPoshta();
   a = await makeApp({ llm, keyring: new Keyring(1, randomBytes(32)), fetchImpl: np.fetchFor() });
   await call(a, null, 'POST', '/v1/auth/register', { email: 'o@example.com', displayName: 'O', password: PW });
@@ -32,22 +32,14 @@ async function setup(llm: ScriptedLlm, o: { aiOn?: boolean; outbound?: boolean }
       { sku: 'HOODIE-L', options: { size: 'L' }, stock: 0 },
     ],
   });
-  const acc = await mockAccount(a);
-  await a.svc.syncOnce(acc);
-  await call(a, a.admin, 'PUT', `/v1/accounts/${acc}/shop`, { shopId });
-  if (o.outbound !== false) await call(a, a.admin, 'PATCH', `/v1/accounts/${acc}/settings`, { outboundEnabled: true });
   if (o.aiOn !== false) await call(a, token, 'PUT', `/v1/shops/${shopId}/ai`, { enabled: true });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/key`, { apiKey: NP_KEY });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/settings`, { senderCityRef: NP.kyivRef, senderCityName: 'Київ', senderWarehouseRef: NP.branch12Ref, senderWarehouseName: 'Відділення №12' });
-  return { token, shopId, acc, llm };
+  return { token, shopId, llm };
 }
 let np: FakeNp;
 const lookups = () => npLookups();
-const customerWrites = async (s: { acc: string }, text: string) => {
-  a!.mock.devInjectIncoming(s.acc, THREAD, text);
-  await a!.svc.syncOnce(s.acc);
-  await a!.salesAgent!.whenIdle();
-};
+const customerWrites = (s: { shopId: string }, text: string, channel = WEB_CHANNEL) => writes(a!, s.shopId, THREAD, text, channel);
 const shopMsgs = (shopId: string) => {
   const c = a!.conversations.listConversations(shopId).items.find((x) => x.conversation.externalId === THREAD)!;
   return a!.conversations.listMessages(shopId, c.conversation.id, { limit: 200 }).items;
@@ -75,25 +67,15 @@ describe('sales agent', () => {
     expect(ai).toHaveLength(1);
     expect(ai[0]).toMatchObject({ text: 'Худі Classic розмір M коштує 1299 грн, залишилось 3 шт.', deliveryStatus: 'sent', direction: 'outgoing' });
     expect(ai[0]!.externalId).toBeTruthy();
-    expect(a!.mock.devSentLog(s.acc)).toHaveLength(1);
     expect(runs(s.shopId)).toMatchObject([{ status: 'replied', model: 'scripted-1', modelRequests: 2, inputTokens: 20, outputTokens: 10, replyMessageId: ai[0]!.id }]);
 
-    // more syncs, a duplicate observation and a restart-like repeat must not answer again
-    a!.mock.devDuplicateLast(s.acc, THREAD);
-    await a!.svc.syncOnce(s.acc);
-    await a!.svc.syncOnce(s.acc);
+    // a repeated trigger for the same message (duplicate delivery, restart) must not answer again
+    const inc = shopMsgs(s.shopId).find((m) => m.direction === 'incoming')!;
+    a!.salesAgent!.trigger(s.shopId, inc.conversationId, inc.id);
+    a!.salesAgent!.trigger(s.shopId, inc.conversationId, inc.id);
     await a!.salesAgent!.whenIdle();
     expect(llm.calls).toHaveLength(2);
     expect(shopMsgs(s.shopId).filter((m) => m.text?.startsWith('Худі Classic'))).toHaveLength(1);
-  });
-
-  it('never replies to history that existed before it was linked or switched on', async () => {
-    const llm = new ScriptedLlm([]);
-    const s = await setup(llm);
-    await a!.svc.syncOnce(s.acc);
-    await a!.salesAgent!.whenIdle();
-    expect(llm.calls).toHaveLength(0);
-    expect(runs(s.shopId)).toEqual([]);
   });
 
   it('stays silent when the shop has not switched the AI on', async () => {
@@ -102,15 +84,7 @@ describe('sales agent', () => {
     await customerWrites(s, 'Привіт');
     expect(llm.calls).toHaveLength(0);
     expect(runs(s.shopId)).toEqual([]);
-    expect(a!.mock.devSentLog(s.acc)).toHaveLength(0);
-  });
-
-  it('stays silent for accounts that are not linked to a shop', async () => {
-    const llm = new ScriptedLlm([]);
-    const s = await setup(llm);
-    await call(a!, a!.admin, 'DELETE', `/v1/accounts/${s.acc}/shop`);
-    await customerWrites(s, 'Привіт');
-    expect(llm.calls).toHaveLength(0);
+    expect(aiMsgs(s.shopId)).toEqual([]);
   });
 
   it('blocks an invented price: one repair attempt, then nothing is sent and a human is asked', async () => {
@@ -120,7 +94,6 @@ describe('sales agent', () => {
     expect(llm.calls).toHaveLength(3);
     expect(llm.calls[2]!.messages.at(-1)).toMatchObject({ role: 'system', content: expect.stringContaining('price 500.00') });
     expect(aiMsgs(s.shopId)).toEqual([]);
-    expect(a!.mock.devSentLog(s.acc)).toHaveLength(0);
     expect(runs(s.shopId)).toMatchObject([{ status: 'escalated', detail: 'GUARD_BLOCKED' }]);
     expect(a!.agentRepo.listEscalations(s.shopId).items).toMatchObject([{ status: 'open', reason: expect.stringContaining('could not be verified') }]);
   });
@@ -169,24 +142,12 @@ describe('sales agent', () => {
     expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Вітаю!' }]);
   });
 
-  it('records a failed reply (not a fake success) when outbound sending is disabled', async () => {
-    const llm = new ScriptedLlm([say('Вітаю!')]);
-    const s = await setup(llm, { outbound: false });
-    await customerWrites(s, 'Привіт');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Вітаю!', deliveryStatus: 'failed', deliveryError: 'OUTBOUND_DISABLED', externalId: null }]);
-    expect(runs(s.shopId)).toMatchObject([{ status: 'failed', detail: 'OUTBOUND_DISABLED' }]);
-  });
-
-  it('an uncertain send is recorded as uncertain and is never retried', async () => {
+  it('records a failed reply (not a fake success) when the channel is not connected', async () => {
     const llm = new ScriptedLlm([say('Вітаю!')]);
     const s = await setup(llm);
-    a!.mock.devPlanSends('uncertain');
-    await customerWrites(s, 'Привіт');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Вітаю!', deliveryStatus: 'uncertain' }]);
-    expect(runs(s.shopId)).toMatchObject([{ status: 'send_uncertain' }]);
-    await a!.svc.syncOnce(s.acc);
-    expect(llm.calls).toHaveLength(1);
-    expect(aiMsgs(s.shopId)).toHaveLength(1);
+    await customerWrites(s, 'Привіт', TELEGRAM_CHANNEL);
+    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Вітаю!', deliveryStatus: 'failed', deliveryError: 'ACCOUNT_NOT_CONNECTED', externalId: null }]);
+    expect(runs(s.shopId)).toMatchObject([{ status: 'failed', detail: 'ACCOUNT_NOT_CONNECTED' }]);
   });
 
   it('drops a reply when a newer customer message arrived meanwhile, and the next run answers it', async () => {
@@ -194,15 +155,14 @@ describe('sales agent', () => {
     const gate = new Promise<void>((r) => (release = r));
     const llm = new ScriptedLlm([async () => (await gate, say('Відповідь на перше')), say('Відповідь на обидва')]);
     const s = await setup(llm);
-    a!.mock.devInjectIncoming(s.acc, THREAD, 'перше');
-    await a!.svc.syncOnce(s.acc);
-    a!.mock.devInjectIncoming(s.acc, THREAD, 'друге');
-    await a!.svc.syncOnce(s.acc);
+    const first = customerWrites(s, 'перше');
+    await vi.waitFor(() => expect(llm.calls).toHaveLength(1));
+    const second = customerWrites(s, 'друге');
     release();
+    await Promise.all([first, second]);
     await a!.salesAgent!.whenIdle();
     expect(runs(s.shopId).map((r) => [r.status, r.detail]).sort()).toEqual([['replied', null], ['superseded', 'NEWER_MESSAGE']]);
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Відповідь на обидва' }]);
-    expect(a!.mock.devSentLog(s.acc)).toHaveLength(1);
+    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Відповідь на обидва', deliveryStatus: 'sent' }]);
   });
 
   it('treats customer text as data: tool results and history reach the model, injected rules do not change the tool set', async () => {

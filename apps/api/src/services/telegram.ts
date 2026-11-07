@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { ConnectorError } from '@hepson/connector-core';
+import { ApiError } from '../errors';
 import {
   ConversationValidationError,
   CredentialDecryptError,
@@ -73,7 +73,7 @@ export class TelegramService {
     return `${this.d.publicUrl}/webhooks/telegram/${webhookId}`;
   }
   private requireEnabled(): void {
-    if (!this.enabled) throw new ConnectorError('NOT_CONFIGURED', 'Telegram connection is not configured on this server');
+    if (!this.enabled) throw new ApiError('NOT_CONFIGURED', 'Telegram connection is not configured on this server');
   }
 
   /** Non-secret state for the dashboard. */
@@ -93,8 +93,8 @@ export class TelegramService {
   /** Checks the owner's bot token, registers the webhook with a fresh secret, then stores the token encrypted. */
   async connect(shopId: string, token: string): Promise<ReturnType<TelegramService['status']>> {
     this.requireEnabled();
-    if (!TOKEN_RE.test(token)) throw new ConnectorError('VALIDATION_ERROR', 'This is not a Telegram bot token');
-    if (this.operations.has(shopId)) throw new ConnectorError('TEMPORARY_FAILURE', 'Telegram connection is already in progress');
+    if (!TOKEN_RE.test(token)) throw new ApiError('VALIDATION_ERROR', 'This is not a Telegram bot token');
+    if (this.operations.has(shopId)) throw new ApiError('TEMPORARY_FAILURE', 'Telegram connection is already in progress');
     this.operations.add(shopId);
     const { api, vault, repo, log } = this.d;
     let step = 'get_me';
@@ -103,7 +103,7 @@ export class TelegramService {
       const me = await api.getMe(token);
       const owner = repo.findByBotId(me.id);
       if (owner && owner.shopId !== shopId) throw new TelegramBotTakenError();
-      if (this.connectingBots.has(me.id)) throw new ConnectorError('TEMPORARY_FAILURE', 'Telegram connection is already in progress');
+      if (this.connectingBots.has(me.id)) throw new ApiError('TEMPORARY_FAILURE', 'Telegram connection is already in progress');
       botId = me.id;
       this.connectingBots.add(me.id);
       const webhookId = randomBytes(24).toString('base64url');
@@ -120,11 +120,11 @@ export class TelegramService {
       log.info({ shopId }, 'telegram connected');
       return this.status(shopId);
     } catch (e) {
-      if (e instanceof TelegramBotTakenError) throw new ConnectorError('VALIDATION_ERROR', e.message);
+      if (e instanceof TelegramBotTakenError) throw new ApiError('VALIDATION_ERROR', e.message);
       if (e instanceof TelegramApiError) {
         log.warn({ shopId, step, kind: e.kind, status: e.status }, 'telegram connect: bot api call failed');
-        if (e.kind === 'unavailable') throw new ConnectorError('TEMPORARY_FAILURE', 'Telegram is not reachable, try again');
-        throw new ConnectorError('VALIDATION_ERROR', 'Telegram did not accept this bot token');
+        if (e.kind === 'unavailable') throw new ApiError('TEMPORARY_FAILURE', 'Telegram is not reachable, try again');
+        throw new ApiError('VALIDATION_ERROR', 'Telegram did not accept this bot token');
       }
       throw e;
     } finally {
@@ -142,7 +142,7 @@ export class TelegramService {
 
   /** Removes the webhook (best effort), the stored token and the channel. */
   async disconnect(shopId: string): Promise<void> {
-    if (this.operations.has(shopId)) throw new ConnectorError('TEMPORARY_FAILURE', 'Telegram connection is already in progress');
+    if (this.operations.has(shopId)) throw new ApiError('TEMPORARY_FAILURE', 'Telegram connection is already in progress');
     this.operations.add(shopId);
     try {
       if (this.d.repo.getChannel(shopId)) await this.dropWebhook(shopId);
@@ -170,7 +170,7 @@ export class TelegramService {
    */
   handleUpdate(webhookId: string, secret: string | undefined, payload: unknown): boolean {
     const ch = this.d.repo.findByWebhookId(webhookId);
-    if (!ch || !secret || !SECRET_RE.test(secret) || !this.d.repo.secretMatches(ch, secret)) throw new ConnectorError('UNAUTHORIZED', 'Invalid webhook secret');
+    if (!ch || !secret || !SECRET_RE.test(secret) || !this.d.repo.secretMatches(ch, secret)) throw new ApiError('UNAUTHORIZED', 'Invalid webhook secret');
     try {
       return this.ingest(ch, obj(payload));
     } catch (err) {
@@ -179,7 +179,7 @@ export class TelegramService {
         return false;
       }
       this.d.log.warn({ shopId: ch.shopId, err: err instanceof Error ? err.name : 'ERROR' }, 'telegram update failed');
-      throw new ConnectorError('TEMPORARY_FAILURE', 'Telegram update processing failed; retry delivery');
+      throw new ApiError('TEMPORARY_FAILURE', 'Telegram update processing failed; retry delivery');
     }
   }
 
@@ -214,7 +214,7 @@ export class TelegramService {
         try {
           this.d.onInbound(ch.shopId, incoming.conversation.id, incoming.message.id);
         } catch {
-          throw new ConnectorError('TEMPORARY_FAILURE', 'Telegram inbound dispatch failed');
+          throw new ApiError('TEMPORARY_FAILURE', 'Telegram inbound dispatch failed');
         }
       }
       return incoming;

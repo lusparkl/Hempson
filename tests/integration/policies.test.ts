@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { call, makeApp, mockAccount, type TestApp } from '../helpers';
+import { call, customerWrites as writes, makeApp, type TestApp } from '../helpers';
 import { ScriptedLlm, lastToolResult, say, useTool } from '../fixtures/scripted-llm';
 
 const PW = 'correct horse battery';
-const THREAD = 'mock-thread-olena';
+const THREAD = 'thread-olena';
 const RETURNS = 'Повернення або обмін протягом 14 днів з моменту отримання, якщо товар не був у використанні. Доставку повернення оплачує покупець.';
 let a: TestApp | undefined;
 afterEach(async () => {
@@ -21,18 +21,12 @@ async function setup(llm = new ScriptedLlm([])) {
   a = await makeApp({ llm });
   const token = await login('o@example.com');
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Магазин', slug: 'shop-one' })).body.shopId as string;
-  const acc = await mockAccount(a);
-  await a.svc.syncOnce(acc);
-  await call(a, a.admin, 'PUT', `/v1/accounts/${acc}/shop`, { shopId });
-  await call(a, a.admin, 'PATCH', `/v1/accounts/${acc}/settings`, { outboundEnabled: true });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/ai`, { enabled: true });
-  return { token, shopId, acc, llm };
+  return { token, shopId, llm };
 }
 type S = Awaited<ReturnType<typeof setup>>;
 const customerWrites = async (s: S, text: string) => {
-  a!.mock.devInjectIncoming(s.acc, THREAD, text);
-  await a!.svc.syncOnce(s.acc);
-  await a!.salesAgent!.whenIdle();
+  await writes(a!, s.shopId, THREAD, text);
 };
 const aiMsgs = (s: S) => {
   const c = a!.conversations.listConversations(s.shopId).items.find((x) => x.conversation.externalId === THREAD)!;
