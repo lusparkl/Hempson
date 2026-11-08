@@ -1,7 +1,7 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AnimSlot } from './AnimSlot';
 import { fmt, usePage } from '../context';
-import { ButtonLink, LogoMark } from '../../../../packages/ui/src/components';
+import { ButtonLink, Icon, LogoMark } from '../../../../packages/ui/src/components';
 import { ROUTES } from '../routes';
 import { SITE } from '../site';
 
@@ -30,8 +30,23 @@ function Header() {
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
-  // Design: the home page links to its own sections; inner pages ("Hepson Site") link to the pages.
+  const menu = useRef<HTMLDetailsElement>(null);
+  const closeMenu = () => menu.current?.removeAttribute('open');
+  // Design ("Hepson Header"): the same links on every page; section links scroll on Home and open Home elsewhere.
   const n = d.pages.home.nav;
+  const section = (hash: string) => (route === 'home' ? `#${hash}` : href('home', hash));
+  const links = [
+    { to: section('how'), label: n.how, current: false },
+    { to: section('features'), label: n.features, current: false },
+    { to: section('control'), label: n.control, current: false },
+    { to: href('demo'), label: d.common.nav.demo, current: route === 'demo' },
+    { to: href('pricing'), label: d.common.nav.pricing, current: route === 'pricing' },
+  ];
+  const navLinks = links.map((l) => (
+    <a key={l.to} href={l.to} aria-current={l.current ? 'page' : undefined} onClick={closeMenu}>
+      {l.label}
+    </a>
+  ));
   return (
     <AnimSlot id="header.scroll" as="div" className="site-header">
       <header data-scrolled={scrolled || undefined}>
@@ -39,28 +54,35 @@ function Header() {
           <LogoMark size={30} />
           <span>hepson</span>
         </a>
-        {route === 'home' ? (
-          <nav id="site-nav" aria-label={SITE.name}>
-            <a href="#how">{n.how}</a>
-            <a href="#features">{n.features}</a>
-            <a href="#control">{n.control}</a>
-            <a href={href('demo')}>{d.common.nav.demo}</a>
-          </nav>
-        ) : (
-          <nav id="site-nav" className="site-nav-pages" aria-label={SITE.name}>
-            {ROUTES.filter((r) => r.nav === 'main').map((r) => (
-              <NavLink key={r.id} id={r.id} label={d.common.nav[r.id]} />
-            ))}
-          </nav>
-        )}
-        <div className="header-actions">
+        <nav id="site-nav" aria-label={SITE.name}>
+          {navLinks}
+        </nav>
+        <span className="header-login">
           <ButtonLink variant="secondary" size="sm" href={dashboard('login')}>
             {d.common.login}
           </ButtonLink>
+        </span>
+        <span className="header-cta">
           <ButtonLink variant="primary" size="sm" arrow href={dashboard('register')}>
             {d.common.start}
           </ButtonLink>
-        </div>
+        </span>
+        <details className="site-menu" ref={menu}>
+          <summary>
+            <span className="site-menu-open">
+              <Icon name="menu" label={d.common.menuOpen} />
+            </span>
+            <span className="site-menu-close">
+              <Icon name="x" label={d.common.menuClose} />
+            </span>
+          </summary>
+          <nav className="site-menu-panel" aria-label={SITE.name}>
+            {navLinks}
+            <a className="site-menu-login" href={dashboard('login')}>
+              {d.common.login}
+            </a>
+          </nav>
+        </details>
       </header>
     </AnimSlot>
   );
@@ -94,7 +116,10 @@ function Footer() {
           <nav aria-label={f.product}>
             <h2>{f.product}</h2>
             <ul>
-              {(['features', 'pricing', 'security'] as const).map((id) => (
+              <li>
+                <a href={href('home', 'features')}>{d.common.nav.features}</a>
+              </li>
+              {(['demo', 'pricing', 'security'] as const).map((id) => (
                 <li key={id}>
                   <NavLink id={id} label={d.common.nav[id]} />
                 </li>

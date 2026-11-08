@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { PageHero } from '../components/Layout';
 import { usePage } from '../context';
 import { SITE } from '../site';
-import { Button } from '../../../../packages/ui/src/components';
+import { Badge, Button, ButtonLink, Icon, IconTile, Input } from '../../../../packages/ui/src/components';
 
 type Product = { name: string; description: string; priceMinor: number; currency: string };
 type Result = { outcome: 'replied' | 'escalated' | 'blocked' | 'step_limit'; reply: string | null; checks: string[] };
@@ -63,12 +63,20 @@ export function Demo() {
   return (
     <>
       <PageHero eyebrow={p.eyebrow} title={p.title} intro={p.intro} />
-      <section className="page-block page-last demo" aria-label={p.title}>
+      <section className="demo" aria-label={p.title}>
         {state === 'loading' && <p className="muted">{p.loading}</p>}
         {state === 'off' && <p className="muted">{p.off}</p>}
         {state === 'on' && (
           <div className="demo-grid">
-            <div className="card demo-chat">
+            <div className="demo-chat">
+              <div className="demo-head">
+                <IconTile icon="bot" />
+                <div className="demo-head-copy">
+                  <div className="demo-head-name">{p.assistantName}</div>
+                  <div className="demo-head-role">{p.assistantRole}</div>
+                </div>
+                <Badge tone="brand">{p.eyebrow}</Badge>
+              </div>
               <div className="demo-msgs" aria-live="polite">
                 {!turns.length && (
                   <div className="demo-samples">
@@ -81,37 +89,63 @@ export function Demo() {
                 )}
                 {turns.map((t, i) =>
                   t.role === 'customer' ? (
-                    <div key={i} className="demo-msg demo-out">
-                      {t.text}
+                    <div key={i} className="demo-turn demo-turn-out">
+                      <div className="demo-msg">{t.text}</div>
                     </div>
                   ) : (
-                    <div key={i} className="demo-reply">
+                    <div key={i} className="demo-turn">
                       {t.result.reply && <div className="demo-msg">{t.result.reply}</div>}
-                      {t.result.outcome !== 'replied' && <div className="muted">{p.handoff}</div>}
+                      {t.result.outcome !== 'replied' && <div className="demo-note">{p.handoff}</div>}
                       {!!t.result.checks.length && (
-                        <div className="muted">{`${p.checked}: ${t.result.checks.map((c) => p.checks[c as keyof typeof p.checks] ?? c).join(', ')}`}</div>
+                        <div className="demo-note">
+                          <span className="demo-checked">
+                            <Icon name="shield-check" size={14} />
+                          </span>
+                          {`${p.checked}: ${t.result.checks.map((c) => p.checks[c as keyof typeof p.checks] ?? c).join(', ')}`}
+                        </div>
                       )}
                     </div>
                   ),
                 )}
-                {busy && <div className="muted">{p.thinking}</div>}
+                {busy && <div className="demo-thinking">{p.thinking}</div>}
                 <div ref={end} />
               </div>
-              {error && <p role="alert">{error}</p>}
+              {error && (
+                <p className="demo-error" role="alert">
+                  {error}
+                </p>
+              )}
               <form className="demo-form" onSubmit={(e) => void send(e)}>
-                <input value={text} onChange={(e) => setText(e.target.value)} placeholder={p.placeholder} aria-label={p.placeholder} maxLength={500} autoComplete="off" />
+                <Input
+                  id="demo-message"
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder={p.placeholder}
+                  aria-label={p.placeholder}
+                  maxLength={500}
+                  autoComplete="off"
+                />
                 <Button variant="primary" size="md" type="submit" disabled={busy || !text.trim()}>
                   {p.send}
                 </Button>
               </form>
-              <p className="muted">{p.privacy}</p>
+              <div className="demo-privacy">
+                <Icon name="lock" size={12} style={{ marginTop: 1 }} />
+                {p.privacy}
+              </div>
             </div>
-            <div className="card">
-              <h2>{p.catalog}</h2>
+            <div className="demo-catalog">
+              <div className="demo-catalog-head">
+                <Icon name="package" />
+                <h2>{p.catalog}</h2>
+              </div>
               <ul className="demo-products">
                 {products.map((x) => (
                   <li key={x.name}>
-                    <strong>{`${x.name} — ${price(x.priceMinor)}`}</strong>
+                    <div>
+                      <strong>{x.name}</strong>
+                      <span>{price(x.priceMinor)}</span>
+                    </div>
                     <p>{x.description}</p>
                   </li>
                 ))}
@@ -119,10 +153,12 @@ export function Demo() {
             </div>
           </div>
         )}
-        <p>
-          <a href={dashboard('register')}>{p.cta}</a>
-        </p>
       </section>
+      <div className="demo-cta">
+        <ButtonLink variant="primary" size="lg" arrow href={dashboard('register')}>
+          {p.cta}
+        </ButtonLink>
+      </div>
     </>
   );
 }

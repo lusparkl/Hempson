@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { CtaBg } from '../../../../packages/ui/src/embeds/CtaBg';
 import { HeroEmbed } from '../../../../packages/ui/src/embeds/HeroEmbed';
 import { HowEmbed } from '../../../../packages/ui/src/embeds/HowEmbed';
-import { Badge, ButtonLink, Icon, IconTile, type Tone } from '../../../../packages/ui/src/components';
+import { Badge, ButtonLink, Icon, IconTile, UsageMeter, type Tone } from '../../../../packages/ui/src/components';
 import type { IconName } from '../../../../packages/ui/src/icons';
 import { AnimSlot } from '../components/AnimSlot';
 import { fmt, usePage } from '../context';
@@ -27,9 +27,6 @@ export function Home() {
             <ButtonLink variant="secondary" size="lg" href={href('demo')}>
               {d.common.nav.demo}
             </ButtonLink>
-            <ButtonLink variant="secondary" size="lg" href={dashboard('login')}>
-              {h.hero.secondaryCta}
-            </ButtonLink>
           </div>
           <div className="hm-note">{h.hero.note}</div>
         </AnimSlot>
@@ -51,7 +48,18 @@ export function Home() {
                 <Logo src="/logos/nova-poshta.svg" alt="Нова Пошта" />
                 <Logo src="/logos/monobank.svg" alt="monobank" name="monobank" />
                 <div className="hm-item">
-                  <svg className="hm-chat" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <svg
+                    className="hm-chat"
+                    width="36"
+                    height="36"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
                     <path d="M4 5h16v11H10l-4 4v-4H4z" />
                     <path d="M9 10.5h.01M12 10.5h.01M15 10.5h.01" />
                   </svg>
@@ -135,6 +143,55 @@ export function Home() {
               })}
             </div>
           </Card>
+          <Card icon="camera" title={f.photo.title} text={f.photo.text}>
+            <div className="hm-list">
+              <div className="hm-row">
+                <span className="hm-photo" aria-hidden="true">
+                  <Icon name="camera" size={22} />
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <strong>{f.photo.from}</strong>
+                  <div className="hm-preview">{f.photo.question}</div>
+                </div>
+                <Badge tone="info">Instagram</Badge>
+              </div>
+              <div className="hm-qa hm-qa-photo">
+                <div className="hm-q">{f.photo.assistant}</div>
+                <div className="hm-a">{f.photo.answer}</div>
+                <div className="hm-row hm-match">
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <strong>{f.photo.match}</strong>
+                    <div className="hm-sku">BAG-LN-SND</div>
+                  </div>
+                  <Badge tone="success">{f.photo.matchBadge}</Badge>
+                </div>
+              </div>
+            </div>
+            <CardNote icon="lock" text={f.photo.note} />
+          </Card>
+          <Card icon="store" title={f.storefront.title} text={f.storefront.text}>
+            <div className="hm-store">
+              <div className="hm-store-bar">
+                <span>{f.storefront.url}</span>
+                <Badge tone="success">{f.storefront.badge}</Badge>
+              </div>
+              <div className="hm-store-grid">
+                {f.storefront.items.map((p, i) => (
+                  <div key={p.name} className="hm-store-item">
+                    <div aria-hidden="true" className="hm-store-thumb" style={{ background: STORE_THUMBS[i] }} />
+                    <div className="hm-store-name">{p.name}</div>
+                    <div className="hm-store-price">{p.price}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="hm-store-links">
+                <StoreLink icon="message-circle" label={f.storefront.chat} />
+                <StoreLink icon="send" label="Telegram" />
+                <StoreLink icon="instagram" label="Instagram" />
+              </div>
+            </div>
+            <CardNote icon="package" text={f.storefront.note} />
+          </Card>
 
           <div className="hm-card hm-rules">
             <div className="hm-rules-copy">
@@ -198,6 +255,49 @@ export function Home() {
               <Badge tone="info">{f.mono.badge}</Badge>
             </div>
           </Card>
+
+          <div className="hm-card hm-analytics">
+            <div className="hm-analytics-copy">
+              <div className="hm-card-head">
+                <IconTile icon="chart-no-axes-column" />
+                <h3>{f.analytics.title}</h3>
+              </div>
+              <p>{f.analytics.text}</p>
+              <div className="hm-usage">
+                <UsageMeter label={f.analytics.usage} value={1240} max={2000} valueLabel={f.analytics.usageValue} />
+                <div>{f.analytics.usageLeft}</div>
+              </div>
+            </div>
+            <div className="hm-analytics-data">
+              <div className="hm-funnel-head">
+                <div>{f.analytics.funnelTitle}</div>
+                <Badge tone="success">{f.analytics.funnelBadge}</Badge>
+              </div>
+              {f.analytics.funnel.map((row, i) => (
+                <div key={row.label} className="hm-funnel-row">
+                  <div className="hm-funnel-label">
+                    <span>{row.label}</span>
+                    <strong>{row.value}</strong>
+                    <span className="hm-funnel-pct">{row.pct}%</span>
+                  </div>
+                  <div className="hm-funnel-track">
+                    <div style={{ width: `${row.pct}%`, background: FUNNEL_COLORS[i] }} />
+                  </div>
+                </div>
+              ))}
+              <div className="hm-daily">
+                <div className="hm-daily-head">
+                  <span>{f.analytics.daily}</span>
+                  <span>{f.analytics.dailyRange}</span>
+                </div>
+                <div className="hs-bars hm-bars" aria-hidden="true">
+                  {DAILY_BARS.map((pct, i) => (
+                    <i key={i} style={{ height: `${pct}%`, background: i === DAILY_BARS.length - 1 ? 'var(--brand-600)' : 'var(--brand-300)' }} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </AnimSlot>
       </section>
 
@@ -244,6 +344,9 @@ export function Home() {
 }
 
 const CONTROL_ICONS: IconName[] = ['book-open', 'shield-check', 'hand', 'pause', 'gauge'];
+const STORE_THUMBS = ['linear-gradient(135deg, var(--warning-bg), var(--brand-100))', 'linear-gradient(135deg, var(--brand-50), var(--brand-200))'];
+const FUNNEL_COLORS = ['var(--brand-300)', 'var(--brand-500)', 'var(--brand-700)'];
+const DAILY_BARS = [38, 52, 44, 61, 70, 48, 35, 58, 66, 74, 63, 81, 69, 90];
 
 function Heading({ id, eyebrow, title, sub }: { id: string; eyebrow: string; title: string; sub: string }) {
   return (
@@ -266,6 +369,26 @@ function Card({ icon, title, text, children }: { icon: IconName; title: string; 
       <p>{text}</p>
       {children}
     </div>
+  );
+}
+
+function CardNote({ icon, text }: { icon: IconName; text: string }) {
+  return (
+    <div className="hm-card-note">
+      <span>
+        <Icon name={icon} size={18} />
+      </span>
+      {text}
+    </div>
+  );
+}
+
+function StoreLink({ icon, label }: { icon: IconName; label: string }) {
+  return (
+    <span className="hm-store-link">
+      <Icon name={icon} size={18} />
+      {label}
+    </span>
   );
 }
 

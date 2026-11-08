@@ -57,7 +57,7 @@ export const ANIMATIONS = {
   },
   'features.cards': {
     trigger: 'in-view',
-    description: 'Feature cards (inbox, catalog, shop rules, Nova Poshta, monobank) with static sample data; hover effects only.',
+    description: 'Feature cards (inbox, catalog, photo search, storefront, shop rules, Nova Poshta, monobank, analytics) with static sample data; hover effects only.',
     durationMs: 600,
     reducedMotion: 'Cards visible; hover only changes border colour.',
   },

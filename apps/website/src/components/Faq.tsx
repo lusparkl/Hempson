@@ -1,4 +1,5 @@
 import { AnimSlot } from './AnimSlot';
+import { Icon } from '../../../../packages/ui/src/components';
 
 /** FAQ list on native <details>, so it opens without JS. */
 export function Faq({ id, title, items }: { id: string; title: string; items: ReadonlyArray<{ q: string; a: string }> }) {
@@ -10,8 +11,8 @@ export function Faq({ id, title, items }: { id: string; title: string; items: Re
           <details key={i.q}>
             <summary>
               {i.q}
-              <span className="faq-plus" aria-hidden="true">
-                +
+              <span className="faq-plus">
+                <Icon name="plus" size={22} />
               </span>
             </summary>
             <p>{i.a}</p>
