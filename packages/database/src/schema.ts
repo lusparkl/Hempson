@@ -84,6 +84,22 @@ export const userSessions = sqliteTable(
   (t) => [uniqueIndex('user_sessions_hash_uq').on(t.hashedToken), index('user_sessions_user_idx').on(t.userId)],
 );
 
+/** Live password reset links (D46): at most one per user, deleted when used or replaced. */
+export const passwordResets = sqliteTable(
+  'password_resets',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    /** sha256 of the link token; the token itself is never stored. */
+    hashedToken: text('hashed_token').notNull(),
+    createdAt: text('created_at').notNull(),
+    expiresAt: text('expires_at').notNull(),
+  },
+  (t) => [uniqueIndex('password_resets_hash_uq').on(t.hashedToken), uniqueIndex('password_resets_user_uq').on(t.userId)],
+);
+
 /** Catalog. Prices are integer minor units (kopiykas for UAH). Every row carries shop_id. */
 export const products = sqliteTable(
   'products',

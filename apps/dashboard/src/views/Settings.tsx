@@ -849,8 +849,32 @@ function MonobankCard({ base, owner }: { base: string; owner: boolean }) {
 /* ---------------- team ---------------- */
 
 function TeamTab({ base, owner }: { base: string; owner: boolean }) {
+  const { me, reloadShops } = useShop();
   const m = useLoad(() => api<Member[]>('GET', `${base}/members`), [base]);
   const run = useRun();
+  const owners = m.data?.filter((x) => x.role === 'owner').length ?? 0;
+  const nameOf = (x: Member) => x.displayName || x.email;
+  const setRole = (x: Member, role: string) => {
+    const self = x.userId === me?.userId;
+    if (self && !window.confirm('Ви втратите права власника в цьому магазині. Продовжити?')) return;
+    void run(async () => {
+      await api('PATCH', `${base}/members/${x.userId}`, { role });
+      await m.reload();
+      if (self) reloadShops();
+    }, 'Роль змінено');
+  };
+  const remove = (x: Member) => {
+    const self = x.userId === me?.userId;
+    if (!window.confirm(self ? 'Вийти з цього магазину? Повернути доступ зможе лише власник.' : `Видалити ${nameOf(x)} з команди? Доступ до магазину буде закрито одразу.`)) return;
+    void run(
+      async () => {
+        await api('DELETE', `${base}/members/${x.userId}`);
+        if (self) reloadShops();
+        else await m.reload();
+      },
+      self ? 'Ви вийшли з магазину' : 'Учасника видалено',
+    );
+  };
   const add = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = e.currentTarget;
@@ -864,18 +888,38 @@ function TeamTab({ base, owner }: { base: string; owner: boolean }) {
   return (
     <Panel title="Команда">
       {m.error && <div className="panel-text err">{m.error}</div>}
-      {m.data?.map((x) => (
-        <div key={x.userId} className="task">
-          <Avatar name={x.displayName || x.email} seed={x.userId} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 500, color: 'var(--ink-900)' }}>{x.displayName}</div>
-            <div style={{ fontSize: 13 }} className="subtle">
-              {x.email}
+      {m.data?.map((x) => {
+        const self = x.userId === me?.userId;
+        // The server refuses to demote or remove the last owner; here the controls are simply not offered.
+        const soleOwner = x.role === 'owner' && owners <= 1;
+        return (
+          <div key={x.userId} className="task" style={{ flexWrap: 'wrap' }}>
+            <Avatar name={nameOf(x)} seed={x.userId} />
+            <div style={{ flex: '1 1 160px', minWidth: 0 }}>
+              <div style={{ fontWeight: 500, color: 'var(--ink-900)' }}>
+                {x.displayName}
+                {self && ' (ви)'}
+              </div>
+              <div style={{ fontSize: 13, overflowWrap: 'anywhere' }} className="subtle">
+                {x.email}
+              </div>
             </div>
+            {owner && !soleOwner ? (
+              <select className="field" style={{ width: 'auto' }} aria-label={`Роль: ${nameOf(x)}`} value={x.role} onChange={(e) => setRole(x, e.target.value)}>
+                <option value="manager">Менеджер</option>
+                <option value="owner">Власник</option>
+              </select>
+            ) : (
+              <Badge tone={x.role === 'owner' ? 'brand' : 'neutral'}>{x.role === 'owner' ? 'Власник' : 'Менеджер'}</Badge>
+            )}
+            {!soleOwner && (owner || self) && (
+              <Button variant="secondary" size="sm" onClick={() => remove(x)} aria-label={self ? 'Вийти з магазину' : `Видалити: ${nameOf(x)}`}>
+                {self ? 'Вийти' : 'Видалити'}
+              </Button>
+            )}
           </div>
-          <Badge tone={x.role === 'owner' ? 'brand' : 'neutral'}>{x.role === 'owner' ? 'Власник' : 'Менеджер'}</Badge>
-        </div>
-      ))}
+        );
+      })}
       {owner && (
         <Block title="Додати учасника" desc="Користувач має бути зареєстрований у Hepson.">
           <form className="inline-form" onSubmit={add}>

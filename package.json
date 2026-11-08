@@ -8,6 +8,7 @@
   "scripts": {
     "migrate": "tsx scripts/migrate.ts",
     "bootstrap-key": "tsx scripts/bootstrap-key.ts",
+    "reset-link": "tsx scripts/reset-link.ts",
     "dev:api": "tsx watch apps/api/src/index.ts",
     "start:api": "tsx apps/api/src/index.ts",
     "dev:dashboard": "pnpm --filter @hepson/dashboard dev",
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.5",
+    "@types/nodemailer": "^8.0.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
@@ -44,6 +46,7 @@
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.4",
     "fastify": "^5.12.7",
+    "nodemailer": "^10.3.1",
     "zod": "^4.6.7"
   }
 }

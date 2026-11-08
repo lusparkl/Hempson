@@ -47,6 +47,8 @@ type ShopContext = {
   ai: AiSettings | null;
   /** Reloads the shell's counters (open escalations, pending orders, unread conversations, usage, AI state). */
   refresh: () => void;
+  /** Reloads the shop list after the current member's own role or membership changed. */
+  reloadShops: () => void;
 };
 const Ctx = createContext<ShopContext | null>(null);
 export const useShop = () => useContext(Ctx)!;
@@ -75,9 +77,101 @@ function AuthLayout({ onSubmit, children }: { onSubmit: (e: FormEvent<HTMLFormEl
   );
 }
 
-function Login({ onDone }: { onDone: () => void }) {
+function Forgot({ onBack }: { onBack: () => void }) {
+  const [state, setState] = useState<'form' | 'sent' | 'manual'>('form');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const email = String(new FormData(e.currentTarget).get('email'));
+    setBusy(true);
+    setErr(null);
+    try {
+      await api('POST', '/v1/auth/password-reset/request', { email });
+      setState('sent');
+    } catch (x) {
+      if (x instanceof ApiError && x.code === 'NOT_CONFIGURED') setState('manual');
+      else setErr(x instanceof ApiError && x.status === 429 ? 'Забагато спроб. Спробуйте пізніше.' : errText(x));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <AuthLayout onSubmit={(e) => void submit(e)}>
+      <div>
+        <h1>Відновлення пароля</h1>
+        <p>
+          {state === 'form' && 'Вкажіть email кабінету, і ми надішлемо посилання для нового пароля.'}
+          {state === 'sent' && 'Якщо цей email зареєстровано, ми надіслали на нього посилання. Воно діє 1 годину.'}
+          {state === 'manual' && 'Автоматичне відновлення зараз недоступне. Зверніться до підтримки Hepson, щоб отримати посилання.'}
+        </p>
+      </div>
+      {state === 'form' && (
+        <>
+          <Input label="Email" type="email" name="email" required autoComplete="username" />
+          {err && (
+            <div className="err" role="alert">
+              {err}
+            </div>
+          )}
+          <Button variant="primary" size="lg" type="submit" arrow disabled={busy}>
+            Надіслати посилання
+          </Button>
+        </>
+      )}
+      <div style={{ fontSize: 14 }} className="muted">
+        <button type="button" className="linkbtn" onClick={onBack}>
+          Повернутися до входу
+        </button>
+      </div>
+    </AuthLayout>
+  );
+}
+
+/** Opened from a reset link (`#reset=<token>`). */
+function ResetPassword({ resetToken, onDone }: { resetToken: string; onDone: (changed: boolean) => void }) {
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    try {
+      await api('POST', '/v1/auth/password-reset/confirm', { token: resetToken, password: String(new FormData(e.currentTarget).get('password')) });
+      onDone(true);
+    } catch (x) {
+      setErr(x instanceof ApiError && x.code === 'VALIDATION_ERROR' ? 'Посилання недійсне або застаріло. Запросіть нове на сторінці входу.' : errText(x));
+      setBusy(false);
+    }
+  };
+  return (
+    <AuthLayout onSubmit={(e) => void submit(e)}>
+      <div>
+        <h1>Новий пароль</h1>
+        <p>Після зміни пароля всі активні сеанси завершаться.</p>
+      </div>
+      <Input label="Новий пароль" type="password" name="password" required minLength={10} maxLength={128} hint="Від 10 символів" autoComplete="new-password" />
+      {err && (
+        <div className="err" role="alert">
+          {err}
+        </div>
+      )}
+      <Button variant="primary" size="lg" type="submit" arrow disabled={busy}>
+        Зберегти пароль
+      </Button>
+      <div style={{ fontSize: 14 }} className="muted">
+        <button type="button" className="linkbtn" onClick={() => onDone(false)}>
+          Скасувати
+        </button>
+      </div>
+    </AuthLayout>
+  );
+}
+
+function Login({ onDone, notice }: { onDone: () => void; notice: string | null }) {
   // The public website's "start" buttons link here with `?mode=register`.
   const [mode, setMode] = useState<'login' | 'register'>(() => (new URLSearchParams(location.search).get('mode') === 'register' ? 'register' : 'login'));
+  const [forgot, setForgot] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const submit = async (e: FormEvent<HTMLFormElement>) => {
@@ -99,6 +193,7 @@ function Login({ onDone }: { onDone: () => void }) {
     }
   };
   const reg = mode === 'register';
+  if (forgot) return <Forgot onBack={() => setForgot(false)} />;
   return (
     <AuthLayout onSubmit={(e) => void submit(e)}>
       <div>
@@ -108,6 +203,7 @@ function Login({ onDone }: { onDone: () => void }) {
       <Input label="Email" type="email" name="email" required autoComplete="username" />
       {reg && <Input label="Ім’я" name="name" autoComplete="name" />}
       <Input label="Пароль" type="password" name="password" required minLength={10} hint="Від 10 символів" autoComplete={reg ? 'new-password' : 'current-password'} />
+      {notice && <div role="status">{notice}</div>}
       {err && (
         <div className="err" role="alert">
           {err}
@@ -116,6 +212,13 @@ function Login({ onDone }: { onDone: () => void }) {
       <Button variant="primary" size="lg" type="submit" arrow disabled={busy}>
         {reg ? 'Зареєструватися' : 'Увійти'}
       </Button>
+      {!reg && (
+        <div style={{ fontSize: 14 }}>
+          <button type="button" className="linkbtn" onClick={() => setForgot(true)}>
+            Забули пароль?
+          </button>
+        </div>
+      )}
       <div style={{ fontSize: 14 }} className="muted">
         {reg ? 'Вже є кабінет? ' : 'Ще немає кабінету? '}
         <button type="button" className="linkbtn" onClick={() => setMode(reg ? 'login' : 'register')}>
@@ -165,8 +268,21 @@ function NewShop({ onDone, onCancel }: { onDone: (id: string) => void; onCancel?
 
 /* ---------------- app ---------------- */
 
+const resetFromHash = () => /^#reset=(.+)$/.exec(location.hash)?.[1] ?? null;
+
 export function App() {
   const [authed, setAuthed] = useState(!!token.get());
+  const [resetToken, setResetToken] = useState(resetFromHash);
+  const [notice, setNotice] = useState<string | null>(null);
+  // A link pasted into a tab already on the dashboard changes only the hash.
+  useEffect(() => {
+    const on = () => {
+      const t = resetFromHash();
+      if (t) setResetToken(t);
+    };
+    window.addEventListener('hashchange', on);
+    return () => window.removeEventListener('hashchange', on);
+  }, []);
   useEffect(() => {
     const off = () => {
       token.set(null);
@@ -175,7 +291,21 @@ export function App() {
     window.addEventListener(UNAUTHORIZED, off);
     return () => window.removeEventListener(UNAUTHORIZED, off);
   }, []);
-  if (!authed) return <Login onDone={() => setAuthed(true)} />;
+  if (resetToken)
+    return (
+      <ResetPassword
+        resetToken={resetToken}
+        onDone={(changed) => {
+          history.replaceState(null, '', location.pathname + location.search);
+          setResetToken(null);
+          if (!changed) return;
+          token.set(null);
+          setAuthed(false);
+          setNotice('Пароль змінено. Увійдіть із новим паролем.');
+        }}
+      />
+    );
+  if (!authed) return <Login onDone={() => setAuthed(true)} notice={notice} />;
   return (
     <ToastProvider>
       <Shell
@@ -210,7 +340,18 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     );
   }
   const shop = shops.data.find((s) => s.shopId === shopId) ?? shops.data[0]!;
-  return <ShopApp key={shop.shopId} shop={shop} shops={shops.data} me={me.data?.user ?? null} onPick={setShopId} onAdd={() => setAdding(true)} onLogout={onLogout} />;
+  return (
+    <ShopApp
+      key={shop.shopId}
+      shop={shop}
+      shops={shops.data}
+      me={me.data?.user ?? null}
+      onPick={setShopId}
+      onAdd={() => setAdding(true)}
+      onLogout={onLogout}
+      reloadShops={() => void shops.reload()}
+    />
+  );
 }
 
 function ShopApp({
@@ -220,6 +361,7 @@ function ShopApp({
   onPick,
   onAdd,
   onLogout,
+  reloadShops,
 }: {
   shop: Shop;
   shops: Shop[];
@@ -227,6 +369,7 @@ function ShopApp({
   onPick: (id: string) => void;
   onAdd: () => void;
   onLogout: () => void;
+  reloadShops: () => void;
 }) {
   const base = `/v1/shops/${shop.shopId}`;
   const [page, setPage] = useState<Page>(pageFromHash);
@@ -258,6 +401,7 @@ function ShopApp({
     unreadConversations: unread.data?.count ?? 0,
     usage: usage.data,
     ai: ai.data,
+    reloadShops,
     refresh: () => {
       void esc.reload();
       void pending.reload();

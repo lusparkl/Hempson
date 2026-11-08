@@ -30,3 +30,4 @@
 - **Checkout needs Nova Poshta.** A shop without a connected NP key gets no AI drafts: the lookups fail and the agent escalates. Delivery to an address (courier) and other carriers are not supported.
 - **No Hepson billing and no refunds automation** until the FOP exists; refunds are always human (D24).
 - **Personal data.** Customer messages are personal data (GDPR/Ukrainian law). Logs never contain message text, tokens or cookies. There is no automatic retention purge and no per-customer export/delete endpoint for shop conversations yet (the removed connector's 30-day purge covered only its own tables).
+- **Password reset email is unverified against a real mail server (D46).** It is tested against a local fake SMTP server only. Deliverability (SPF, DKIM, spam folders) depends on the operator's sender. The per-address and per-IP limits are in memory and reset on restart.

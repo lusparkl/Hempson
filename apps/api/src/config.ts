@@ -50,6 +50,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     webChatMessagesPerIpPerMinute: int(env.HEPSON_WEBCHAT_MESSAGES_PER_IP_MINUTE, 40),
     webChatDailyMessagesPerShop: int(env.HEPSON_WEBCHAT_DAILY_MESSAGES_PER_SHOP, 2000),
     webChatSessionDays: int(env.HEPSON_WEBCHAT_SESSION_DAYS, 30),
+    /** Password reset email (D46). Off unless both host and from are set; the operator can still issue links with `pnpm reset-link`. Never log the password. */
+    smtp:
+      env.HEPSON_SMTP_HOST && env.HEPSON_SMTP_FROM
+        ? {
+            host: env.HEPSON_SMTP_HOST,
+            port: int(env.HEPSON_SMTP_PORT, 587),
+            user: env.HEPSON_SMTP_USER || undefined,
+            password: env.HEPSON_SMTP_PASSWORD || undefined,
+            from: env.HEPSON_SMTP_FROM,
+          }
+        : null,
     /** Public agent demo on the marketing site (D45). Off by default: every turn costs model tokens. Origins = exact site origins, comma separated. */
     demo: bool(env.HEPSON_DEMO, false),
     demoOrigins: (env.HEPSON_DEMO_ORIGINS ?? 'http://127.0.0.1:5175,http://localhost:5175')

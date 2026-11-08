@@ -54,6 +54,7 @@ const isUniqueViolation = (e: unknown) => (e as { code?: string })?.code === 'SQ
 export const hashToken = (k: string) => createHash('sha256').update(k).digest('hex');
 
 export const SESSION_PREFIX = 'hsu_';
+export const RESET_PREFIX = 'hpr_';
 
 /** Users, sessions and shop memberships. Password hashing is done by the caller (see apps/api auth). */
 export class AuthRepository {
@@ -115,6 +116,47 @@ export class AuthRepository {
   }
   revokeSession(sessionId: string): void {
     this.db.update(t.userSessions).set({ revokedAt: this.now() }).where(and(eq(t.userSessions.id, sessionId), isNull(t.userSessions.revokedAt))).run();
+  }
+
+  // ---- password resets ----
+  /** One live link per user: a new link replaces the previous one. Returns the token, which is not stored. */
+  createPasswordReset(userId: string, ttlMs: number): string {
+    const token = `${RESET_PREFIX}${randomBytes(32).toString('base64url')}`;
+    const expiresAt = new Date(this.clock().getTime() + ttlMs).toISOString();
+    this.handle.raw.transaction(() => {
+      this.db.delete(t.passwordResets).where(eq(t.passwordResets.userId, userId)).run();
+      this.db.insert(t.passwordResets).values({ id: randomUUID(), userId, hashedToken: hashToken(token), createdAt: this.now(), expiresAt }).run();
+    })();
+    return token;
+  }
+  private livePasswordReset(token: string) {
+    return this.db
+      .select()
+      .from(t.passwordResets)
+      .where(and(eq(t.passwordResets.hashedToken, hashToken(token)), gt(t.passwordResets.expiresAt, this.now())))
+      .get();
+  }
+  isPasswordResetLive(token: string): boolean {
+    return this.livePasswordReset(token) !== undefined;
+  }
+  /** Atomic and single-use: sets the password, ends every session of the user and burns the link. Undefined = invalid, expired or already used. */
+  consumePasswordReset(token: string, passwordHash: string): UserRow | undefined {
+    return this.handle.raw.transaction(() => {
+      const r = this.livePasswordReset(token);
+      if (!r) return undefined;
+      const ts = this.now();
+      const user = this.db.update(t.users).set({ passwordHash, updatedAt: ts }).where(eq(t.users.id, r.userId)).returning().get();
+      this.db
+        .update(t.userSessions)
+        .set({ revokedAt: ts })
+        .where(and(eq(t.userSessions.userId, r.userId), isNull(t.userSessions.revokedAt)))
+        .run();
+      this.db.delete(t.passwordResets).where(eq(t.passwordResets.userId, r.userId)).run();
+      return user;
+    })();
+  }
+  purgeExpiredPasswordResets(): number {
+    return this.db.delete(t.passwordResets).where(lt(t.passwordResets.expiresAt, this.now())).run().changes;
   }
 
   // ---- memberships ----

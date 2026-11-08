@@ -38,6 +38,7 @@ import { OpenAiClient, type LlmClient } from './agent/llm';
 import { OpenAiVision, type VisionClient } from './agent/vision';
 import { PhotoSearchService } from './services/photo-search';
 import { registerPhotoSearchRoutes } from './routes/photo-search';
+import { SmtpMailer, type Mailer } from './services/mailer';
 import { registerDemoRoutes } from './routes/demo';
 import { ensureDemoShop } from './services/demo';
 import { registerStorefrontRoutes } from './routes/storefront';
@@ -146,6 +147,7 @@ export async function buildApp(
     fetchImpl?: typeof fetch;
     logStream?: NodeJS.WritableStream;
     vision?: VisionClient | null;
+    mailer?: Mailer | null;
   } = {},
 ): Promise<App> {
   const cfg: Config = { ...loadConfig(), ...overrides };
@@ -352,7 +354,14 @@ export async function buildApp(
     },
   });
   route(app, { method: 'GET', url: '/health', summary: 'Liveness', tag: 'meta', auth: 'none', handler: () => ({ ok: true, time: new Date().toISOString() }) });
-  registerAuthRoutes(app, auth, { allowRegistration: cfg.allowRegistration, sessionTtlMs: cfg.sessionTtlDays * 86_400_000, throttle: new LoginThrottle() });
+  const mailer = overrides.mailer !== undefined ? overrides.mailer : cfg.smtp ? new SmtpMailer(cfg.smtp) : null;
+  registerAuthRoutes(app, auth, {
+    allowRegistration: cfg.allowRegistration,
+    sessionTtlMs: cfg.sessionTtlDays * 86_400_000,
+    throttle: new LoginThrottle(),
+    mailer,
+    dashboardUrl: cfg.dashboardUrl,
+  });
   registerShopRoutes(app, { shops, auth, handle });
   registerCatalogRoutes(app, { shops, auth, catalog, egress, onCatalogChange: () => photos?.schedule() });
   registerPhotoSearchRoutes(app, { shops, auth, photos });
@@ -380,6 +389,7 @@ export async function buildApp(
   const timer = setInterval(() => {
     webChat.purgeExpiredSessions();
     auth.purgeDeadSessions();
+    auth.purgeExpiredPasswordResets();
     igRepo.purgeExpiredStates();
     void ig.expireDue().catch(() => undefined);
   }, 6 * 3600_000);
