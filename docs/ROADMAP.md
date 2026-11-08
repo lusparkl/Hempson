@@ -71,7 +71,7 @@ Goal: a working MVP of the core loop, message to paid order to TTN, on official 
 | P6 | Customer notifications | DONE in code against fakes (2026-11-01, D33); live sends ride on the P1/P2/P5 live checks | no | P1, P2, P5 |
 | P7 | Plans and quotas | DONE (2026-11-01, D34) | no | - |
 | P8 | Catalog and analytics | DONE (2026-11-01, D35; XLSX import 2026-11-07, D43); Google Sheets fetch **not live-checked**; XLSX not tried on files from Excel/LibreOffice/Sheets | no | P4, P5 for the funnel |
-| P9 | Matching their extras | Suggestions DONE (2026-11-01, D36); photo search, forwarded posts, storefront TODO (decisions in D36) | no | P1, P8 |
+| P9 | Matching their extras | Suggestions DONE (2026-11-01, D36); photo search, forwarded posts and storefront DONE (2026-11-07, D42); Instagram media download needs the CDN host from a live capture | no | P1, P8 |
 | W1 | Public website | Structure DONE (2026-11-01, D37); home page, header and footer redesigned to "Hepson Home v2" (2026-11-02, D38); inner pages, footer and CTA per "Hepson Site" DONE (2026-11-04); **real contacts, legal entity, prices, lawyer review and hosting TODO** | yes (contacts, prices, legal texts, domain) | - |
 | P10 | Design parity gaps (dashboard v3, home v2) | DONE (2026-11-04, D40) | no | P8 |
 | Later | Meta Business Verification, App Review (Advanced Access), Tech Provider status, Hepson subscription billing | BLOCKED on FOP | yes | - |
