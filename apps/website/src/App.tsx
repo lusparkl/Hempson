@@ -2,6 +2,7 @@ import { Layout } from './components/Layout';
 import { PageProvider, type PageContext } from './context';
 import { About } from './pages/About';
 import { Contact } from './pages/Contact';
+import { Demo } from './pages/Demo';
 import { Features } from './pages/Features';
 import { Home } from './pages/Home';
 import { Legal } from './pages/Legal';
@@ -25,6 +26,8 @@ function Page({ route }: Pick<PageContext, 'route'>) {
       return <Home />;
     case 'features':
       return <Features />;
+    case 'demo':
+      return <Demo />;
     case 'pricing':
       return <Pricing />;
     case 'about':

@@ -278,3 +278,16 @@ a.contact-card:hover { border-color: var(--brand-300); box-shadow: var(--shadow-
 .not-found { padding-top: clamp(72px, 12vw, 160px); padding-bottom: clamp(72px, 12vw, 160px); display: flex; flex-direction: column; align-items: flex-start; gap: 20px; }
 .not-found-code { font: 500 14px var(--font-mono); color: var(--brand-700); }
 .not-found p { font-size: 19px; line-height: 1.5; color: var(--ink-600); max-width: 480px; }
+
+/* Demo: functional layout only, no design pass yet */
+.demo-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 24px; }
+@media (max-width: 800px) { .demo-grid { grid-template-columns: minmax(0, 1fr); } }
+.demo-chat { height: auto; }
+.demo-msgs { display: flex; flex-direction: column; gap: 10px; min-height: 280px; max-height: 480px; overflow-y: auto; }
+.demo-samples { display: flex; flex-wrap: wrap; gap: 8px; }
+.demo-reply { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.demo-msg { max-width: 80%; padding: 10px 14px; border-radius: 8px; background: var(--surface-subtle); white-space: pre-wrap; overflow-wrap: anywhere; }
+.demo-out { align-self: flex-end; background: var(--brand-600); color: #fff; }
+.demo-form { display: flex; gap: 8px; }
+.demo-form input { flex: 1; min-width: 0; padding: 10px 12px; font: inherit; border: 1px solid var(--border-default); border-radius: 8px; }
+.demo-products { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }

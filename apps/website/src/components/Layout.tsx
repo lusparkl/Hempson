@@ -44,6 +44,7 @@ function Header() {
             <a href="#how">{n.how}</a>
             <a href="#features">{n.features}</a>
             <a href="#control">{n.control}</a>
+            <a href={href('demo')}>{d.common.nav.demo}</a>
           </nav>
         ) : (
           <nav id="site-nav" className="site-nav-pages" aria-label={SITE.name}>

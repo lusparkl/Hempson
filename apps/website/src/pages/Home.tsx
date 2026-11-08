@@ -9,7 +9,7 @@ import { fmt, usePage } from '../context';
 
 /** Home page, after the "Hepson Home v2" design. Copy lives in `d.pages.home`; demo cards use sample data. */
 export function Home() {
-  const { d, dashboard } = usePage();
+  const { d, dashboard, href } = usePage();
   const h = d.pages.home;
   const f = h.features;
   return (
@@ -23,6 +23,9 @@ export function Home() {
           <div className="hm-actions">
             <ButtonLink variant="primary" size="lg" arrow href={dashboard('register')}>
               {h.hero.primaryCta}
+            </ButtonLink>
+            <ButtonLink variant="secondary" size="lg" href={href('demo')}>
+              {d.common.nav.demo}
             </ButtonLink>
             <ButtonLink variant="secondary" size="lg" href={dashboard('login')}>
               {h.hero.secondaryCta}

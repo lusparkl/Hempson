@@ -25,6 +25,14 @@ const settingsBody = z.strictObject({
 /** Model turns per shop and hour in the test chat: it costs the operator tokens but does not count against the plan cap. */
 const PLAYGROUND_TURNS_PER_HOUR = 60;
 
+/** A test-chat conversation kept by the client, ending with the customer's new message. */
+export const playgroundMessages = (maxLength: number, maxMessages: number) =>
+  z
+    .array(z.strictObject({ role: z.enum(['customer', 'assistant']), text: z.string().trim().min(1).max(maxLength) }))
+    .min(1)
+    .max(maxMessages)
+    .refine((m) => m.at(-1)?.role === 'customer', 'the last message must be from the customer');
+
 const runView = (r: AiRunRow) => ({
   runId: r.id,
   conversationId: r.conversationId,
@@ -65,11 +73,7 @@ export function registerAiRoutes(
   const aiAvailable = salesAgent !== null;
   const playgroundLimit = new RateLimiter(PLAYGROUND_TURNS_PER_HOUR, 3_600_000);
   const playgroundBody = z.strictObject({
-    messages: z
-      .array(z.strictObject({ role: z.enum(['customer', 'assistant']), text: z.string().trim().min(1).max(deps.maxMessageLength) }))
-      .min(1)
-      .max(40)
-      .refine((m) => m.at(-1)?.role === 'customer', 'the last message must be from the customer'),
+    messages: playgroundMessages(deps.maxMessageLength, 40),
     instructions: z.string().max(2000).optional(),
   });
   const requireRole = makeRequireRole(shops, auth);

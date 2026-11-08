@@ -390,3 +390,8 @@ Amends D35 ("XLSX import: not built").
 
 ## D44 (2026-11-07): WayForPay deferred
 The owner dropped WayForPay from the active roadmap for now. P5 stays Monobank only: built against a fake, with the live check with a test token still open. Nothing is removed: `api.wayforpay.com` stays on the egress allow-list and `wayforpay` stays a credential kind, because both are inert without code. The website no longer announces WayForPay. Picking it up again needs only a new P-row.
+
+## D45 (2026-11-08): Public agent demo on the marketing site
+`/demo/` on the website is a live chat with the sales agent over a test catalog. `POST /public/demo/chat` runs the existing playground, so nothing is stored or sent and the reply guard applies; it accepts no custom instructions and returns only the outcome, the reply and the names of the checks made. The shop (slug `hepson-demo`) is seeded once at startup, has no members, and has no Nova Poshta key, so checkout stops before an order. If a shop with members already holds the slug, the demo stays off rather than expose its catalog.
+
+Every turn costs the operator model tokens, so it is off unless `HEPSON_DEMO=1` and is limited per IP and per day (`HEPSON_DEMO_TURNS_PER_IP_HOUR`, `HEPSON_DEMO_TURNS_PER_DAY`). The limits are in memory and reset on restart. `HEPSON_DEMO_ORIGINS` is an exact Origin allow-list, which stops other sites' browsers but is not authentication, so the limits are the real spending control. Behind a proxy `HEPSON_TRUST_PROXY` must be set, or all visitors share one IP limit. The site finds the API through `VITE_API_URL`.

@@ -50,6 +50,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     webChatMessagesPerIpPerMinute: int(env.HEPSON_WEBCHAT_MESSAGES_PER_IP_MINUTE, 40),
     webChatDailyMessagesPerShop: int(env.HEPSON_WEBCHAT_DAILY_MESSAGES_PER_SHOP, 2000),
     webChatSessionDays: int(env.HEPSON_WEBCHAT_SESSION_DAYS, 30),
+    /** Public agent demo on the marketing site (D45). Off by default: every turn costs model tokens. Origins = exact site origins, comma separated. */
+    demo: bool(env.HEPSON_DEMO, false),
+    demoOrigins: (env.HEPSON_DEMO_ORIGINS ?? 'http://127.0.0.1:5175,http://localhost:5175')
+      .split(',')
+      .map((o) => o.trim().replace(/\/+$/, ''))
+      .filter(Boolean),
+    demoTurnsPerIpPerHour: int(env.HEPSON_DEMO_TURNS_PER_IP_HOUR, 20),
+    demoTurnsPerDay: int(env.HEPSON_DEMO_TURNS_PER_DAY, 300),
     /** Extra outbound hosts beyond the built-in allow-list (comma separated). The LLM and Telegram base URL hosts are added automatically. An entry starting with a dot (`.cdninstagram.com`) allows `<one label>.<that suffix>`. */
     egressExtraHosts: (env.HEPSON_EGRESS_EXTRA_HOSTS ?? '')
       .split(',')

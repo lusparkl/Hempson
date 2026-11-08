@@ -7,6 +7,7 @@ import type { Dict } from './i18n';
 export const ROUTES = [
   { id: 'home', path: '/', nav: null },
   { id: 'features', path: '/features/', nav: 'main' },
+  { id: 'demo', path: '/demo/', nav: 'main' },
   { id: 'pricing', path: '/pricing/', nav: 'main' },
   { id: 'about', path: '/about/', nav: 'main' },
   { id: 'security', path: '/security/', nav: 'main' },

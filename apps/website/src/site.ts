@@ -6,6 +6,7 @@ export const SITE = {
   name: 'Hepson',
   url: (import.meta.env.VITE_SITE_URL ?? 'http://127.0.0.1:5175').replace(/\/$/, ''),
   dashboardUrl: (import.meta.env.VITE_DASHBOARD_URL ?? 'http://127.0.0.1:5174').replace(/\/$/, ''),
+  apiUrl: (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8787').replace(/\/$/, ''),
   /** Path of the default Open Graph image inside `public/`. TODO(design): add the file. */
   ogImage: '/og-image.png',
   contacts: {

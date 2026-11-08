@@ -355,7 +355,7 @@ Nothing auto-loads `.env`; run with `tsx --env-file=.env`. Full commented list i
 - Monobank: `HEPSON_MONOBANK_BASE_URL`, `HEPSON_PAYMENT_CHECK_MINUTES`.
 - Plans: `HEPSON_DEFAULT_PLAN`.
 - Egress: `HEPSON_EGRESS_EXTRA_HOSTS`.
-- Front ends (Vite): `VITE_SITE_URL`, `VITE_DASHBOARD_URL`.
+- Front ends (Vite): `VITE_SITE_URL`, `VITE_DASHBOARD_URL`, `VITE_API_URL`.
 
 ---
 

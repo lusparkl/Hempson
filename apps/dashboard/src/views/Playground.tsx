@@ -68,7 +68,9 @@ export function Playground() {
   const [notes, setNotes] = useState<string | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: 'end' }), [turns.length, busy]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: 'end' });
+  }, [turns.length, busy]);
 
   const saved = ai?.instructions ?? '';
   const draft = notes ?? saved;

@@ -38,6 +38,8 @@ import { OpenAiClient, type LlmClient } from './agent/llm';
 import { OpenAiVision, type VisionClient } from './agent/vision';
 import { PhotoSearchService } from './services/photo-search';
 import { registerPhotoSearchRoutes } from './routes/photo-search';
+import { registerDemoRoutes } from './routes/demo';
+import { ensureDemoShop } from './services/demo';
 import { registerStorefrontRoutes } from './routes/storefront';
 import { registerAiRoutes } from './routes/ai';
 import { registerOrderRoutes } from './routes/orders';
@@ -361,6 +363,9 @@ export async function buildApp(
   registerNotificationFeedRoutes(app, { shops, auth, feed });
   registerPlanRoutes(app, { shops, auth, plans });
   registerWebChatRoutes(app, { shops, auth, webChat, svc: webChatSvc, publicUrl: cfg.publicUrl });
+  const demoShopId = cfg.demo && salesAgent ? ensureDemoShop({ handle, shops, auth, catalog, policies, agent: agentRepo }) : null;
+  if (cfg.demo && salesAgent && !demoShopId) log.warn('demo is off: the demo slug belongs to a real shop');
+  registerDemoRoutes(app, { shopId: demoShopId, catalog, salesAgent, origins: cfg.demoOrigins, turnsPerIpPerHour: cfg.demoTurnsPerIpPerHour, turnsPerDay: cfg.demoTurnsPerDay });
   registerOrderRoutes(app, { shops, auth, orders, delivery, payments, paymentRepo, noticeRepo });
   registerPolicyRoutes(app, { shops, auth, policies });
   registerDeliveryRoutes(app, { shops, auth, delivery, deliveryRepo, orders, conversations });

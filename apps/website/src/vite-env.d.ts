@@ -5,4 +5,6 @@ interface ImportMetaEnv {
   readonly VITE_SITE_URL?: string;
   /** Shop-owner dashboard origin; the header's "log in" and "start" links point here. */
   readonly VITE_DASHBOARD_URL?: string;
+  /** API origin; the live demo page calls it from the browser. */
+  readonly VITE_API_URL?: string;
 }
