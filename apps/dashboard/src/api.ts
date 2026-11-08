@@ -73,10 +73,7 @@ export function useLoad<T>(fn: () => Promise<T>, deps: unknown[], pollMs?: numbe
   return { data, error, reload };
 }
 
-export const money = (minor: number, currency: string) => `${(minor / 100).toFixed(2)} ${currency}`;
-/** Money in lists, as in the design: `1280.00 ₴` for UAH, otherwise `1280.00 EUR`. */
-export const moneyList = (minor: number, currency: string) => `${(minor / 100).toFixed(2)} ${currency === 'UAH' ? '₴' : currency}`;
-/** Compact money for KPI totals: `1 280 ₴` for UAH, otherwise `1 280 EUR`. */
+/** The one money format in the dashboard (owner, 2026-11-07): whole units with thousands grouping, `1 280 ₴` for UAH, otherwise `1 280 EUR`. Kopecks are rounded. */
 export const moneyShort = (minor: number, currency: string) =>
   `${Math.round(minor / 100).toLocaleString('uk-UA')} ${currency === 'UAH' ? '₴' : currency}`;
 export const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('uk-UA') : '—');

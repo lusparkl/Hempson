@@ -1,5 +1,5 @@
 import { useShop } from '../App';
-import { ago, api, customerName, moneyList, moneyShort, orderNo, preview, revenue, statsUrl, useLoad, type Conv, type StatsData } from '../api';
+import { ago, api, customerName, moneyShort, orderNo, preview, revenue, statsUrl, useLoad, type Conv, type StatsData } from '../api';
 import { Avatar, Button, FunnelRows, Icon, Panel, Spark, type IconName } from '../ui';
 import { channelLabel } from './Inbox';
 
@@ -53,7 +53,7 @@ export function Overview() {
     tasks.push({
       key: d.draftId,
       icon: 'shopping-bag',
-      title: `Чернетка ${orderNo(d.number)} · ${moneyList(d.totalMinor, d.currency)}`,
+      title: `Чернетка ${orderNo(d.number)} · ${moneyShort(d.totalMinor, d.currency)}`,
       sub: `${d.contactName ?? 'Клієнт'} · ${d.createdBy === 'ai' ? 'створив ШІ' : 'вручну'}${d.checkout.missing.length ? ' · бракує даних' : ''}`,
       tile: tile('var(--brand-50)', 'var(--brand-700)'),
       cta: 'Переглянути',

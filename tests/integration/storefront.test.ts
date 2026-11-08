@@ -65,17 +65,23 @@ describe('storefront', () => {
     expect(r.headers['content-type']).toMatch(/text\/html/);
     expect(r.headers['content-security-policy']).toContain('script-src https://hepson.example');
     expect(r.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+    expect(r.headers['content-security-policy']).toContain('font-src https://hepson.example');
+    const font = await page('/s/_fonts/geist-cyrillic.woff2');
+    expect(font.statusCode).toBe(200);
+    expect(font.headers['content-type']).toBe('font/woff2');
+    expect((await page('/s/_fonts/../../etc/passwd')).statusCode).toBe(404);
+    expect((await page('/s/_fonts/other.woff2')).statusCode).toBe(404);
     expect(r.headers['referrer-policy']).toBe('no-referrer');
     const html = r.body;
     expect(html).toContain('<title>Льон &amp; Ко: каталог</title>');
     expect(html).toContain('Сукня');
-    expect(html).toMatch(/від 1\s299 грн/); // uk-UA groups thousands with a no-break space
+    expect(html).toMatch(/від 1\s299 ₴/); // uk-UA groups thousands with a no-break space
     expect(html).toMatch(/<p class="opts">(S · L|L · S)<\/p>/); // in-stock sizes only, in catalog order
     expect(html).not.toMatch(/>M</);
     expect(html).toContain('src="https://img.example/dress.jpg"');
     for (const hidden of ['Розпродано', 'Прихований', 'Чужий товар', 'DR-S', '<script>alert', 'javascript:']) expect(html, hidden).not.toContain(hidden);
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
-    expect(html).toContain('50,50 грн');
+    expect(html).toContain('51 ₴'); // whole units, as in the dashboard
     // No chat connected: no widget and no chat links.
     expect(html).not.toContain('web-chat.js');
     expect(html).not.toContain('t.me/');

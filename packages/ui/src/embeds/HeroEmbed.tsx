@@ -154,7 +154,7 @@ function DraftCard({ c1 }: { c1: number }) {
     <div style={{ width: '88%', background: '#fff', border: '1px solid ' + C.brand200, borderRadius: 12, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, boxShadow: '0 1px 2px rgba(10,37,64,.08), 0 0 0 ' + glow.toFixed(1) + 'px rgba(83,58,253,' + (0.18 * (1 - ring)).toFixed(3) + ')', boxSizing: 'border-box' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 10, color: C.ink500 }}>Чернетка замовлення</div>
-        <div style={{ fontSize: 20, fontWeight: 300, letterSpacing: '-.04em', color: C.ink900, fontVariantNumeric: 'tabular-nums' }}>{n.toFixed(2)} UAH</div>
+        <div style={{ fontSize: 20, fontWeight: 300, letterSpacing: '-.04em', color: C.ink900, fontVariantNumeric: 'tabular-nums' }}>{Math.round(n).toLocaleString('uk-UA')} ₴</div>
       </div>
       <span style={{ fontSize: 12, fontWeight: 500, padding: '3px 9px', borderRadius: 4, background: '#FFF1CF', color: '#8A5A00', border: '1px solid #F0D58A', opacity: badge > 0 ? 1 : 0, transform: 'scale(' + (0.6 + 0.4 * badge).toFixed(3) + ')' }}>Очікує</span>
     </div>

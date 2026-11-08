@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useShop } from '../App';
-import { api, errText, money, moneyList, orderNo, shortWhen, token, useLoad, when } from '../api';
+import { api, errText, moneyShort, orderNo, shortWhen, token, useLoad, when } from '../api';
 import { Alert, Avatar, Badge, Button, HeaderActions, Icon, useToast, type Tone } from '../ui';
 
 type Item = { sku: string; productName: string; options: Record<string, string>; quantity: number; unitPriceMinor: number };
@@ -162,7 +162,7 @@ export function Orders() {
                     </span>
                   </span>
                 </span>
-                <span style={{ fontWeight: 500, color: 'var(--ink-900)' }}>{moneyList(o.totalMinor, o.currency)}</span>
+                <span style={{ fontWeight: 500, color: 'var(--ink-900)' }}>{moneyShort(o.totalMinor, o.currency)}</span>
                 <span>
                   <Badge tone={tone}>{label}</Badge>
                 </span>
@@ -198,7 +198,7 @@ function Detail({ d, busy, act }: { d: Draft; busy: boolean; act: (path: string,
             <Badge tone={tone}>{label}</Badge>
           </span>
         </div>
-        <div className="detail-total">{money(d.totalMinor, d.currency)}</div>
+        <div className="detail-total">{moneyShort(d.totalMinor, d.currency)}</div>
       </div>
       <div className="detail-sec">
         <div className="eyebrow">Товари</div>
@@ -211,7 +211,7 @@ function Detail({ d, busy, act }: { d: Draft; busy: boolean; act: (path: string,
                 {i.sku}
               </span>
             </span>
-            <span style={{ color: 'var(--ink-800)' }}>{money(i.unitPriceMinor * i.quantity, d.currency)}</span>
+            <span style={{ color: 'var(--ink-800)' }}>{moneyShort(i.unitPriceMinor * i.quantity, d.currency)}</span>
           </div>
         ))}
       </div>

@@ -229,7 +229,7 @@ function OrderLayer() {
             <span style={{ position: 'absolute', opacity: 1 - k, whiteSpace: 'nowrap' }}>Чернетка замовлення · створив ШІ</span>
             <span style={{ position: 'absolute', opacity: k, whiteSpace: 'nowrap' }}>Замовлення підтверджено</span>
           </div>
-          <div style={{ fontSize: 38, fontWeight: 300, letterSpacing: '-.04em', color: Z.ink900, fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>{amt.toFixed(2)} UAH</div>
+          <div style={{ fontSize: 38, fontWeight: 300, letterSpacing: '-.04em', color: Z.ink900, fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>{Math.round(amt).toLocaleString('uk-UA')} ₴</div>
         </div>
         <div style={{ opacity: badge > 0 ? 1 : 0, transform: 'scale(' + (0.6 + 0.4 * badge).toFixed(3) + ')', transformOrigin: 'top right' }}>
           <StatusBadge k={k} />

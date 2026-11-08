@@ -61,7 +61,7 @@ main.content { flex: 1; min-height: 0; overflow-y: auto; }
 /* Panels */
 .panel { background: #fff; border: 1px solid var(--border-default); border-radius: 8px; }
 .panel.clip { overflow: hidden; }
-.panel-head { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border-subtle); }
+.panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 16px 20px; border-bottom: 1px solid var(--border-subtle); }
 .panel-title { font-size: 16px; font-weight: 500; letter-spacing: -0.015em; color: var(--ink-900); flex: 1; }
 .panel-meta { font-size: 13px; color: var(--text-subtle); }
 .panel-text { padding: 16px 20px; font-size: 14px; line-height: 1.6; color: var(--text-muted); }
@@ -202,10 +202,10 @@ button.sys { cursor: pointer; }
 /* Catalog */
 .toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .toolbar .search { flex: 1 1 280px; max-width: 380px; }
-.prow { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.3fr) 110px 150px 130px; gap: 12px; padding: 12px 20px; align-items: center; border-top: 1px solid var(--border-subtle); }
+.prow { display: grid; grid-template-columns: minmax(140px, 2.2fr) minmax(60px, 1fr) 90px 120px 112px; gap: 12px; padding: 12px 20px; align-items: center; border-top: 1px solid var(--border-subtle); }
 .prow:hover { background: var(--ink-50); }
 .prow.out { background: var(--ink-50); }
-.catalog-cols { grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.3fr) 110px 150px 130px; }
+.catalog-cols { grid-template-columns: minmax(140px, 2.2fr) minmax(60px, 1fr) 90px 120px 112px; }
 .ptile { width: 40px; height: 40px; border-radius: 6px; background: var(--brand-50); color: var(--brand-700); display: flex; align-items: center; justify-content: center; flex: none; }
 .stepper { display: flex; align-items: center; border: 1px solid var(--border-default); border-radius: 4px; width: fit-content; background: #fff; }
 .stepper button { width: 30px; height: 30px; border: 0; background: none; cursor: pointer; color: var(--ink-700); font-size: 16px; }
@@ -296,5 +296,21 @@ button.sys { cursor: pointer; }
   .msgs { padding: 16px; }
   .grid2 { grid-template-columns: 1fr; }
   .notif { position: fixed; top: 64px; left: 16px; right: 16px; width: auto; }
+  /* Page actions get their own row so the title and bell stay visible. */
+  .topbar { flex-wrap: wrap; height: auto; min-height: 64px; padding-top: 12px; padding-bottom: 12px; row-gap: 10px; }
+  .topbar > div:first-child { flex: 1 0 0; }
+  .page-actions { order: 3; flex: 1 0 100%; flex-wrap: wrap; }
+  .seg button { padding: 5px 10px; white-space: nowrap; }
+  /* Orders and catalog rows become stacked cards. */
+  .thead.orders-cols, .thead.catalog-cols { display: none; }
+  .orow { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; }
+  .orow > :first-child { grid-row: span 2; }
+  .orow > :not(:first-child) { justify-self: end; }
+  .prow { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'prod prod' 'var status' 'stock price'; row-gap: 10px; column-gap: 8px; }
+  .prow > :nth-child(1) { grid-area: prod; }
+  .prow > :nth-child(2) { grid-area: var; }
+  .prow > :nth-child(3) { grid-area: price; justify-self: end; }
+  .prow > :nth-child(4) { grid-area: stock; }
+  .prow > :nth-child(5) { grid-area: status; justify-self: end; }
 }
 .back { display: none; }

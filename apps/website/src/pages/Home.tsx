@@ -190,7 +190,7 @@ export function Home() {
             <div className="hm-row hm-foot">
               <div style={{ flex: 1 }}>
                 <div className="hm-label">{f.mono.label}</div>
-                <div className="hm-sum">1280.00 UAH</div>
+                <div className="hm-sum">1 280 ₴</div>
               </div>
               <Badge tone="info">{f.mono.badge}</Badge>
             </div>

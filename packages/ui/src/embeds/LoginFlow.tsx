@@ -188,7 +188,7 @@ function Board({ T }: { T: number }) {
           <LIcon name={ch} size={14} color={Q.ink400} sw={1.8} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 20, fontWeight: 300, letterSpacing: '-.04em', color: Q.ink900, fontVariantNumeric: 'tabular-nums' }}>{amt} ₴</span>
+          <span style={{ fontSize: 20, fontWeight: 300, letterSpacing: '-.04em', color: Q.ink900, fontVariantNumeric: 'tabular-nums' }}>{amt.toLocaleString('uk-UA')} ₴</span>
           <span style={{ fontSize: 11, fontWeight: 500, padding: '2px 7px', borderRadius: 4, background: t[0], color: t[1], border: '1px solid ' + t[2], whiteSpace: 'nowrap' }}>{LANES[p.lane]!.badge}</span>
         </div>
       </div>

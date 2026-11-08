@@ -1,6 +1,6 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { useShop } from '../App';
-import { api, errText, moneyList, useLoad } from '../api';
+import { api, errText, moneyShort, useLoad } from '../api';
 import { Badge, Button, Drawer, HeaderActions, Icon, Input, useToast, type Tone } from '../ui';
 
 type Variant = { variantId: string; sku: string; options: Record<string, string>; priceMinor: number; stock: number; active: boolean };
@@ -78,8 +78,8 @@ export function Catalog() {
         </div>
       </div>
       {list.error && <div className="err">{list.error}</div>}
-      <div className="panel clip" style={{ overflowX: 'auto' }}>
-        <div style={{ minWidth: 760 }}>
+      <div className="panel clip">
+        <div>
           <div className="thead catalog-cols">
             <span>Товар</span>
             <span>Варіант</span>
@@ -105,7 +105,7 @@ export function Catalog() {
               <span className="muted" style={{ fontSize: 14 }}>
                 {Object.values(v.options).join(' / ') || '—'}
               </span>
-              <span style={{ color: 'var(--ink-900)' }}>{moneyList(v.priceMinor, p.currency)}</span>
+              <span style={{ color: 'var(--ink-900)' }}>{moneyShort(v.priceMinor, p.currency)}</span>
               <Stepper value={v.stock} label={v.sku} onSet={(n) => void setStock(p, v, n)} />
               <span>
                 <Badge tone={lv[1]}>{lv[0]}</Badge>

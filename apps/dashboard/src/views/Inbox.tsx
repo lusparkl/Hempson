@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useShop } from '../App';
-import { ago, api, customerName, dateOnly, errText, hhmm, money, orderNo, preview, shortWhen, useLoad, type Conv, type CustomerCard } from '../api';
+import { ago, api, customerName, dateOnly, errText, hhmm, moneyShort, orderNo, preview, shortWhen, useLoad, type Conv, type CustomerCard } from '../api';
 import { Avatar, Badge, Button, Icon, Switch, Textarea, useToast, type IconName } from '../ui';
 import { STATUS, type Draft } from './Orders';
 
@@ -211,7 +211,7 @@ function Thread({ base, conv, onBack, onChange }: { base: string; conv: Conv; on
                       <div style={{ fontSize: 12 }} className="subtle">
                         Чернетка замовлення {orderNo(d.number)} · {d.createdBy === 'ai' ? 'створив ШІ' : 'вручну'}
                       </div>
-                      <div className="amount">{money(d.totalMinor, d.currency)}</div>
+                      <div className="amount">{moneyShort(d.totalMinor, d.currency)}</div>
                     </div>
                     <Badge tone={tone}>{label}</Badge>
                   </div>
@@ -309,7 +309,7 @@ function Side({ base, conv }: { base: string; conv: Conv }) {
       setSaving(false);
     }
   };
-  const totals = p?.orders.totals.map((t) => money(t.totalMinor, t.currency)).join(' + ');
+  const totals = p?.orders.totals.map((t) => moneyShort(t.totalMinor, t.currency)).join(' + ');
   return (
     <aside className="inbox-side" aria-label="Клієнт">
       <div className="profile">

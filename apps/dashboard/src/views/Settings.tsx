@@ -271,7 +271,7 @@ function StorefrontRow({ base, owner }: { base: string; owner: boolean }) {
         </>
       }
     >
-      <Switch label="Увімкнено" checked={d.enabled} disabled={!owner} onChange={(e) => void toggle(e.target.checked)} />
+      <Switch label={d.enabled ? 'Увімкнено' : 'Вимкнено'} checked={d.enabled} disabled={!owner} onChange={(e) => void toggle(e.target.checked)} />
     </Row>
   );
 }
@@ -341,7 +341,7 @@ function WebChatRows({ base, owner }: { base: string; owner: boolean }) {
   return (
     <>
       <Row title="Чат на сайті" desc="Код віджета вставте перед закриттям body на дозволеному сайті.">
-        <Switch label="Увімкнено" checked={d.enabled} disabled={!owner} onChange={(e) => void put(e.target.checked, d.allowedOrigins)} />
+        <Switch label={d.enabled ? 'Увімкнено' : 'Вимкнено'} checked={d.enabled} disabled={!owner} onChange={(e) => void put(e.target.checked, d.allowedOrigins)} />
       </Row>
       <Block title="Дозволені сайти" desc="Віджет працюватиме лише на цих доменах. Кілька — через кому.">
         <form
@@ -440,13 +440,18 @@ function AiTab({ base, owner }: { base: string; owner: boolean }) {
           </div>
         )}
         <Row title="Відповідати клієнтам" desc="Асистент сам відповідає в усіх підключених каналах.">
-          <Switch label="Увімкнено" checked={d.enabled} disabled={!owner} onChange={(e) => save({ enabled: e.target.checked })} />
+          <Switch label={d.enabled ? 'Увімкнено' : 'Вимкнено'} checked={d.enabled} disabled={!owner} onChange={(e) => save({ enabled: e.target.checked })} />
         </Row>
         <Row
           title="Підтверджувати замовлення автоматично"
           desc={auto ? 'Увімкнено — замовлення, що пройшли всі перевірки, підтверджуються без вас.' : 'Вимкнено — кожне замовлення підтверджує людина.'}
         >
-          <Switch label="Увімкнено" checked={auto} disabled={!owner} onChange={(e) => save({ autonomy: e.target.checked ? 'auto_confirm' : 'approval_required' })} />
+          <Switch
+            label={auto ? 'Увімкнено' : 'Вимкнено'}
+            checked={auto}
+            disabled={!owner}
+            onChange={(e) => save({ autonomy: e.target.checked ? 'auto_confirm' : 'approval_required' })}
+          />
         </Row>
         <Block title="Ліміт суми для автопідтвердження" desc="Замовлення вище цієї суми завжди чекають вашого підтвердження. Порожньо — без ліміту.">
           <form

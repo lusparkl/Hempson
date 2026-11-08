@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { NavParams, Page } from './App';
-import { ago, api, errText, moneyList, orderNo, useLoad, type Feed, type FeedItem } from './api';
+import { ago, api, errText, moneyShort, orderNo, useLoad, type Feed, type FeedItem } from './api';
 import { Icon, useToast, type IconName } from './ui';
 
 const PAY: Record<string, string> = {
@@ -28,7 +28,7 @@ function row(i: FeedItem): Row {
       return {
         icon: 'shopping-bag',
         tone: 'brand',
-        title: `Нове замовлення ${orderNo(i.number)} · ${moneyList(i.totalMinor, i.currency)}`,
+        title: `Нове замовлення ${orderNo(i.number)} · ${moneyShort(i.totalMinor, i.currency)}`,
         sub: `${who} · ${i.createdBy === 'ai' ? 'створив ШІ' : 'вручну'}`,
         page: 'orders',
         params: { draftId: i.draftId, tab: 'all' },
@@ -38,7 +38,7 @@ function row(i: FeedItem): Row {
         icon: 'credit-card',
         tone: 'danger',
         title: `Оплата ${orderNo(i.number)}: ${(i.flag && FLAG[i.flag]) ?? PAY[i.state] ?? i.state}`,
-        sub: `${who} · ${moneyList(i.totalMinor, i.currency)}`,
+        sub: `${who} · ${moneyShort(i.totalMinor, i.currency)}`,
         page: 'orders',
         params: { draftId: i.draftId, tab: 'all' },
       };
