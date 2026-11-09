@@ -44,6 +44,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     publicUrl: (env.HEPSON_PUBLIC_URL || `http://${env.HEPSON_HOST ?? '127.0.0.1'}:${int(env.HEPSON_PORT, 8787)}`).replace(/\/+$/, ''),
     /** Honour X-Forwarded-For (set only behind a reverse proxy you control; otherwise every visitor looks like the proxy). */
     trustProxy: bool(env.HEPSON_TRUST_PROXY, false),
+    /** Operator alerts (D49): off unless a chat and a bot are known. Defaults to the notification bot; a separate bot keeps alerts working if that token is revoked. Never log the token. */
+    alertChatId: env.HEPSON_ALERT_TELEGRAM_CHAT_ID || undefined,
+    alertBotToken: env.HEPSON_ALERT_TELEGRAM_BOT_TOKEN || env.HEPSON_TELEGRAM_BOT_TOKEN || undefined,
+    alertCheckSeconds: Math.max(5, int(env.HEPSON_ALERT_CHECK_SECONDS, 30)),
+    /** How often an open outage is repeated (0 = once only). */
+    alertRemindMinutes: int(env.HEPSON_ALERT_REMIND_MINUTES, 60),
+    alertDiskFreeMb: int(env.HEPSON_ALERT_DISK_FREE_MB, 1024),
+    /** Other https addresses of this deployment to watch, such as the marketing site (comma separated). */
+    alertUrls: (env.HEPSON_ALERT_URLS ?? '')
+      .split(',')
+      .map((u) => u.trim())
+      .filter(Boolean),
     /** Website chat abuse limits (Feature 10). */
     webChatSessionsPerIpPerHour: int(env.HEPSON_WEBCHAT_SESSIONS_PER_IP_HOUR, 20),
     webChatMessagesPerSessionPerMinute: int(env.HEPSON_WEBCHAT_MESSAGES_PER_SESSION_MINUTE, 10),

@@ -2,7 +2,7 @@ import nodemailer from 'nodemailer';
 import type { Config } from '../config';
 
 export type Mail = { to: string; subject: string; text: string };
-export type Mailer = { send(mail: Mail): Promise<void> };
+export type Mailer = { send(mail: Mail): Promise<void>; verify?(): Promise<void> };
 type Smtp = NonNullable<Config['smtp']>;
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -28,5 +28,9 @@ export class SmtpMailer implements Mailer {
   }
   async send(mail: Mail): Promise<void> {
     await this.transport.sendMail({ from: this.s.from, ...mail });
+  }
+  /** Connects and logs in without sending anything. */
+  async verify(): Promise<void> {
+    await this.transport.verify();
   }
 }

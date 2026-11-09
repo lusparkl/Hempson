@@ -7,6 +7,7 @@ import {
   type OrderRepository,
   type ShopRepository,
 } from '@hepson/database';
+import { errorCode, type AlertEvents } from './alerts';
 import type { Notifier } from './notifier';
 import type { CustomerSender } from './payments';
 
@@ -22,6 +23,7 @@ export type CustomerNoticeServiceDeps = {
   send: CustomerSender;
   log: Logger;
   notifier?: Notifier;
+  alerts?: AlertEvents;
   clock?: () => Date;
 };
 
@@ -98,7 +100,10 @@ export class CustomerNoticeService {
       return;
     }
     this.running = this.drain()
-      .catch((e) => this.d.log.warn({ code: e instanceof Error ? e.name : 'ERROR' }, 'customer notice pass failed'))
+      .catch((e) => {
+        this.d.log.warn({ code: e instanceof Error ? e.name : 'ERROR' }, 'customer notice pass failed');
+        this.d.alerts?.event('job:customer notices', 'Background job failed: customer notices', errorCode(e));
+      })
       .finally(() => {
         this.running = null;
         if (this.again) {

@@ -1,6 +1,7 @@
 import type { PhotoIndexRepository, PhotoIndexStatus, PhotoIndexTask, ShopMessageRow } from '@hepson/database';
 import { LlmError } from '../agent/llm';
 import { NO_PRODUCT, cosine, type VisionClient, type VisionImage } from '../agent/vision';
+import { errorCode, type AlertEvents } from './alerts';
 import { EgressDeniedError, hostOf, readCapped } from './egress';
 import type { TelegramService } from './telegram';
 
@@ -47,6 +48,7 @@ export class PhotoSearchService {
       egress: typeof fetch;
       telegram?: TelegramService;
       log: Logger;
+      alerts?: AlertEvents;
       now?: () => number;
     },
   ) {}
@@ -75,7 +77,10 @@ export class PhotoSearchService {
         while (this.now() >= this.pausedUntil && (await this.indexBatch(BATCH)) === BATCH);
       } while (this.again && this.now() >= this.pausedUntil);
     })()
-      .catch((e) => this.d.log.warn({ err: e instanceof Error ? e.name : 'ERROR' }, 'photo indexing crashed'))
+      .catch((e) => {
+        this.d.log.warn({ err: e instanceof Error ? e.name : 'ERROR' }, 'photo indexing crashed');
+        this.d.alerts?.event('job:photo indexing', 'Background job failed: photo indexing', errorCode(e));
+      })
       .finally(() => {
         this.running = null;
       });

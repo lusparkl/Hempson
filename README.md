@@ -32,6 +32,7 @@ Without any env, the API runs with shops, catalog, conversations, website chat a
 |---|---|
 | AI agent | `OPENAI_API_KEY`, `HEPSON_OPENAI_MODEL`; then each owner enables AI per shop |
 | Telegram operator notifications | `HEPSON_TELEGRAM_BOT_TOKEN`; each owner sets a chat id |
+| Outage alerts to the operator | `HEPSON_ALERT_TELEGRAM_CHAT_ID`; run `pnpm watchdog` on another machine (D49) |
 | Encrypted per-shop credentials | `HEPSON_MASTER_KEY` (`pnpm gen-master-key`; keep outside the repo and backups) |
 | Shop channels and integrations (Telegram bot, Nova Poshta, Monobank) | master key; each owner connects their own account |
 | Official Instagram | master key + `HEPSON_META_APP_ID`, `HEPSON_META_APP_SECRET`, `HEPSON_META_CONFIG_ID`, `HEPSON_META_VERIFY_TOKEN`, a public HTTPS `HEPSON_PUBLIC_URL`; `HEPSON_INSTAGRAM_POLL_SECONDS` for polling intake |

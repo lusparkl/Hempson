@@ -64,6 +64,8 @@ import { InstagramService } from './services/instagram';
 import { InstagramGraph } from './services/instagram-graph';
 import { RateLimitedError, WebChatService } from './services/web-chat';
 import { TelegramNotifier, type Notifier } from './services/notifier';
+import { AlertMonitor, alertSender, errorCode, observeEgress, withChannelIssueAlerts } from './services/alerts';
+import { buildProbes, ownUrls, trafficReporter } from './services/health-probes';
 import { TelegramService } from './services/telegram';
 import { TelegramBotApi } from './services/telegram-bot';
 import { LoginThrottle } from './auth/throttle';
@@ -96,6 +98,7 @@ export type App = {
   notices: CustomerNoticeService;
   plans: PlanRepository;
   notifier: Notifier | null;
+  alerts: AlertMonitor | null;
   salesAgent: SalesAgent | null;
   photoRepo: PhotoIndexRepository;
   photos: PhotoSearchService | null;
@@ -173,15 +176,13 @@ export async function buildApp(
   const noticeRepo = new CustomerNoticeRepository(handle);
   const plans = new PlanRepository(handle, cfg.defaultPlan);
   // The only outbound transport (D22): configured provider hosts are added to the built-in allow-list.
-  const egress = createEgress({
-    extraHosts: [
-      ...cfg.egressExtraHosts.filter((h) => h.startsWith('.')),
-      ...[...cfg.egressExtraHosts.filter((h) => !h.startsWith('.')), cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl, cfg.novaPoshtaBaseUrl, cfg.monobankBaseUrl]
-        .flatMap((u) => (u ? [hostOf(u) ?? ''] : []))
-        .filter(Boolean),
-    ],
-    fetchImpl: overrides.fetchImpl,
-  });
+  const egressHosts = [
+    ...cfg.egressExtraHosts.filter((h) => h.startsWith('.')),
+    ...[...cfg.egressExtraHosts.filter((h) => !h.startsWith('.')), cfg.openaiBaseUrl, cfg.telegramApiBaseUrl, cfg.metaGraphBaseUrl, cfg.novaPoshtaBaseUrl, cfg.monobankBaseUrl]
+      .flatMap((u) => (u ? [hostOf(u) ?? ''] : []))
+      .filter(Boolean),
+  ];
+  const plainEgress = createEgress({ extraHosts: egressHosts, fetchImpl: overrides.fetchImpl });
   const app = Fastify({
     logger:
       overrides.logger === false
@@ -196,6 +197,36 @@ export async function buildApp(
     trustProxy: cfg.trustProxy,
   });
   const log = app.log;
+  const smtpMailer = overrides.mailer !== undefined ? overrides.mailer : cfg.smtp ? new SmtpMailer(cfg.smtp) : null;
+  // Operator alerts (D49). Probes get their own egress: only they may call this deployment's public hosts, and their calls are not counted as traffic.
+  const sendAlert = alertSender(cfg, overrides.fetchImpl);
+  const alerts = sendAlert
+    ? new AlertMonitor({
+        title: 'Hepson API',
+        ...buildProbes({
+          cfg,
+          ping: () => handle.ping(),
+          mailer: smtpMailer,
+          vaultReady: keyring !== null,
+          egress: createEgress({ extraHosts: [...egressHosts, ...ownUrls(cfg)], fetchImpl: overrides.fetchImpl }),
+        }),
+        send: sendAlert,
+        log,
+        remindMs: cfg.alertRemindMinutes * 60_000,
+      })
+    : null;
+  const egress = alerts ? observeEgress(plainEgress, trafficReporter(cfg, alerts)) : plainEgress;
+  const mailer: Mailer | null =
+    alerts && smtpMailer
+      ? {
+          send: (mail) =>
+            smtpMailer.send(mail).catch((e: unknown) => {
+              alerts.event('smtp', 'Email could not be sent', errorCode(e));
+              throw e;
+            }),
+        }
+      : smtpMailer;
+  const jobFailed = (name: string) => (e: unknown) => alerts?.event(`job:${name}`, `Background job failed: ${name}`, errorCode(e));
   const vision =
     overrides.vision !== undefined
       ? overrides.vision
@@ -205,11 +236,12 @@ export async function buildApp(
   const llm =
     overrides.llm ??
     (cfg.openaiApiKey && cfg.openaiModel ? new OpenAiClient({ apiKey: cfg.openaiApiKey, model: cfg.openaiModel, baseUrl: cfg.openaiBaseUrl, fetch: egress }) : null);
-  const notifier: Notifier | null =
+  const shopNotifier: Notifier | null =
     overrides.notifier ??
     (cfg.telegramBotToken
       ? new TelegramNotifier({ token: cfg.telegramBotToken, agent: agentRepo, shops, conversations, orders, log, baseUrl: cfg.telegramApiBaseUrl, fetchImpl: egress })
       : null);
+  const notifier = alerts && shopNotifier ? withChannelIssueAlerts(shopNotifier, alerts, async (id) => (await shops.get(id))?.name) : shopNotifier;
   const ig = new InstagramService({
     graph: new InstagramGraph(
       {
@@ -263,11 +295,12 @@ export async function buildApp(
     send: (shopId, conversationId, text) => sendSystemMessage({ conversations, ig, tg }, shopId, conversationId, text),
     log,
     notifier: notifier ?? undefined,
+    alerts: alerts ?? undefined,
   });
   // Any repository instance on this database may queue a notice (P6); the sender wakes after the transition commits.
   const stopNoticeListener = onCustomerNoticeQueued(handle, () => notices.kick());
   const photoRepo = new PhotoIndexRepository(handle);
-  const photos = vision ? new PhotoSearchService({ repo: photoRepo, vision, egress, telegram: tg, log }) : null;
+  const photos = vision ? new PhotoSearchService({ repo: photoRepo, vision, egress, telegram: tg, log, alerts: alerts ?? undefined }) : null;
   const salesAgent = llm
     ? new SalesAgent({
         shops,
@@ -285,6 +318,7 @@ export async function buildApp(
         log,
         maxMessageLength: cfg.maxMessageLength,
         notifier: notifier ?? undefined,
+        alerts: alerts ?? undefined,
         instagram: ig,
         telegram: tg,
         photos: photos ?? undefined,
@@ -322,13 +356,14 @@ export async function buildApp(
       if (row) req.principal = { keyId: row.id };
     }
   });
-  app.setErrorHandler((err, _req, reply) => {
+  app.setErrorHandler((err, req, reply) => {
     let ce: ApiError;
     if (err instanceof ApiError) ce = err;
     else if (err instanceof ZodError) ce = new ApiError('VALIDATION_ERROR', err.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; '));
     else if ((err as { statusCode?: number }).statusCode && (err as { statusCode: number }).statusCode < 500) ce = new ApiError('VALIDATION_ERROR', (err as Error).message);
     else {
       app.log.error({ err: (err as Error).message }, 'unhandled');
+      alerts?.event(`api:${req.method}:${req.routeOptions.url}`, 'API answered 500', `${req.method} ${req.routeOptions.url ?? 'unknown route'} ${errorCode(err)}`);
       ce = new ApiError('INTERNAL', 'Internal error', { retryable: false });
     }
     if (reply.sent) return;
@@ -354,7 +389,6 @@ export async function buildApp(
     },
   });
   route(app, { method: 'GET', url: '/health', summary: 'Liveness', tag: 'meta', auth: 'none', handler: () => ({ ok: true, time: new Date().toISOString() }) });
-  const mailer = overrides.mailer !== undefined ? overrides.mailer : cfg.smtp ? new SmtpMailer(cfg.smtp) : null;
   registerAuthRoutes(app, auth, {
     allowRegistration: cfg.allowRegistration,
     sessionTtlMs: cfg.sessionTtlDays * 86_400_000,
@@ -393,6 +427,7 @@ export async function buildApp(
       for (const r of await plans.claimExpiryReminders(3)) notifier.notify({ kind: 'plan_expiring', ...r });
     } catch (e) {
       app.log.error({ err: (e as Error).message }, 'expiry reminders failed');
+      jobFailed('expiry reminders')(e);
     }
   };
   const timer = setInterval(async () => {
@@ -403,22 +438,24 @@ export async function buildApp(
       await igRepo.purgeExpiredStates();
     } catch (e) {
       app.log.error({ err: (e as Error).message }, 'periodic purge failed');
+      jobFailed('periodic purge')(e);
     }
-    void ig.expireDue().catch(() => undefined);
+    void ig.expireDue().catch(jobFailed('instagram expiry'));
     void remindExpiring();
   }, 6 * 3600_000);
   timer.unref();
-  void ig.expireDue().catch(() => undefined);
+  void ig.expireDue().catch(jobFailed('instagram expiry'));
   await remindExpiring();
-  const pollTimer = cfg.instagramPollSeconds > 0 ? setInterval(() => void ig.pollOnce().catch(() => undefined), cfg.instagramPollSeconds * 1000) : null;
+  const pollTimer = cfg.instagramPollSeconds > 0 ? setInterval(() => void ig.pollOnce().catch(jobFailed('instagram poll')), cfg.instagramPollSeconds * 1000) : null;
   pollTimer?.unref();
-  const npTimer = cfg.novaPoshtaPollMinutes > 0 ? setInterval(() => void delivery.pollOnce().catch(() => undefined), cfg.novaPoshtaPollMinutes * 60_000) : null;
+  const npTimer = cfg.novaPoshtaPollMinutes > 0 ? setInterval(() => void delivery.pollOnce().catch(jobFailed('nova poshta tracking')), cfg.novaPoshtaPollMinutes * 60_000) : null;
   npTimer?.unref();
-  const payTimer = cfg.paymentCheckMinutes > 0 ? setInterval(() => void payments.reconcileOnce().catch(() => undefined), cfg.paymentCheckMinutes * 60_000) : null;
+  const payTimer = cfg.paymentCheckMinutes > 0 ? setInterval(() => void payments.reconcileOnce().catch(jobFailed('payment check')), cfg.paymentCheckMinutes * 60_000) : null;
   payTimer?.unref();
   const photoTimer = photos && cfg.photoIndexMinutes > 0 ? setInterval(() => photos.schedule(), cfg.photoIndexMinutes * 60_000) : null;
   photoTimer?.unref();
   photos?.schedule();
+  alerts?.start();
 
   let closed = false;
   return {
@@ -447,6 +484,7 @@ export async function buildApp(
     notices,
     plans,
     notifier,
+    alerts,
     salesAgent,
     photoRepo,
     photos,
@@ -469,6 +507,7 @@ export async function buildApp(
       await notices.whenIdle();
       notices.stop();
       await notifier?.whenIdle();
+      await alerts?.stop();
       await app.close();
       handle.close();
     },

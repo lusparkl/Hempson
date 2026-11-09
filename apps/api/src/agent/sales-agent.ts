@@ -19,6 +19,7 @@ import {
 import type { DeliveryService } from '../services/delivery';
 import type { PaymentService } from '../services/payments';
 import type { InstagramService } from '../services/instagram';
+import { errorCode, type AlertEvents } from '../services/alerts';
 import type { Notifier } from '../services/notifier';
 import type { TelegramService } from '../services/telegram';
 import { PhotoSearchService } from '../services/photo-search';
@@ -55,6 +56,7 @@ export type SalesAgentDeps = {
   log: Logger;
   maxMessageLength: number;
   notifier?: Notifier;
+  alerts?: AlertEvents;
   instagram?: InstagramService;
   telegram?: TelegramService;
   /** P9 photo search; absent when no vision model is configured. */
@@ -108,7 +110,10 @@ export class SalesAgent {
     const prev = this.chains.get(target.shopConversationId) ?? Promise.resolve();
     const next: Promise<void> = prev
       .then(() => this.process(target))
-      .catch((e) => this.d.log.error({ shopId: target.shopId, err: String(e) }, 'agent run crashed'))
+      .catch((e) => {
+        this.d.log.error({ shopId: target.shopId, err: String(e) }, 'agent run crashed');
+        this.d.alerts?.event('agent:crashed', 'AI agent run crashed', errorCode(e));
+      })
       .finally(() => {
         if (this.chains.get(target.shopConversationId) === next) this.chains.delete(target.shopConversationId);
       });
@@ -172,6 +177,8 @@ export class SalesAgent {
     } catch (e) {
       const detail = e instanceof LlmError ? `LLM_${e.status ?? 'ERROR'}` : 'INTERNAL';
       log.warn({ shopId: t.shopId, runId: run.id, detail, err: e instanceof Error ? e.message : String(e) }, 'agent run failed');
+      // A provider outage (retryable) is already reported from the real traffic.
+      if (!(e instanceof LlmError && e.retryable)) this.d.alerts?.event(`agent:${detail}`, 'AI agent run failed', detail);
       await finish('failed', detail);
     }
   }

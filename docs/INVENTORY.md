@@ -133,6 +133,8 @@ Error envelope everywhere: `{ "error": { "code", "message", "retryable" } }`.
 | `web-chat.ts` | `WebChatService`: visitor sessions, messages, limits |
 | `shop-sender.ts` | One send path for all channels (Instagram Send API, Telegram, website internal); `sendSystemMessage` for fixed templates |
 | `notifier.ts` | `TelegramNotifier`: tells the shop's team chat about new escalations, new order drafts, payment/TTN problems, quota reached (operator-wide bot `HEPSON_TELEGRAM_BOT_TOKEN`) |
+| `alerts.ts` | `AlertMonitor`: operator alerts in Telegram from probes, real traffic and events (D49); `observeEgress`, `alertSender`, `withChannelIssueAlerts` |
+| `health-probes.ts` | `buildProbes`: one check per dependency; `trafficReporter` maps provider hosts to incidents |
 | `nova-poshta.ts` | NP API client: cities, warehouses, sender counterparty/contact, `Counterparty.save`, `InternetDocument.save`, `getStatusDocuments` |
 | `delivery.ts` | `DeliveryService`: lookups, TTN creation (DB claim first, at most one per order, `uncertain` never retried), tracking timer (`HEPSON_NOVA_POSHTA_POLL_MINUTES`), `afterPaid` for prepaid orders |
 | `monobank.ts` | Monobank acquiring client: create/remove invoice, status, public key, signature verify |
@@ -348,6 +350,7 @@ Nothing auto-loads `.env`; run with `tsx --env-file=.env`. Full commented list i
 - Users: `HEPSON_ALLOW_REGISTRATION`, `HEPSON_SESSION_TTL_DAYS`, `HEPSON_SMTP_HOST`, `HEPSON_SMTP_PORT`, `HEPSON_SMTP_USER`, `HEPSON_SMTP_PASSWORD`, `HEPSON_SMTP_FROM`.
 - AI: `OPENAI_API_KEY`, `HEPSON_OPENAI_MODEL`, `HEPSON_OPENAI_BASE_URL`.
 - Team notifications: `HEPSON_TELEGRAM_BOT_TOKEN`, `HEPSON_TELEGRAM_API_BASE_URL`.
+- Operator alerts: `HEPSON_ALERT_TELEGRAM_CHAT_ID`, `HEPSON_ALERT_TELEGRAM_BOT_TOKEN`, `HEPSON_ALERT_CHECK_SECONDS`, `HEPSON_ALERT_REMIND_MINUTES`, `HEPSON_ALERT_DISK_FREE_MB`, `HEPSON_ALERT_URLS`, `HEPSON_WATCHDOG_URL`, `HEPSON_WATCHDOG_SECONDS`.
 - Website chat limits: `HEPSON_WEBCHAT_SESSIONS_PER_IP_HOUR`, `HEPSON_WEBCHAT_MESSAGES_PER_SESSION_MINUTE`, `HEPSON_WEBCHAT_MESSAGES_PER_IP_MINUTE`, `HEPSON_WEBCHAT_DAILY_MESSAGES_PER_SHOP`, `HEPSON_WEBCHAT_SESSION_DAYS`.
 - Credentials: `HEPSON_MASTER_KEY`, `HEPSON_MASTER_KEY_VERSION`, `HEPSON_MASTER_KEY_PREVIOUS`, `HEPSON_MASTER_KEY_PREVIOUS_VERSION`.
 - Meta/Instagram: `HEPSON_META_APP_ID`, `HEPSON_META_APP_SECRET`, `HEPSON_META_CONFIG_ID`, `HEPSON_META_VERIFY_TOKEN`, `HEPSON_META_API_VERSION` (v26.0), `HEPSON_META_GRAPH_BASE_URL`, `HEPSON_META_AUTHORIZE_URL`, `HEPSON_INSTAGRAM_POLL_SECONDS`.

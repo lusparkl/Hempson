@@ -420,3 +420,18 @@ After the date the agent does what it does at the reply cap (D34): no model call
 Before the date the owner gets one Telegram reminder (`plan_expiring`) once 3 days or fewer remain, so a one-week renewal does not trigger it immediately. The 6-hour server timer and server start claim due reminders atomically (`expiry_reminder_for`), once per `paidUntil`, so a new date gets its own reminder and several instances cannot both send it. With no bot configured nothing is claimed.
 
 Only the AI stops. Customers' messages, the dashboard, human replies, payment webhooks, TTNs and customer order notices keep working, so paying customers and orders in flight are not stranded by a late invoice. Chats escalated during a pause stay escalated after renewal until a person resolves them, as at the cap.
+
+## D49 (2026-11-09): Operator alerts in Telegram
+The operator needs to hear quickly when anything breaks. Shop notifications (D17) go to each shop's chat, so alerts have their own chat, `HEPSON_ALERT_TELEGRAM_CHAT_ID`. They are off without it. The bot defaults to the notification bot; a separate one keeps alerts working if that token is revoked. No new dependency or paid service.
+
+Four sources feed `AlertMonitor` (`services/alerts.ts`):
+- **Probes** (`services/health-probes.ts`): database, disk space, OpenAI models, Telegram, Meta Graph, Nova Poshta, Monobank, Google Sheets, SMTP login, and this deployment's public https URLs. Two failed checks open an incident and two passed checks close it. The model and alert channel are checked every 30 s by default, other providers at least every 60 s, and Google Sheets, extra models and SMTP every 5 minutes, because an SMTP check is a full login.
+- **Real traffic**: every call through `egress` (D22) is reported by host and status only. Three failures in a row open a separate incident. It is separate because a probe cannot see some failures, such as an OpenAI account out of credit, whose model listing still works. A 4xx counts only for OpenAI, which runs on the operator's key; elsewhere it is one shop's token or one customer.
+- **Events**: unhandled 500s, failed agent runs, failed background jobs, failed email, and a shop's token being refused. The first of a kind goes out at once; repeats in 10 minutes become one count.
+- **Process**: a message at every start, and one on an uncaught exception or a failed start.
+
+An in-process monitor cannot report its own death or its server's, so `pnpm watchdog` (`scripts/watchdog.ts`) polls `/ready` from a separate process. It only covers a server outage when it runs on another machine.
+
+Provider checks that have no operator credential send none: they call Meta and Monobank without a token and Nova Poshta with an empty key, and treat any answer short of a server error as "up". This spends no rate limit and exposes no secret, but it says nothing about any one shop's token. Shop tokens are not probed; existing failure paths report them.
+
+Messages are plain text holding fixed labels and short codes, never provider text or URLs, because either can carry a token or customer data. Probes use their own egress instance with this deployment's public hosts added, so the main egress allow-list does not grow. Failed sends stay in an in-memory outbox and are retried every 30 s, so an alert raised during a Telegram outage still arrives; a retry after a lost answer can duplicate an alert, which is harmless here, unlike a customer send. Incident state is in memory, so an outage still open after a restart is announced again.

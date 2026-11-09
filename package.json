@@ -9,6 +9,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "bootstrap-key": "tsx scripts/bootstrap-key.ts",
     "reset-link": "tsx scripts/reset-link.ts",
+    "watchdog": "tsx scripts/watchdog.ts",
     "dev:api": "tsx watch apps/api/src/index.ts",
     "start:api": "tsx apps/api/src/index.ts",
     "dev:dashboard": "pnpm --filter @hepson/dashboard dev",
