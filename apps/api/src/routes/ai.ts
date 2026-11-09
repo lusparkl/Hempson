@@ -96,9 +96,10 @@ export function registerAiRoutes(
   const requireRole = makeRequireRole(shops, auth);
   const settingsView = async (shopId: string) => {
     const s = await agent.getSettings(shopId);
-    // `available` = a model is configured on this server; `enabled` = the owner switched the agent on for this shop.
+    // `available` = a model is configured on this server; `enabled` = the owner switched the agent on for this shop; `operatorStopped` = Hepson's kill switch (D50).
     return {
       enabled: s.enabled,
+      operatorStopped: s.operatorStoppedAt !== null,
       instructions: s.instructions,
       available: aiAvailable,
       autonomy: s.autonomy,

@@ -13,7 +13,7 @@ corepack enable            # or: npm i -g pnpm
 pnpm install               # if better-sqlite3 has no binding: pnpm rebuild better-sqlite3
 pnpm exec playwright install chromium   # only for pnpm test:browser
 pnpm migrate               # creates the SQLite DB (~/.hepson/hepson.db)
-pnpm bootstrap-key         # optional: prints an operator API key once (only for setting a shop's plan by hand)
+pnpm bootstrap-key         # optional: prints an operator API key once (setting a shop's plan by hand, operator panel at dashboard `#operator`)
 ```
 
 ## Run
@@ -53,7 +53,7 @@ All variables and defaults: [.env.example](.env.example). Meta setup: webhook ca
 | `pnpm openapi` | write `docs/openapi.json` (also served at `/v1/openapi.json`) |
 | `pnpm backup [dest]` | online SQLite backup |
 | `pnpm gen-master-key` / `rewrap-credentials` | create or rotate the credential master key (D28) |
-| `pnpm bootstrap-key [name]` | operator API key for `PUT /v1/shops/:shopId/plan` (D41) |
+| `pnpm bootstrap-key [name]` | operator API key for `PUT /v1/shops/:shopId/plan` and the operator panel (D41, D50) |
 
 `pnpm format` is not clean repo-wide; format only the files you change.
 

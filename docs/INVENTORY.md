@@ -79,7 +79,7 @@ Entry: `src/index.ts` → `src/server.ts` (builds the app, wires services, timer
 
 ### 4.1 Authentication
 - **Dashboard users:** email + password (scrypt, `auth/password.ts`), opaque bearer session token `hsu_…` (only its hash is stored), login throttle (`auth/throttle.ts`). Roles per shop: `owner` and `manager`. Last owner cannot be removed. Session TTL `HEPSON_SESSION_TTL_DAYS` (30). Self-registration toggle `HEPSON_ALLOW_REGISTRATION`.
-- **Operator API keys:** `hep_…` (`pnpm bootstrap-key`), accepted only by `PUT .../plan` (fallback; D41). Shop routes reject API keys; that route rejects user sessions.
+- **Operator API keys:** `hep_…` (`pnpm bootstrap-key`), accepted only by `PUT .../plan` (fallback; D41) and `/v1/operator/*` (panel at dashboard `#operator`; D50). Shop routes reject API keys; that route rejects user sessions.
 - Cross-shop access returns `404`; a manager doing an owner-only write gets `403`.
 
 ### 4.2 HTTP routes (all built)
@@ -238,7 +238,7 @@ SQLite through better-sqlite3 + Drizzle (`schema.ts`, ~900 lines). Migrations `0
 Four texts (delivery, returns, payment, opening hours), versioned, owner-edited. Empty topic = the AI escalates instead of answering.
 
 ### Notifications
-- **Team Telegram chat** (operator bot, shop sets chat id): new escalation, new order draft, payment/TTN problems, quota reached.
+- **Team Telegram chat** (operator bot, shop sets chat id): new escalation, new order draft, payment/TTN problems, quota reached, AI stopped or resumed by the operator (D50).
 - **Notification centre** in the dashboard (bell): hand-offs, new orders, payment problems, TTN problems; last 30 days; one `seenAt` per member.
 - **Customer notices:** fixed server texts on confirm (COD), reject, paid, shipped, delivered; one attempt each; failures surface on the order card.
 
@@ -328,7 +328,7 @@ Imported by relative path from dashboard and website (D38).
 | Command | Does |
 |---|---|
 | `pnpm migrate` | Apply SQL migrations |
-| `pnpm bootstrap-key [name]` | Create an operator API key (plan fallback route only) |
+| `pnpm bootstrap-key [name]` | Create an operator API key (plan fallback route and operator panel) |
 | `pnpm dev:api` / `pnpm start:api` | Run the API (watch / plain) |
 | `pnpm dev:dashboard` / `pnpm dev:console` / `pnpm dev:website` | Front ends |
 | `pnpm build` | Build dev console and dashboard |

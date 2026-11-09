@@ -72,6 +72,8 @@ export class AgentRepository {
         autoConfirmMaxMinor: null,
         autonomyChangedAt: null,
         autonomyChangedBy: null,
+        operatorStoppedAt: null,
+        operatorStopReason: null,
         updatedAt: '',
       }
     );
@@ -99,11 +101,30 @@ export class AgentRepository {
       autoConfirmMaxMinor: cap,
       autonomyChangedAt: changed ? ts : cur.autonomyChangedAt,
       autonomyChangedBy: changed ? userId : cur.autonomyChangedBy,
+      operatorStoppedAt: cur.operatorStoppedAt,
+      operatorStopReason: cur.operatorStopReason,
       updatedAt: ts,
     };
     const { shopId: _s, ...set } = row;
     this.db.insert(t.shopAiSettings).values(row).onConflictDoUpdate({ target: t.shopAiSettings.shopId, set }).run();
     return row;
+  }
+
+  /**
+   * Operator only (D50; the route checks the admin key). `stopped: false` clears the switch and its reason; the owner's own
+   * settings are not touched. `changed` is true for exactly one caller per stop or resume, so the owner is told once.
+   */
+  async setOperatorStop(shopId: string, stopped: boolean, stopReason: string | null = null): Promise<{ settings: AiSettingsRow; changed: boolean }> {
+    return this.handle.transaction(() => {
+      const cur = this.getSettingsTx(shopId);
+      const set = { operatorStoppedAt: stopped ? this.now() : null, operatorStopReason: stopped ? stopReason : null };
+      this.db
+        .insert(t.shopAiSettings)
+        .values({ ...cur, ...set, updatedAt: this.now() })
+        .onConflictDoUpdate({ target: t.shopAiSettings.shopId, set })
+        .run();
+      return { settings: this.getSettingsTx(shopId), changed: (cur.operatorStoppedAt !== null) !== stopped };
+    });
   }
 
   async getNotifySettings(shopId: string): Promise<NotifySettingsRow> {

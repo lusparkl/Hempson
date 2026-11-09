@@ -15,6 +15,7 @@ import {
   InstagramRepository,
   Keyring,
   NotificationRepository,
+  OperatorRepository,
   OrderRepository,
   PaymentRepository,
   PhotoIndexRepository,
@@ -57,6 +58,7 @@ import { MonobankApi } from './services/monobank';
 import { PaymentService } from './services/payments';
 import { CustomerNoticeService } from './services/customer-notices';
 import { registerPlanRoutes } from './routes/plans';
+import { registerOperatorRoutes } from './routes/operator';
 import { registerPaymentRoutes } from './routes/payments';
 import { sendSystemMessage } from './services/shop-sender';
 import { createEgress, hostOf } from './services/egress';
@@ -64,7 +66,7 @@ import { InstagramService } from './services/instagram';
 import { InstagramGraph } from './services/instagram-graph';
 import { RateLimitedError, WebChatService } from './services/web-chat';
 import { TelegramNotifier, type Notifier } from './services/notifier';
-import { AlertMonitor, alertSender, errorCode, observeEgress, withChannelIssueAlerts } from './services/alerts';
+import { AlertMonitor, RecentErrors, alertSender, errorCode, observeEgress, withChannelIssueAlerts } from './services/alerts';
 import { buildProbes, ownUrls, trafficReporter } from './services/health-probes';
 import { TelegramService } from './services/telegram';
 import { TelegramBotApi } from './services/telegram-bot';
@@ -175,6 +177,7 @@ export async function buildApp(
   const paymentRepo = new PaymentRepository(handle);
   const noticeRepo = new CustomerNoticeRepository(handle);
   const plans = new PlanRepository(handle, cfg.defaultPlan);
+  const operator = new OperatorRepository(handle);
   // The only outbound transport (D22): configured provider hosts are added to the built-in allow-list.
   const egressHosts = [
     ...cfg.egressExtraHosts.filter((h) => h.startsWith('.')),
@@ -216,17 +219,18 @@ export async function buildApp(
       })
     : null;
   const egress = alerts ? observeEgress(plainEgress, trafficReporter(cfg, alerts)) : plainEgress;
-  const mailer: Mailer | null =
-    alerts && smtpMailer
-      ? {
-          send: (mail) =>
-            smtpMailer.send(mail).catch((e: unknown) => {
-              alerts.event('smtp', 'Email could not be sent', errorCode(e));
-              throw e;
-            }),
-        }
-      : smtpMailer;
-  const jobFailed = (name: string) => (e: unknown) => alerts?.event(`job:${name}`, `Background job failed: ${name}`, errorCode(e));
+  // Everything reported as an event also shows in the operator panel (D50), with or without Telegram alerts.
+  const errors = new RecentErrors(alerts);
+  const mailer: Mailer | null = smtpMailer
+    ? {
+        send: (mail) =>
+          smtpMailer.send(mail).catch((e: unknown) => {
+            errors.event('smtp', 'Email could not be sent', errorCode(e));
+            throw e;
+          }),
+      }
+    : null;
+  const jobFailed = (name: string) => (e: unknown) => errors.event(`job:${name}`, `Background job failed: ${name}`, errorCode(e));
   const vision =
     overrides.vision !== undefined
       ? overrides.vision
@@ -295,12 +299,12 @@ export async function buildApp(
     send: (shopId, conversationId, text) => sendSystemMessage({ conversations, ig, tg }, shopId, conversationId, text),
     log,
     notifier: notifier ?? undefined,
-    alerts: alerts ?? undefined,
+    alerts: errors,
   });
   // Any repository instance on this database may queue a notice (P6); the sender wakes after the transition commits.
   const stopNoticeListener = onCustomerNoticeQueued(handle, () => notices.kick());
   const photoRepo = new PhotoIndexRepository(handle);
-  const photos = vision ? new PhotoSearchService({ repo: photoRepo, vision, egress, telegram: tg, log, alerts: alerts ?? undefined }) : null;
+  const photos = vision ? new PhotoSearchService({ repo: photoRepo, vision, egress, telegram: tg, log, alerts: errors }) : null;
   const salesAgent = llm
     ? new SalesAgent({
         shops,
@@ -318,7 +322,7 @@ export async function buildApp(
         log,
         maxMessageLength: cfg.maxMessageLength,
         notifier: notifier ?? undefined,
-        alerts: alerts ?? undefined,
+        alerts: errors,
         instagram: ig,
         telegram: tg,
         photos: photos ?? undefined,
@@ -363,7 +367,7 @@ export async function buildApp(
     else if ((err as { statusCode?: number }).statusCode && (err as { statusCode: number }).statusCode < 500) ce = new ApiError('VALIDATION_ERROR', (err as Error).message);
     else {
       app.log.error({ err: (err as Error).message }, 'unhandled');
-      alerts?.event(`api:${req.method}:${req.routeOptions.url}`, 'API answered 500', `${req.method} ${req.routeOptions.url ?? 'unknown route'} ${errorCode(err)}`);
+      errors.event(`api:${req.method}:${req.routeOptions.url}`, 'API answered 500', `${req.method} ${req.routeOptions.url ?? 'unknown route'} ${errorCode(err)}`);
       ce = new ApiError('INTERNAL', 'Internal error', { retryable: false });
     }
     if (reply.sent) return;
@@ -405,6 +409,7 @@ export async function buildApp(
   registerStatsRoutes(app, { shops, auth, stats, plans });
   registerNotificationFeedRoutes(app, { shops, auth, feed });
   registerPlanRoutes(app, { shops, auth, plans });
+  registerOperatorRoutes(app, { shops, agent: agentRepo, plans, operator, errors, alerts, aiAvailable: salesAgent !== null, notifier });
   registerWebChatRoutes(app, { shops, auth, webChat, svc: webChatSvc, publicUrl: cfg.publicUrl });
   const demoShopId = cfg.demo && salesAgent ? await ensureDemoShop({ handle, shops, auth, catalog, policies, agent: agentRepo }) : null;
   if (cfg.demo && salesAgent && !demoShopId) log.warn('demo is off: the demo slug belongs to a real shop');

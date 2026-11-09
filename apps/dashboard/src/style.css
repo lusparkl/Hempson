@@ -162,6 +162,23 @@ button.sys { cursor: pointer; }
 .side-block { border-top: 1px solid var(--border-subtle); padding-top: 18px; display: flex; flex-direction: column; gap: 10px; }
 .placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-subtle); padding: 40px 20px; text-align: center; }
 
+/* Operator panel */
+.op-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.op-head h1 { font-size: 24px; font-weight: 400; letter-spacing: -0.02em; color: var(--ink-900); }
+.op-scroll { overflow-x: auto; }
+.op-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.op-table th { padding: 10px 14px; font-size: 12px; font-weight: 500; text-align: left; color: var(--text-subtle); background: var(--surface-subtle); vertical-align: bottom; }
+.op-table td { padding: 11px 14px; border-top: 1px solid var(--border-subtle); color: var(--ink-800); vertical-align: top; }
+.op-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.op-table .nowrap { white-space: nowrap; }
+.op-table td.err { color: var(--danger-fg); }
+.op-table .subtle { font-size: 12px; }
+.op-name { font-weight: 500; color: var(--ink-900); }
+.op-channels { display: flex; flex-wrap: wrap; gap: 4px; }
+.op-filters { display: flex; flex-wrap: wrap; gap: 12px; padding: 14px 20px; }
+.op-filters .hs-field { flex: 1 1 200px; max-width: 280px; }
+.op-table .mono { font-size: 12px; }
+
 /* Orders */
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border-default); overflow-x: auto; }
 .tab { font: inherit; font-size: 14px; font-weight: 500; display: flex; gap: 8px; align-items: center; white-space: nowrap; padding: 10px 14px; border: 0; background: none; cursor: pointer; margin-bottom: -1px; border-bottom: 2px solid transparent; color: var(--ink-600); }

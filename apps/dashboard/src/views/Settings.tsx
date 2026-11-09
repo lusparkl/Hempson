@@ -439,6 +439,11 @@ function AiTab({ base, owner }: { base: string; owner: boolean }) {
             <Alert>На сервері не налаштовано модель (OPENAI_API_KEY, HEPSON_OPENAI_MODEL): асистент не працюватиме.</Alert>
           </div>
         )}
+        {d.operatorStopped && (
+          <div style={{ padding: '0 20px 16px', marginTop: 16 }}>
+            <Alert>Команда Hepson зупинила ШІ цього магазину: асистент не відповідає клієнтам, поки його не відновлять. Зверніться до підтримки.</Alert>
+          </div>
+        )}
         <Row title="Відповідати клієнтам" desc="Асистент сам відповідає в усіх підключених каналах.">
           <Switch label={d.enabled ? 'Увімкнено' : 'Вимкнено'} checked={d.enabled} disabled={!owner} onChange={(e) => save({ enabled: e.target.checked })} />
         </Row>

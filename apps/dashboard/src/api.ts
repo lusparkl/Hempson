@@ -32,8 +32,9 @@ export class ApiError extends Error {
 /** Fired when the server says the session is gone, so the shell can show the login form. */
 export const UNAUTHORIZED = 'hepson-unauthorized';
 
-export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-  const t = token.get();
+/** `bearer` replaces the member's session (operator panel); a 401 on it does not end that session. */
+export async function api<T = unknown>(method: string, path: string, body?: unknown, bearer?: string): Promise<T> {
+  const t = bearer ?? token.get();
   const res = await fetch(path, {
     method,
     headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(t ? { authorization: `Bearer ${t}` } : {}) },
@@ -42,7 +43,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   const text = await res.text();
   const json = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    if (res.status === 401 && t) window.dispatchEvent(new Event(UNAUTHORIZED));
+    if (res.status === 401 && t && !bearer) window.dispatchEvent(new Event(UNAUTHORIZED));
     throw new ApiError(json?.error?.code ?? 'ERROR', json?.error?.message ?? res.statusText, res.status);
   }
   return json as T;
@@ -125,7 +126,7 @@ const MONTH_IN = ['січні', 'лютому', 'березні', 'квітні'
 const MONTH = ['січень', 'лютий', 'березень', 'квітень', 'травень', 'червень', 'липень', 'серпень', 'вересень', 'жовтень', 'листопад', 'грудень'];
 /** `2026-11` → `листопад` (or `листопаді` with `inside`). */
 export const monthName = (ym: string, inside = false) => (inside ? MONTH_IN : MONTH)[Number(ym.slice(5, 7)) - 1] ?? ym;
-export type AiSettings = { enabled: boolean; instructions: string; available: boolean; autonomy: 'approval_required' | 'auto_confirm'; autoConfirmMaxMinor: number | null; autonomyChangedAt: string | null };
+export type AiSettings = { enabled: boolean; operatorStopped: boolean; instructions: string; available: boolean; autonomy: 'approval_required' | 'auto_confirm'; autoConfirmMaxMinor: number | null; autonomyChangedAt: string | null };
 export type Escalation = { escalationId: string; conversationId: string; reason: string; createdAt: string };
 export type Customer = { customerId: string; channel: string; displayName: string | null; handle: string | null; note: string | null; noteUpdatedAt: string | null; createdAt: string };
 export type CustomerCard = Customer & {

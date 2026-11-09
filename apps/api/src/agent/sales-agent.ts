@@ -16,6 +16,7 @@ import {
   ShopMessageRow,
   ShopRepository,
 } from '@hepson/database';
+import { ApiError } from '../errors';
 import type { DeliveryService } from '../services/delivery';
 import type { PaymentService } from '../services/payments';
 import type { InstagramService } from '../services/instagram';
@@ -38,6 +39,7 @@ const MAX_TOOL_CALLS = 12;
 const MAX_REPAIRS = 1;
 const HISTORY = 20;
 const HISTORY_CHARS = 1000;
+const OPERATOR_STOPPED = 'OPERATOR_STOPPED';
 
 export type SalesAgentDeps = {
   shops: ShopRepository;
@@ -64,7 +66,7 @@ export type SalesAgentDeps = {
 };
 
 type RunUsage = { model: string; modelRequests: number; inputTokens: number; outputTokens: number };
-type Turn = { reply: string | null; silentEscalation: boolean; blocked: string[]; trace: ToolTrace[]; usage: RunUsage };
+type Turn = { reply: string | null; silentEscalation: boolean; operatorStopped: boolean; blocked: string[]; trace: ToolTrace[]; usage: RunUsage };
 export type ToolTrace = { name: string; arguments: string; result: string };
 /** `blocked` = the reply guard rejected the answer twice; `step_limit` = the model never answered. A real run escalates in both. */
 export type PlaygroundResult = {
@@ -96,7 +98,7 @@ export class SalesAgent {
 
   /** A new inbound message stored in the shop tables (website chat, Instagram, Telegram). */
   async trigger(shopId: string, conversationId: string, triggerMessageId: string): Promise<void> {
-    if (!(await this.d.agent.getSettings(shopId)).enabled) return;
+    if (!(await this.aiAllowed(shopId))) return;
     const trigger = await this.d.conversations.getMessage(shopId, triggerMessageId);
     const conv = await this.d.conversations.getConversation(shopId, conversationId);
     if (!trigger || !conv || trigger.direction !== 'incoming' || trigger.conversationId !== conversationId) return;
@@ -104,6 +106,16 @@ export class SalesAgent {
     const delivery: Delivery | null =
       ch === WEB_CHANNEL ? { kind: 'internal' } : ch === INSTAGRAM_CHANNEL ? { kind: 'instagram' } : ch === TELEGRAM_CHANNEL ? { kind: 'telegram' } : null;
     if (delivery) this.enqueue({ shopId, shopConversationId: conversationId, trigger, delivery });
+  }
+
+  /** The owner has it on and the operator's kill switch (D50) is off. */
+  private async aiAllowed(shopId: string): Promise<boolean> {
+    const s = await this.d.agent.getSettings(shopId);
+    return s.enabled && s.operatorStoppedAt === null;
+  }
+
+  private async operatorStopped(shopId: string): Promise<boolean> {
+    return (await this.d.agent.getSettings(shopId)).operatorStoppedAt !== null;
   }
 
   private enqueue(target: Target): void {
@@ -124,8 +136,8 @@ export class SalesAgent {
     const { agent, conversations, shops, log } = this.d;
     const shop = await shops.get(t.shopId);
     if (!shop) return;
-    // Re-check after queueing: the owner may have switched the AI off meanwhile.
-    if (!(await agent.getSettings(t.shopId)).enabled) return;
+    // Re-check after queueing: the owner or the operator may have switched the AI off meanwhile.
+    if (!(await this.aiAllowed(t.shopId))) return;
     const run = await agent.startRun(t.shopId, t.shopConversationId, t.trigger.id);
     if (!run) return; // this message already has a run: never answer it twice
     const finish = async (status: AiRunStatus, detail: string | null, extra: RunPatch = {}) => await agent.updateRun(t.shopId, run.id, { status, detail, ...extra });
@@ -164,7 +176,8 @@ export class SalesAgent {
         { role: 'system', content: buildSystemPrompt(shop, conv.conversation.channel, (await agent.getSettings(t.shopId)).instructions) },
         ...recent.map(toChat),
       ];
-      const turn = await this.converse(messages, ctx, trailingCustomerText(recent));
+      const turn = await this.converse(messages, ctx, trailingCustomerText(recent), () => this.operatorStopped(t.shopId));
+      if (turn.operatorStopped) return void finish('skipped', OPERATOR_STOPPED, turn.usage);
       if (turn.silentEscalation) return void finish('escalated', 'ESCALATED', turn.usage);
       if (turn.reply === null) {
         const reason = facts.escalatedReason ?? 'AI reply could not be verified; please answer the customer';
@@ -186,8 +199,9 @@ export class SalesAgent {
   /**
    * The model/tool loop shared by real runs and the playground: tools run until the model answers, the answer passes
    * `checkReply` or gets one repair attempt. `silentEscalation` = the model escalated and wrote nothing.
+   * `stopRequested` is asked before every model call, so the kill switch also ends a run already in flight (D50).
    */
-  private async converse(messages: ChatMessage[], ctx: ToolContext, customerText: string): Promise<Turn> {
+  private async converse(messages: ChatMessage[], ctx: ToolContext, customerText: string, stopRequested?: () => Promise<boolean>): Promise<Turn> {
     const { llm } = this.d;
     // Photo search is offered only when this server has a vision model (P9).
     const tools = ctx.photoSearch ? TOOLS : TOOLS.filter((t) => t.name !== 'search_by_photo');
@@ -199,15 +213,17 @@ export class SalesAgent {
     let repairs = 0;
     let model: string = llm.model;
     let blocked: string[] = [];
-    const done = (reply: string | null, silentEscalation = false): Turn => ({
+    const done = (reply: string | null, silentEscalation = false, operatorStopped = false): Turn => ({
       reply,
       silentEscalation,
+      operatorStopped,
       blocked,
       trace,
       usage: { model, modelRequests: requests, inputTokens, outputTokens },
     });
 
     for (let step = 0; step < MAX_STEPS; step++) {
+      if (await stopRequested?.()) return done(null, false, true);
       const r = await llm.complete({ messages, tools });
       requests++;
       inputTokens += r.inputTokens;
@@ -244,6 +260,7 @@ export class SalesAgent {
   async playground(shopId: string, input: { messages: Array<{ role: 'customer' | 'assistant'; text: string }>; instructions?: string }): Promise<PlaygroundResult> {
     const shop = await this.d.shops.get(shopId);
     if (!shop) throw new Error('shop not found');
+    if (await this.operatorStopped(shopId)) throw new ApiError('FORBIDDEN', 'The AI of this shop was stopped by Hepson');
     const history = input.messages.slice(-HISTORY);
     const facts = new RunFacts();
     const ctx: ToolContext = {
@@ -328,6 +345,8 @@ export class SalesAgent {
       await agent.updateRun(t.shopId, runId, { ...usage, status, detail, replyMessageId });
     const ok = escalated ? 'escalated' : 'replied';
 
+    // The operator stopped the AI while the model was working: nothing more reaches the customer.
+    if (await this.operatorStopped(t.shopId)) return void (await agent.updateRun(t.shopId, runId, { ...usage, status: 'skipped', detail: OPERATOR_STOPPED }));
     // A newer customer message arrived while the model was working: drop this reply, the next run answers everything.
     // Server messages sent meanwhile (a payment link after auto-confirm) do not count.
     const lastIncoming = (await conversations.listMessages(t.shopId, t.shopConversationId, { limit: 20 })).items.filter((m) => m.direction === 'incoming').at(-1);

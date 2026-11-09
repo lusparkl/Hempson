@@ -13,6 +13,9 @@ export type Notification =
   | { kind: 'plan_expired'; shopId: string; paidUntil: string }
   /** The shop's paid period ends soon. Once per `paidUntil`. */
   | { kind: 'plan_expiring'; shopId: string; paidUntil: string }
+  /** The operator stopped or resumed this shop's AI (D50). Once per change; fixed text, never the operator's reason. */
+  | { kind: 'ai_stopped'; shopId: string }
+  | { kind: 'ai_resumed'; shopId: string }
   /**
    * An order needs a person or moved on its own (P4, P5): the parcel is coming back, the TTN could not be created (or may
    * exist), the order was paid, a payment link failed or could not reach the customer (`link` is the page to pass on),
@@ -92,6 +95,16 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
     return uk
       ? `[${ctx.shopName}] Оплачений період Hepson закінчився ${day}. ШІ не відповідає: нові розмови передаються людям (розділ «Потрібна людина»). Щоб продовжити, зверніться до Hepson.`
       : `[${ctx.shopName}] The paid Hepson period ended on ${day}. The AI does not answer: new conversations go to people ("Needs a human"). Contact Hepson to renew.`;
+  }
+  if (n.kind === 'ai_stopped') {
+    return uk
+      ? `[${ctx.shopName}] Команда Hepson зупинила ШІ вашого магазину. Клієнти автоматичних відповідей не отримують, тому дайте їм відповідь самостійно в розділі «Розмови». Щоб дізнатися причину, зверніться до Hepson.`
+      : `[${ctx.shopName}] The Hepson team stopped your shop's AI. Customers get no automatic replies, so please answer them yourself in the dashboard. Contact Hepson to find out why.`;
+  }
+  if (n.kind === 'ai_resumed') {
+    return uk
+      ? `[${ctx.shopName}] Команда Hepson відновила ШІ вашого магазину. Він відповідатиме на нові повідомлення; на повідомлення, отримані під час зупинки, дайте відповідь самостійно.`
+      : `[${ctx.shopName}] The Hepson team resumed your shop's AI. It will answer new messages; please answer those received during the stop yourself.`;
   }
   if (n.kind === 'order_update') {
     const id = ctx.order ?? n.draftId.slice(0, 8);

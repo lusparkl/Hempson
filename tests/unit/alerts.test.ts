@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../../apps/api/src/config';
-import { AlertMonitor, alertSender, errorCode, observeEgress, withChannelIssueAlerts, type ProbeResult } from '../../apps/api/src/services/alerts';
+import { AlertMonitor, RecentErrors, alertSender, errorCode, observeEgress, withChannelIssueAlerts, type ProbeResult } from '../../apps/api/src/services/alerts';
 import { buildProbes, ownUrls, trafficReporter } from '../../apps/api/src/services/health-probes';
 
 const OK: ProbeResult = { ok: true };
@@ -196,6 +196,46 @@ describe('AlertMonitor events', () => {
     expect(errorCode(Object.assign(new Error('secret text'), { code: 'EAUTH' }))).toBe('EAUTH');
     expect(errorCode(new RangeError('secret text'))).toBe('RangeError');
     expect(errorCode('secret text')).toBe('ERROR');
+  });
+});
+
+describe('RecentErrors', () => {
+  it('keeps one entry per kind, newest first, cleans the detail and still reports to the monitor', () => {
+    let t = Date.UTC(2026, 10, 9, 12);
+    const inner = { event: vi.fn() };
+    const r = new RecentErrors(inner, () => t);
+    r.event('a', 'First', 'CODE_1');
+    t += 1000;
+    r.event('b', 'Second', 'see <https://x/?token=abc>');
+    t += 1000;
+    r.event('a', 'First', 'CODE_2');
+    expect(r.list()).toEqual([
+      { label: 'First', detail: 'CODE_2', count: 2, at: new Date(t).toISOString() },
+      { label: 'Second', detail: 'see https://x/tokenabc', count: 1, at: new Date(t - 1000).toISOString() },
+    ]);
+    expect(inner.event).toHaveBeenCalledTimes(3);
+  });
+
+  it('forgets the oldest kind past its limit and works without a monitor', () => {
+    const r = new RecentErrors(null);
+    for (let i = 0; i < 105; i++) r.event(`k${i}`, `L${i}`, 'X');
+    expect(r.list()).toHaveLength(100);
+    expect(r.list().at(-1)).toMatchObject({ label: 'L5' });
+  });
+});
+
+describe('open incidents', () => {
+  it('lists what is down until it recovers', async () => {
+    const { m, result, step } = setup();
+    result.current = { ok: false, code: 'HTTP_500' };
+    await step();
+    expect(m.incidents()).toEqual([]);
+    await step();
+    expect(m.incidents()).toMatchObject([{ label: 'Thing', code: 'HTTP_500' }]);
+    result.current = OK;
+    await step();
+    await step();
+    expect(m.incidents()).toEqual([]);
   });
 });
 

@@ -6,6 +6,7 @@ import { Bell } from './Notifications';
 import { ActionsSlot, Button, Icon, Input, ToastProvider, UsageMeter, type IconName } from './ui';
 import { Catalog } from './views/Catalog';
 import { Inbox } from './views/Inbox';
+import { Operator } from './views/Operator';
 import { Orders } from './views/Orders';
 import { Overview } from './views/Overview';
 import { Playground } from './views/Playground';
@@ -60,7 +61,7 @@ const pageFromHash = (): Page => {
 
 /* ---------------- login ---------------- */
 
-function AuthLayout({ onSubmit, children }: { onSubmit: (e: FormEvent<HTMLFormElement>) => void; children: ReactNode }) {
+export function AuthLayout({ onSubmit, children }: { onSubmit: (e: FormEvent<HTMLFormElement>) => void; children: ReactNode }) {
   return (
     <div className="login">
       <form onSubmit={onSubmit}>
@@ -269,16 +270,19 @@ function NewShop({ onDone, onCancel }: { onDone: (id: string) => void; onCancel?
 /* ---------------- app ---------------- */
 
 const resetFromHash = () => /^#reset=(.+)$/.exec(location.hash)?.[1] ?? null;
+const operatorHash = () => location.hash === '#operator';
 
 export function App() {
   const [authed, setAuthed] = useState(!!token.get());
   const [resetToken, setResetToken] = useState(resetFromHash);
+  const [operator, setOperator] = useState(operatorHash);
   const [notice, setNotice] = useState<string | null>(null);
   // A link pasted into a tab already on the dashboard changes only the hash.
   useEffect(() => {
     const on = () => {
       const t = resetFromHash();
       if (t) setResetToken(t);
+      setOperator(operatorHash());
     };
     window.addEventListener('hashchange', on);
     return () => window.removeEventListener('hashchange', on);
@@ -304,6 +308,12 @@ export function App() {
           setNotice('Пароль змінено. Увійдіть із новим паролем.');
         }}
       />
+    );
+  if (operator)
+    return (
+      <ToastProvider>
+        <Operator />
+      </ToastProvider>
     );
   if (!authed) return <Login onDone={() => setAuthed(true)} notice={notice} />;
   return (
@@ -515,6 +525,8 @@ function ShopApp({
 function aiState(ai: AiSettings | null, u: Usage | null) {
   if (!ai) return { label: '…', title: '', color: 'var(--ink-300)', ring: 'var(--ink-100)' };
   if (!ai.available) return { label: 'ШІ недоступний', title: 'На сервері не налаштовано модель', color: 'var(--danger-fg)', ring: 'var(--danger-bg)' };
+  if (ai.operatorStopped)
+    return { label: 'ШІ зупинено', title: 'Команда Hepson зупинила ШІ цього магазину. Зверніться до підтримки.', color: 'var(--danger-fg)', ring: 'var(--danger-bg)' };
   if (!ai.enabled) return { label: 'ШІ вимкнено', title: 'Увімкніть у Налаштування → ШІ-асистент', color: 'var(--ink-400)', ring: 'var(--ink-100)' };
   if (u?.planExpired)
     return { label: 'Оплата закінчилась', title: 'Оплачений період закінчився: ШІ не відповідає клієнтам', color: 'var(--warning-fg)', ring: 'var(--warning-bg)' };

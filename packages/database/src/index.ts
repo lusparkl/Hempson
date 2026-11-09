@@ -18,6 +18,7 @@ export * from './delivery';
 export * from './payments';
 export * from './notices';
 export * from './plans';
+export * from './operator';
 export * from './notifications';
 export * from './photo-index';
 export * from './shop-setup';

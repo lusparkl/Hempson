@@ -6,7 +6,7 @@ import { blob, check, index, integer, primaryKey, sqliteTable, text, uniqueIndex
 // NOTE: no column here may ever hold cookies, tokens, passwords or 2FA secrets in clear text.
 // Provider tokens live only in `shop_credentials`, encrypted by `CredentialVault` (D28).
 
-/** Operator (admin) API keys: a fallback for setting a shop's plan by hand. Dashboard users use sessions instead. */
+/** Operator (admin) API keys: setting a shop's plan by hand and the operator panel (D50). Dashboard users use sessions instead. */
 export const apiKeys = sqliteTable(
   'api_keys',
   {
@@ -314,6 +314,9 @@ export const shopAiSettings = sqliteTable('shop_ai_settings', {
   autoConfirmMaxMinor: integer('auto_confirm_max_minor'),
   autonomyChangedAt: text('autonomy_changed_at'),
   autonomyChangedBy: text('autonomy_changed_by').references(() => users.id),
+  /** D50: the operator's kill switch. While set the AI does nothing for this shop, whatever `enabled` says; the owner cannot clear it. */
+  operatorStoppedAt: text('operator_stopped_at'),
+  operatorStopReason: text('operator_stop_reason'),
   updatedAt: text('updated_at').notNull(),
 });
 
@@ -391,7 +394,7 @@ export const aiRuns = sqliteTable(
     createdAt: text('created_at').notNull(),
     finishedAt: text('finished_at'),
   },
-  (t) => [uniqueIndex('ai_runs_trigger_uq').on(t.triggerMessageId), index('ai_runs_shop_idx').on(t.shopId, t.createdAt)],
+  (t) => [uniqueIndex('ai_runs_trigger_uq').on(t.triggerMessageId), index('ai_runs_shop_idx').on(t.shopId, t.createdAt), index('ai_runs_created_idx').on(t.createdAt)],
 );
 
 /** The agent (or a human) asks for human attention. While one is open the agent stays silent in that conversation. */

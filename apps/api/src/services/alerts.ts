@@ -30,6 +30,7 @@ const TRAFFIC_FAIL_AFTER = 3;
 const TRAFFIC_STREAK_MS = 10 * 60_000;
 const EVENT_WINDOW_MS = 10 * 60_000;
 const MAX_EVENT_KEYS = 500;
+const MAX_RECENT_ERRORS = 100;
 const PROBE_LIMIT_MS = 30_000;
 const SEND_RETRY_MS = 30_000;
 const MAX_OUTBOX = 100;
@@ -130,6 +131,11 @@ export class AlertMonitor implements AlertEvents {
     this.enqueue(`⚠️ ISSUE: ${label}\nDetail: ${clean(detail)}\nAt: ${when(t)}`);
   }
 
+  /** What is down right now, for the operator panel (D50). */
+  incidents(): Array<{ label: string; code: string; since: string }> {
+    return [...this.states.values()].flatMap((s) => (s.downSince === null ? [] : [{ label: s.label, code: s.code, since: new Date(s.downSince).toISOString() }]));
+  }
+
   private launch(p: Probe, t: number): void {
     this.running.add(p.id);
     this.due.set(p.id, t + p.everyMs);
@@ -210,6 +216,33 @@ export class AlertMonitor implements AlertEvents {
       }
       this.outbox.splice(0, count);
     }
+  }
+}
+
+export type RecentError = { label: string; detail: string; count: number; at: string };
+
+/**
+ * The server's latest errors for the operator panel (D50), kept whether or not Telegram alerts are configured, one entry
+ * per kind, newest first. The same fixed labels and short codes as the alerts. In memory: a restart empties it.
+ */
+export class RecentErrors implements AlertEvents {
+  private items = new Map<string, RecentError>();
+
+  constructor(
+    private inner: AlertEvents | null,
+    private now: () => number = Date.now,
+  ) {}
+
+  event(key: string, label: string, detail: string): void {
+    this.inner?.event(key, label, detail);
+    const count = (this.items.get(key)?.count ?? 0) + 1;
+    this.items.delete(key);
+    this.items.set(key, { label, detail: clean(detail), count, at: new Date(this.now()).toISOString() });
+    if (this.items.size > MAX_RECENT_ERRORS) this.items.delete(this.items.keys().next().value!);
+  }
+
+  list(): RecentError[] {
+    return [...this.items.values()].reverse();
   }
 }
 
