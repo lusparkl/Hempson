@@ -26,7 +26,7 @@ async function setup(over: { noMailer?: boolean } = {}) {
   a = await makeApp({ dashboardUrl: DASHBOARD, mailer: over.noMailer ? null : { send: async (m) => void sent.push(m) } });
   await call(a, null, 'POST', '/v1/auth/register', { email: EMAIL, displayName: 'U', password: OLD });
   const session = (await login(OLD)).body.token as string;
-  return { sent, session, userId: a.auth.getUserByEmail(EMAIL)!.id };
+  return { sent, session, userId: (await a.auth.getUserByEmail(EMAIL))!.id };
 }
 const login = (password: string) => call(a!, null, 'POST', '/v1/auth/login', { email: EMAIL, password });
 const request = (email = EMAIL) => call(a!, null, 'POST', '/v1/auth/password-reset/request', { email });
@@ -66,25 +66,25 @@ describe('password reset', () => {
 
   it('a new link replaces the old one', async () => {
     const s = await setup();
-    const first = a!.auth.createPasswordReset(s.userId, RESET_TTL_MS);
-    const second = a!.auth.createPasswordReset(s.userId, RESET_TTL_MS);
+    const first = await a!.auth.createPasswordReset(s.userId, RESET_TTL_MS);
+    const second = await a!.auth.createPasswordReset(s.userId, RESET_TTL_MS);
     expect((await confirm(first)).status).toBe(400);
     expect((await confirm(second)).status).toBe(200);
   });
 
   it('refuses an expired link, and the purge removes it', async () => {
     const s = await setup();
-    const token = a!.auth.createPasswordReset(s.userId, RESET_TTL_MS);
+    const token = await a!.auth.createPasswordReset(s.userId, RESET_TTL_MS);
     const later = new AuthRepository(a!.handle, () => new Date(Date.now() + RESET_TTL_MS + 1000));
-    expect(later.isPasswordResetLive(token)).toBe(false);
-    expect(later.consumePasswordReset(token, 'x')).toBeUndefined();
-    expect(later.purgeExpiredPasswordResets()).toBe(1);
+    expect(await later.isPasswordResetLive(token)).toBe(false);
+    expect(await later.consumePasswordReset(token, 'x')).toBeUndefined();
+    expect(await later.purgeExpiredPasswordResets()).toBe(1);
     expect((await login(OLD)).status).toBe(200);
   });
 
   it('a too-short password leaves the link usable; a garbage token is refused', async () => {
     const s = await setup();
-    const token = a!.auth.createPasswordReset(s.userId, RESET_TTL_MS);
+    const token = await a!.auth.createPasswordReset(s.userId, RESET_TTL_MS);
     expect((await confirm(token, 'short')).status).toBe(400);
     expect((await confirm(token)).status).toBe(200);
     expect((await confirm('hpr_garbage')).status).toBe(400);
@@ -107,7 +107,7 @@ describe('password reset', () => {
     const s = await setup();
     for (let i = 0; i < 5; i++) await login('wrong-password-1');
     expect((await login(OLD)).status).toBe(429);
-    await confirm(a!.auth.createPasswordReset(s.userId, RESET_TTL_MS));
+    await confirm(await a!.auth.createPasswordReset(s.userId, RESET_TTL_MS));
     expect((await login(NEW)).status).toBe(200);
   });
 
@@ -116,7 +116,7 @@ describe('password reset', () => {
     const r = await request();
     expect(r.status).toBe(503);
     expect(r.body.error.code).toBe('NOT_CONFIGURED');
-    expect((await confirm(a!.auth.createPasswordReset(s.userId, RESET_TTL_MS))).status).toBe(200);
+    expect((await confirm(await a!.auth.createPasswordReset(s.userId, RESET_TTL_MS))).status).toBe(200);
     expect((await login(NEW)).status).toBe(200);
   });
 });

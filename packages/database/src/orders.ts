@@ -5,6 +5,7 @@ import type { Db, DbHandle } from './db';
 import { DeliveryRepository, normalizeUaPhone } from './delivery';
 import { CustomerNoticeRepository, type CustomerNoticeEvent } from './notices';
 import { PAYMENT_METHODS } from './order-kinds';
+import { orderedId } from './ids';
 import * as t from './schema';
 
 export { ORDER_STATUSES, PAYMENT_METHODS, PAYMENT_STATES, PAYMENT_PROVIDERS } from './order-kinds';
@@ -15,7 +16,17 @@ export type OrderStatus = OrderDraftRow['status'];
 /** Who changed an order: `user:<id>`, `ai`, `system:auto_confirm`, `system:supersede`, `system:timeout`, `provider:nova_poshta`, `provider:monobank`. */
 export type OrderActor = string;
 export type OrderDraft = { draft: OrderDraftRow; items: OrderDraftItemRow[] };
-export type OrderLine = { productId: string; variantId: string; sku: string; productName: string; options: Record<string, string>; quantity: number; unitPriceMinor: number; lineTotalMinor: number; stock: number };
+export type OrderLine = {
+  productId: string;
+  variantId: string;
+  sku: string;
+  productName: string;
+  options: Record<string, string>;
+  quantity: number;
+  unitPriceMinor: number;
+  lineTotalMinor: number;
+  stock: number;
+};
 export type OrderQuote = { currency: string; totalMinor: number; lines: OrderLine[] };
 
 export class OrderValidationError extends Error {
@@ -44,7 +55,13 @@ export class OrderStockError extends Error {
   }
 }
 
-const text = (max: number) => z.string().trim().max(max).transform((s) => s || undefined).optional();
+const text = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .transform((s) => s || undefined)
+    .optional();
 const npRef = z.string().trim().min(1).max(64);
 /** Checkout data (P4). The NP refs and names must come from Nova Poshta lookups; callers never type them. */
 const checkoutInput = z.strictObject({
@@ -125,7 +142,12 @@ export class OrderRepository {
   }
 
   /** Prices the given SKUs from the live catalog. Throws with every problem found; never partial. */
-  quote(shopId: string, input: QuoteItemsInput): OrderQuote {
+  async quote(shopId: string, input: QuoteItemsInput): Promise<OrderQuote> {
+    return this.quoteTx(shopId, input);
+  }
+
+  /** Sync body of `quote`: runs inside the caller's transaction. Package-internal. */
+  quoteTx(shopId: string, input: QuoteItemsInput): OrderQuote {
     const items = parse(quoteInput, input);
     const wanted = new Map<string, number>();
     for (const i of items) {
@@ -174,18 +196,25 @@ export class OrderRepository {
    * Creates a `pending_approval` draft for a conversation of this shop. A newer draft from the AI replaces a still-pending
    * earlier draft of the same conversation (the old one becomes `cancelled`), so the seller never sees stale duplicates.
    */
-  createDraft(shopId: string, input: CreateOrderDraftInput): OrderDraft {
+  async createDraft(shopId: string, input: CreateOrderDraftInput): Promise<OrderDraft> {
     const v = parse(createInput, input);
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       const conv = this.db
         .select()
         .from(t.shopConversations)
         .where(and(eq(t.shopConversations.shopId, shopId), eq(t.shopConversations.id, v.conversationId)))
         .get();
       if (!conv) throw new OrderValidationError(['conversationId: not found']);
-      if (v.runId && !this.db.select({ id: t.aiRuns.id }).from(t.aiRuns).where(and(eq(t.aiRuns.shopId, shopId), eq(t.aiRuns.id, v.runId))).get())
+      if (
+        v.runId &&
+        !this.db
+          .select({ id: t.aiRuns.id })
+          .from(t.aiRuns)
+          .where(and(eq(t.aiRuns.shopId, shopId), eq(t.aiRuns.id, v.runId)))
+          .get()
+      )
         throw new OrderValidationError(['runId: not found']);
-      const q = this.quote(shopId, v.items);
+      const q = this.quoteTx(shopId, v.items);
       const co = v.checkout && this.checkCheckout(shopId, conv.customerId, v.checkout);
       const ts = this.now();
       if (v.createdBy === 'ai') {
@@ -198,7 +227,12 @@ export class OrderRepository {
         for (const r of stale) this.event(shopId, r.id, 'pending_approval', 'cancelled', 'system:supersede', 'superseded by a newer draft');
       }
       // Next per-shop number; the write transaction serializes inserts, the unique index backs it up.
-      const number = this.db.select({ n: sql<number>`coalesce(max(${t.orderDrafts.number}), 0)` }).from(t.orderDrafts).where(eq(t.orderDrafts.shopId, shopId)).get()!.n + 1;
+      const number =
+        this.db
+          .select({ n: sql<number>`coalesce(max(${t.orderDrafts.number}), 0)` })
+          .from(t.orderDrafts)
+          .where(eq(t.orderDrafts.shopId, shopId))
+          .get()!.n + 1;
       const draft: OrderDraftRow = {
         id: randomUUID(),
         shopId,
@@ -254,10 +288,15 @@ export class OrderRepository {
       }));
       this.db.insert(t.orderDraftItems).values(items).run();
       return { draft, items };
-    })();
+    });
   }
 
-  getDraft(shopId: string, draftId: string): OrderDraft | undefined {
+  async getDraft(shopId: string, draftId: string): Promise<OrderDraft | undefined> {
+    return this.getDraftTx(shopId, draftId);
+  }
+
+  /** Sync body of `getDraft`: runs inside the caller's transaction. Package-internal. */
+  getDraftTx(shopId: string, draftId: string): OrderDraft | undefined {
     const draft = this.db
       .select()
       .from(t.orderDrafts)
@@ -277,13 +316,20 @@ export class OrderRepository {
   }
 
   /** Newest first. */
-  listDrafts(shopId: string, f: { status?: OrderDraftRow['status']; conversationId?: string; customerId?: string; limit?: number; offset?: number } = {}): { items: OrderDraft[]; total: number } {
+  async listDrafts(
+    shopId: string,
+    f: { status?: OrderDraftRow['status']; conversationId?: string; customerId?: string; limit?: number; offset?: number } = {},
+  ): Promise<{ items: OrderDraft[]; total: number }> {
     const conds = [eq(t.orderDrafts.shopId, shopId)];
     if (f.status) conds.push(eq(t.orderDrafts.status, f.status));
     if (f.conversationId) conds.push(eq(t.orderDrafts.conversationId, f.conversationId));
     if (f.customerId) conds.push(eq(t.orderDrafts.customerId, f.customerId));
     const where = and(...conds);
-    const total = this.db.select({ n: sql<number>`count(*)` }).from(t.orderDrafts).where(where).get()!.n;
+    const total = this.db
+      .select({ n: sql<number>`count(*)` })
+      .from(t.orderDrafts)
+      .where(where)
+      .get()!.n;
     const rows = this.db
       .select()
       .from(t.orderDrafts)
@@ -292,7 +338,10 @@ export class OrderRepository {
       .limit(Math.min(Math.max(Math.trunc(f.limit ?? 50), 1), 200))
       .offset(Math.max(Math.trunc(f.offset ?? 0), 0))
       .all();
-    const items = this.itemsOf(shopId, rows.map((r) => r.id));
+    const items = this.itemsOf(
+      shopId,
+      rows.map((r) => r.id),
+    );
     return { total, items: rows.map((draft) => ({ draft, items: items.filter((i) => i.draftId === draft.id) })) };
   }
 
@@ -300,7 +349,7 @@ export class OrderRepository {
    * Orders created in [from, to), oldest first, with items and the time of their `paid` event (P8 Excel export). At most
    * `limit` rows; the caller says when the list was cut.
    */
-  listForExport(shopId: string, f: { from: string; to: string; status?: OrderStatus; limit: number }): Array<OrderDraft & { paidAt: string | null }> {
+  async listForExport(shopId: string, f: { from: string; to: string; status?: OrderStatus; limit: number }): Promise<Array<OrderDraft & { paidAt: string | null }>> {
     const conds = [eq(t.orderDrafts.shopId, shopId), sql`${t.orderDrafts.createdAt} >= ${f.from}`, sql`${t.orderDrafts.createdAt} < ${f.to}`];
     if (f.status) conds.push(eq(t.orderDrafts.status, f.status));
     const rows = this.db
@@ -330,25 +379,27 @@ export class OrderRepository {
   private checkCheckout(shopId: string, customerId: string, c: z.output<typeof checkoutInput>): z.output<typeof checkoutInput> {
     const phone = normalizeUaPhone(c.phone);
     if (!phone) throw new OrderValidationError(['checkout.phone: not a Ukrainian phone number']);
-    const pm = this.delivery.paymentMethods(shopId, { phone, customerId });
+    const pm = this.delivery.paymentMethodsTx(shopId, { phone, customerId });
     if (!pm.methods.includes(c.paymentMethod))
       throw new OrderValidationError([
-        c.paymentMethod === 'cod' && pm.codBlocked ? 'checkout.paymentMethod: cash on delivery is not available for this customer' : `checkout.paymentMethod: ${c.paymentMethod} is not offered by this shop`,
+        c.paymentMethod === 'cod' && pm.codBlocked
+          ? 'checkout.paymentMethod: cash on delivery is not available for this customer'
+          : `checkout.paymentMethod: ${c.paymentMethod} is not offered by this shop`,
       ]);
     return { ...c, phone };
   }
 
   /** Writes one audit row (D25). Callers run inside the transition's transaction. */
   private event(shopId: string, draftId: string, from: OrderStatus | null, to: OrderStatus, actor: OrderActor, note: string | null): void {
-    this.db.insert(t.orderEvents).values({ id: randomUUID(), shopId, draftId, fromStatus: from, toStatus: to, actor, note, createdAt: this.now() }).run();
+    this.db.insert(t.orderEvents).values({ id: orderedId(), shopId, draftId, fromStatus: from, toStatus: to, actor, note, createdAt: this.now() }).run();
   }
 
-  listEvents(shopId: string, draftId: string): OrderEventRow[] {
+  async listEvents(shopId: string, draftId: string): Promise<OrderEventRow[]> {
     return this.db
       .select()
       .from(t.orderEvents)
       .where(and(eq(t.orderEvents.shopId, shopId), eq(t.orderEvents.draftId, draftId)))
-      .orderBy(asc(t.orderEvents.createdAt), sql`rowid`)
+      .orderBy(asc(t.orderEvents.createdAt), asc(t.orderEvents.id))
       .all();
   }
 
@@ -365,7 +416,7 @@ export class OrderRepository {
     if (!r.changes) return false;
     this.event(shopId, draftId, from, to, actor, note);
     const notice = NOTICE_ON[to];
-    if (notice) this.notices.enqueue(shopId, draftId, notice);
+    if (notice) this.notices.enqueueTx(shopId, draftId, notice);
     return true;
   }
 
@@ -384,9 +435,9 @@ export class OrderRepository {
    * UPDATE per line); if any line cannot be covered the whole approval fails and nothing changes. The order then moves
    * on to `cod_confirmed` or `awaiting_payment` by its payment method. Approving an already decided draft is refused.
    */
-  approve(shopId: string, draftId: string, userId: string, note?: string): OrderDraft {
+  async approve(shopId: string, draftId: string, userId: string, note?: string): Promise<OrderDraft> {
     const n = parse(decisionNote, note);
-    return this.handle.raw.transaction(() => this.approveTx(shopId, this.requirePending(shopId, draftId), `user:${userId}`, userId, n))();
+    return this.handle.transaction(() => this.approveTx(shopId, this.requirePending(shopId, draftId), `user:${userId}`, userId, n));
   }
 
   private approveTx(shopId: string, cur: OrderDraftRow, actor: OrderActor, userId: string | null, note: string | undefined): OrderDraft {
@@ -397,14 +448,19 @@ export class OrderRepository {
       const ok = this.db
         .update(t.productVariants)
         .set({ stock: sql`${t.productVariants.stock} - ${it.quantity}`, updatedAt: ts })
-        .where(and(eq(t.productVariants.shopId, shopId), eq(t.productVariants.id, it.variantId), eq(t.productVariants.active, true), sql`${t.productVariants.stock} >= ${it.quantity}`))
+        .where(
+          and(eq(t.productVariants.shopId, shopId), eq(t.productVariants.id, it.variantId), eq(t.productVariants.active, true), sql`${t.productVariants.stock} >= ${it.quantity}`),
+        )
         .run();
       if (!ok.changes) throw new OrderStockError(it.sku);
     }
     this.move(shopId, cur.id, 'pending_approval', 'approved', actor, note || null, { decidedByUserId: userId, decidedAt: ts, decisionNote: note || null, approvedAt: ts });
     if (cur.paymentMethod === 'cod') this.move(shopId, cur.id, 'approved', 'cod_confirmed', actor, null);
-    else this.move(shopId, cur.id, 'approved', 'awaiting_payment', actor, null, { paymentDueAt: new Date(this.clock().getTime() + this.paymentTimeoutHours(shopId) * 3600_000).toISOString() });
-    return this.getDraft(shopId, cur.id)!;
+    else
+      this.move(shopId, cur.id, 'approved', 'awaiting_payment', actor, null, {
+        paymentDueAt: new Date(this.clock().getTime() + this.paymentTimeoutHours(shopId) * 3600_000).toISOString(),
+      });
+    return this.getDraftTx(shopId, cur.id)!;
   }
 
   /** D25: hours an `awaiting_payment` order waits before it is cancelled (shop setting, default 24). */
@@ -416,13 +472,14 @@ export class OrderRepository {
    * D26 `auto_confirm`: the server approves only when every check passes now; anything else leaves the draft
    * `pending_approval` for a person and says why (a short code). COD for a customer at the refusal limit is never confirmed.
    */
-  autoConfirm(shopId: string, draftId: string, opts: { maxTotalMinor: number | null }): { approved: true; draft: OrderDraft } | { approved: false; reason: string } {
+  async autoConfirm(shopId: string, draftId: string, opts: { maxTotalMinor: number | null }): Promise<{ approved: true; draft: OrderDraft } | { approved: false; reason: string }> {
     try {
-      return this.handle.raw.transaction(() => {
+      return this.handle.transaction(() => {
         const cur = this.requirePending(shopId, draftId);
         if (checkoutMissing(cur).length) return { approved: false as const, reason: 'CHECKOUT_INCOMPLETE' };
-        const pm = this.delivery.paymentMethods(shopId, { phone: cur.recipientPhone, customerId: cur.customerId });
-        if (!pm.methods.includes(cur.paymentMethod!)) return { approved: false as const, reason: pm.codBlocked && cur.paymentMethod === 'cod' ? 'COD_REFUSAL_LIMIT' : 'PAYMENT_METHOD_UNAVAILABLE' };
+        const pm = this.delivery.paymentMethodsTx(shopId, { phone: cur.recipientPhone, customerId: cur.customerId });
+        if (!pm.methods.includes(cur.paymentMethod!))
+          return { approved: false as const, reason: pm.codBlocked && cur.paymentMethod === 'cod' ? 'COD_REFUSAL_LIMIT' : 'PAYMENT_METHOD_UNAVAILABLE' };
         if (opts.maxTotalMinor !== null && cur.totalMinor > opts.maxTotalMinor) return { approved: false as const, reason: 'OVER_CAP' };
         const conv = this.db
           .select({ paused: t.shopConversations.aiPaused })
@@ -440,13 +497,16 @@ export class OrderRepository {
         const items = this.itemsOf(shopId, [cur.id]);
         let q: OrderQuote;
         try {
-          q = this.quote(shopId, items.map((i) => ({ sku: i.sku, quantity: i.quantity })));
+          q = this.quoteTx(
+            shopId,
+            items.map((i) => ({ sku: i.sku, quantity: i.quantity })),
+          );
         } catch {
           return { approved: false as const, reason: 'STOCK' };
         }
         if (q.totalMinor !== cur.totalMinor || q.currency !== cur.currency) return { approved: false as const, reason: 'PRICE_CHANGED' };
         return { approved: true as const, draft: this.approveTx(shopId, cur, 'system:auto_confirm', null, undefined) };
-      })();
+      });
     } catch (e) {
       if (e instanceof OrderStockError) return { approved: false, reason: 'STOCK' };
       if (e instanceof OrderStateError || e instanceof OrderNotFoundError) return { approved: false, reason: 'NOT_PENDING' };
@@ -454,50 +514,58 @@ export class OrderRepository {
     }
   }
 
-  reject(shopId: string, draftId: string, userId: string, note?: string): OrderDraft {
+  async reject(shopId: string, draftId: string, userId: string, note?: string): Promise<OrderDraft> {
     const n = parse(decisionNote, note);
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       const cur = this.requirePending(shopId, draftId);
       this.move(shopId, cur.id, 'pending_approval', 'rejected', `user:${userId}`, n || null, { decidedByUserId: userId, decidedAt: this.now(), decisionNote: n || null });
-      return this.getDraft(shopId, cur.id)!;
-    })();
+      return this.getDraftTx(shopId, cur.id)!;
+    });
   }
 
   /**
    * A member cancels an approved order before it ships (D25): stock comes back once, in the same transaction. Refused
    * while a TTN exists or may exist (`creating`, `uncertain`).
    */
-  cancel(shopId: string, draftId: string, userId: string, note?: string): OrderDraft {
+  async cancel(shopId: string, draftId: string, userId: string, note?: string): Promise<OrderDraft> {
     const n = parse(decisionNote, note);
-    return this.handle.raw.transaction(() => {
-      const cur = this.getDraft(shopId, draftId)?.draft;
+    return this.handle.transaction(() => {
+      const cur = this.getDraftTx(shopId, draftId)?.draft;
       if (!cur) throw new OrderNotFoundError();
       if (!STOCK_HELD.includes(cur.status)) throw new OrderStateError(`an order in status ${cur.status} cannot be cancelled`);
-      if (cur.ttnState === 'creating' || cur.ttnState === 'uncertain' || cur.ttnState === 'created') throw new OrderStateError('a Nova Poshta parcel may exist for this order; resolve the TTN first');
-      if (!this.move(shopId, cur.id, cur.status, 'cancelled', `user:${userId}`, n || null, { decisionNote: n || cur.decisionNote })) throw new OrderStateError('the order changed meanwhile, reload it');
+      if (cur.ttnState === 'creating' || cur.ttnState === 'uncertain' || cur.ttnState === 'created')
+        throw new OrderStateError('a Nova Poshta parcel may exist for this order; resolve the TTN first');
+      if (!this.move(shopId, cur.id, cur.status, 'cancelled', `user:${userId}`, n || null, { decisionNote: n || cur.decisionNote }))
+        throw new OrderStateError('the order changed meanwhile, reload it');
       this.restock(shopId, cur.id);
-      return this.getDraft(shopId, cur.id)!;
-    })();
+      return this.getDraftTx(shopId, cur.id)!;
+    });
   }
 
   // ---------- payments (P5, D24) ----------
 
   /** A verified provider event says the order is paid: `awaiting_payment` to `paid`, once. False if the order is elsewhere. */
-  markPaid(shopId: string, draftId: string, actor: OrderActor, note: string): boolean {
-    return this.handle.raw.transaction(() => this.move(shopId, draftId, 'awaiting_payment', 'paid', actor, note))();
+  async markPaid(shopId: string, draftId: string, actor: OrderActor, note: string): Promise<boolean> {
+    return this.markPaidTx(shopId, draftId, actor, note);
+  }
+
+  /** Sync body of `markPaid`: runs inside the caller's transaction. Package-internal. */
+  markPaidTx(shopId: string, draftId: string, actor: OrderActor, note: string): boolean {
+    return this.handle.transaction(() => this.move(shopId, draftId, 'awaiting_payment', 'paid', actor, note));
   }
 
   /** The payment deadline passed without a payment: cancelled with restock, attributed to `system:timeout`. */
-  expireUnpaid(shopId: string, draftId: string): boolean {
-    return this.handle.raw.transaction(() => {
-      if (!this.move(shopId, draftId, 'awaiting_payment', 'cancelled', 'system:timeout', 'payment not received in time', { decisionNote: 'payment not received in time' })) return false;
+  async expireUnpaid(shopId: string, draftId: string): Promise<boolean> {
+    return this.handle.transaction(() => {
+      if (!this.move(shopId, draftId, 'awaiting_payment', 'cancelled', 'system:timeout', 'payment not received in time', { decisionNote: 'payment not received in time' }))
+        return false;
       this.restock(shopId, draftId);
       return true;
-    })();
+    });
   }
 
   /** Claims the one payment reminder of an unpaid order (compare-and-set): true for exactly one caller. */
-  claimPaymentReminder(shopId: string, draftId: string): boolean {
+  async claimPaymentReminder(shopId: string, draftId: string): Promise<boolean> {
     const r = this.db
       .update(t.orderDrafts)
       .set({ paymentReminderAt: this.now(), updatedAt: this.now() })
@@ -507,7 +575,7 @@ export class OrderRepository {
   }
 
   /** Unpaid prepaid orders across shops, earliest deadline first (the payment job checks deadlines and reminders). */
-  listAwaitingPayment(limit = 500): OrderDraftRow[] {
+  async listAwaitingPayment(limit = 500): Promise<OrderDraftRow[]> {
     return this.db
       .select()
       .from(t.orderDrafts)
@@ -518,14 +586,15 @@ export class OrderRepository {
   }
 
   /** A member records that the customer asked for a refund (D24: the refund itself is made in the provider's cabinet). */
-  requestRefund(shopId: string, draftId: string, userId: string, note?: string): OrderDraft {
+  async requestRefund(shopId: string, draftId: string, userId: string, note?: string): Promise<OrderDraft> {
     const n = parse(decisionNote, note);
-    return this.handle.raw.transaction(() => {
-      const cur = this.getDraft(shopId, draftId)?.draft;
+    return this.handle.transaction(() => {
+      const cur = this.getDraftTx(shopId, draftId)?.draft;
       if (!cur) throw new OrderNotFoundError();
-      if (!REFUNDABLE.includes(cur.status) || !this.move(shopId, draftId, cur.status, 'refund_requested', `user:${userId}`, n || null)) throw new OrderStateError(`a refund cannot be requested for an order in status ${cur.status}`);
-      return this.getDraft(shopId, draftId)!;
-    })();
+      if (!REFUNDABLE.includes(cur.status) || !this.move(shopId, draftId, cur.status, 'refund_requested', `user:${userId}`, n || null))
+        throw new OrderStateError(`a refund cannot be requested for an order in status ${cur.status}`);
+      return this.getDraftTx(shopId, draftId)!;
+    });
   }
 
   // ---------- Nova Poshta TTN and tracking (P4) ----------
@@ -534,7 +603,7 @@ export class OrderRepository {
    * Claims the right to create the TTN: only a `cod_confirmed` order (prepaid ones only from `paid`, D25) without a TTN
    * and not already claimed. The claim is a compare-and-set, so two callers can never both create a parcel.
    */
-  claimTtn(shopId: string, draftId: string): OrderDraft {
+  async claimTtn(shopId: string, draftId: string): Promise<OrderDraft> {
     const r = this.db
       .update(t.orderDrafts)
       .set({ ttnState: 'creating', ttnError: null, updatedAt: this.now() })
@@ -542,31 +611,45 @@ export class OrderRepository {
         and(
           eq(t.orderDrafts.shopId, shopId),
           eq(t.orderDrafts.id, draftId),
-          or(and(eq(t.orderDrafts.status, 'cod_confirmed'), eq(t.orderDrafts.paymentMethod, 'cod')), and(eq(t.orderDrafts.status, 'paid'), eq(t.orderDrafts.paymentMethod, 'prepaid'))),
+          or(
+            and(eq(t.orderDrafts.status, 'cod_confirmed'), eq(t.orderDrafts.paymentMethod, 'cod')),
+            and(eq(t.orderDrafts.status, 'paid'), eq(t.orderDrafts.paymentMethod, 'prepaid')),
+          ),
           or(isNull(t.orderDrafts.ttnState), eq(t.orderDrafts.ttnState, 'failed')),
         ),
       )
       .run();
     if (!r.changes) {
-      const cur = this.getDraft(shopId, draftId);
+      const cur = this.getDraftTx(shopId, draftId);
       if (!cur) throw new OrderNotFoundError();
-      throw new OrderStateError(cur.draft.ttnState === 'creating' ? 'the TTN is being created' : cur.draft.ttn ? 'this order already has a TTN' : `no TTN can be created for an order in status ${cur.draft.status}${cur.draft.ttnState === 'uncertain' ? ' (previous attempt uncertain)' : ''}`);
+      throw new OrderStateError(
+        cur.draft.ttnState === 'creating'
+          ? 'the TTN is being created'
+          : cur.draft.ttn
+            ? 'this order already has a TTN'
+            : `no TTN can be created for an order in status ${cur.draft.status}${cur.draft.ttnState === 'uncertain' ? ' (previous attempt uncertain)' : ''}`,
+      );
     }
-    return this.getDraft(shopId, draftId)!;
+    return this.getDraftTx(shopId, draftId)!;
   }
 
   /** The TTN Nova Poshta returned: the order is `shipped`. */
-  completeTtn(shopId: string, draftId: string, doc: { ttn: string; documentRef: string }): OrderDraft {
-    return this.handle.raw.transaction(() => {
-      const cur = this.getDraft(shopId, draftId)?.draft;
+  async completeTtn(shopId: string, draftId: string, doc: { ttn: string; documentRef: string }): Promise<OrderDraft> {
+    return this.handle.transaction(() => {
+      const cur = this.getDraftTx(shopId, draftId)?.draft;
       if (!cur || cur.ttnState !== 'creating') throw new OrderStateError('no TTN creation in progress');
-      this.move(shopId, draftId, cur.status, 'shipped', 'provider:nova_poshta', `TTN ${doc.ttn}`, { ttnState: 'created', ttn: doc.ttn, npDocumentRef: doc.documentRef, ttnError: null });
-      return this.getDraft(shopId, draftId)!;
-    })();
+      this.move(shopId, draftId, cur.status, 'shipped', 'provider:nova_poshta', `TTN ${doc.ttn}`, {
+        ttnState: 'created',
+        ttn: doc.ttn,
+        npDocumentRef: doc.documentRef,
+        ttnError: null,
+      });
+      return this.getDraftTx(shopId, draftId)!;
+    });
   }
 
   /** `failed`: Nova Poshta refused, a member may retry. `uncertain`: a parcel may exist, never retried automatically. */
-  failTtn(shopId: string, draftId: string, state: 'failed' | 'uncertain', code: string): void {
+  async failTtn(shopId: string, draftId: string, state: 'failed' | 'uncertain', code: string): Promise<void> {
     this.db
       .update(t.orderDrafts)
       .set({ ttnState: state, ttnError: code, updatedAt: this.now() })
@@ -575,18 +658,18 @@ export class OrderRepository {
   }
 
   /** A member checked the Nova Poshta cabinet and no parcel exists for an `uncertain` attempt: allow a new attempt. */
-  releaseUncertainTtn(shopId: string, draftId: string): OrderDraft {
+  async releaseUncertainTtn(shopId: string, draftId: string): Promise<OrderDraft> {
     const r = this.db
       .update(t.orderDrafts)
       .set({ ttnState: 'failed', ttnError: 'RELEASED_BY_MEMBER', updatedAt: this.now() })
       .where(and(eq(t.orderDrafts.shopId, shopId), eq(t.orderDrafts.id, draftId), eq(t.orderDrafts.ttnState, 'uncertain')))
       .run();
     if (!r.changes) throw new OrderStateError('no uncertain TTN attempt on this order');
-    return this.getDraft(shopId, draftId)!;
+    return this.getDraftTx(shopId, draftId)!;
   }
 
   /** Shipped orders to poll, oldest status first, across shops (the tracking job groups them by shop key). */
-  listForTracking(limit = 500): OrderDraftRow[] {
+  async listForTracking(limit = 500): Promise<OrderDraftRow[]> {
     return this.db
       .select()
       .from(t.orderDrafts)
@@ -600,35 +683,44 @@ export class OrderRepository {
    * Applies one Nova Poshta tracking status. Idempotent: the status text is refreshed, and a transition happens only
    * from `shipped`, once. `returning` never touches stock; when the recipient refused, it records one refusal (per order).
    */
-  applyTracking(shopId: string, draftId: string, s: { code: string; text: string; outcome: 'delivered' | 'returning' | null; refusal: boolean }): { transition: 'delivered' | 'returning' | null } {
-    return this.handle.raw.transaction(() => {
-      const cur = this.getDraft(shopId, draftId)?.draft;
+  async applyTracking(
+    shopId: string,
+    draftId: string,
+    s: { code: string; text: string; outcome: 'delivered' | 'returning' | null; refusal: boolean },
+  ): Promise<{ transition: 'delivered' | 'returning' | null }> {
+    return this.handle.transaction(() => {
+      const cur = this.getDraftTx(shopId, draftId)?.draft;
       if (!cur) throw new OrderNotFoundError();
       const set = { npStatusCode: s.code, npStatusText: s.text.slice(0, 300), npStatusAt: this.now() };
       if (cur.status === 'shipped' && s.outcome && this.move(shopId, draftId, 'shipped', s.outcome, 'provider:nova_poshta', `NP status ${s.code}`, set)) {
-        if (s.outcome === 'returning' && s.refusal) this.delivery.recordProviderRefusal(shopId, { draftId, customerId: cur.customerId, phone: cur.recipientPhone });
+        if (s.outcome === 'returning' && s.refusal) this.delivery.recordProviderRefusalTx(shopId, { draftId, customerId: cur.customerId, phone: cur.recipientPhone });
         return { transition: s.outcome };
       }
-      this.db.update(t.orderDrafts).set(set).where(and(eq(t.orderDrafts.shopId, shopId), eq(t.orderDrafts.id, draftId))).run();
+      this.db
+        .update(t.orderDrafts)
+        .set(set)
+        .where(and(eq(t.orderDrafts.shopId, shopId), eq(t.orderDrafts.id, draftId)))
+        .run();
       return { transition: null };
-    })();
+    });
   }
 
   /** A member confirms the parcel is back: `returning` to `returned`, stock restored exactly once unless skipped. */
-  markReturned(shopId: string, draftId: string, userId: string, opts: { restock?: boolean; note?: string } = {}): OrderDraft {
+  async markReturned(shopId: string, draftId: string, userId: string, opts: { restock?: boolean; note?: string } = {}): Promise<OrderDraft> {
     const n = parse(decisionNote, opts.note);
-    return this.handle.raw.transaction(() => {
-      const cur = this.getDraft(shopId, draftId)?.draft;
+    return this.handle.transaction(() => {
+      const cur = this.getDraftTx(shopId, draftId)?.draft;
       if (!cur) throw new OrderNotFoundError();
       const restock = opts.restock !== false;
-      if (!this.move(shopId, draftId, 'returning', 'returned', `user:${userId}`, n || (restock ? null : 'returned without restock'))) throw new OrderStateError(`an order in status ${cur.status} cannot be marked returned`);
+      if (!this.move(shopId, draftId, 'returning', 'returned', `user:${userId}`, n || (restock ? null : 'returned without restock')))
+        throw new OrderStateError(`an order in status ${cur.status} cannot be marked returned`);
       if (restock) this.restock(shopId, draftId);
-      return this.getDraft(shopId, draftId)!;
-    })();
+      return this.getDraftTx(shopId, draftId)!;
+    });
   }
 
   private requirePending(shopId: string, draftId: string): OrderDraftRow {
-    const cur = this.getDraft(shopId, draftId);
+    const cur = this.getDraftTx(shopId, draftId);
     if (!cur) throw new OrderNotFoundError();
     if (cur.draft.status !== 'pending_approval') throw new OrderStateError(`draft is already ${cur.draft.status}`);
     return cur.draft;

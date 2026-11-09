@@ -24,10 +24,10 @@ export function registerStatsRoutes(app: FastifyInstance, deps: { shops: ShopRep
     auth: 'user',
     params: shopP,
     query: statsQuery,
-    handler: ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, params, query }) => {
+      await requireRole(req, params.shopId, 'manager');
       try {
-        return { ...stats.forShop(params.shopId, query), usage: plans.usage(params.shopId) };
+        return { ...(await stats.forShop(params.shopId, query)), usage: await plans.usage(params.shopId) };
       } catch (e) {
         if (e instanceof StatsValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
         throw e;

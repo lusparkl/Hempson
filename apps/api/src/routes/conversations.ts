@@ -82,10 +82,10 @@ export function registerConversationRoutes(
   const requireRole = makeRequireRole(shops, auth);
   const sendBody = z.strictObject({ text: z.string().trim().min(1).max(maxMessageLength) });
   /** Views of conversations with their newest message and this member's unread state. */
-  const views = (shopId: string, userId: string, items: ConversationWithCustomer[]) => {
+  const views = async (shopId: string, userId: string, items: ConversationWithCustomer[]) => {
     const ids = items.map((i) => i.conversation.id);
-    const last = conversations.lastMessages(shopId, ids);
-    const unread = conversations.unreadFor(shopId, userId, ids);
+    const last = await conversations.lastMessages(shopId, ids);
+    const unread = await conversations.unreadFor(shopId, userId, ids);
     return items.map((i) => conversationView(i, { lastMessage: last.get(i.conversation.id) ?? null, unread: unread.has(i.conversation.id) }));
   };
   const notFound = (e: unknown): never => {
@@ -102,9 +102,9 @@ export function registerConversationRoutes(
     auth: 'user',
     params: shopP,
     query: customersQuery,
-    handler: ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
-      const r = conversations.listCustomers(params.shopId, query);
+    handler: async ({ req, params, query }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const r = await conversations.listCustomers(params.shopId, query);
       return { total: r.total, items: r.items.map(customerView) };
     },
   });
@@ -117,10 +117,10 @@ export function registerConversationRoutes(
     auth: 'user',
     params: shopP,
     query: convQuery,
-    handler: ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
-      const r = conversations.listConversations(params.shopId, query);
-      return { total: r.total, items: views(params.shopId, req.user!.user.id, r.items) };
+    handler: async ({ req, params, query }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const r = await conversations.listConversations(params.shopId, query);
+      return { total: r.total, items: await views(params.shopId, req.user!.user.id, r.items) };
     },
   });
 
@@ -131,9 +131,9 @@ export function registerConversationRoutes(
     tag: 'conversations',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return { count: conversations.unreadCount(params.shopId, req.user!.user.id) };
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return { count: await conversations.unreadCount(params.shopId, req.user!.user.id) };
     },
   });
 
@@ -144,11 +144,11 @@ export function registerConversationRoutes(
     tag: 'conversations',
     auth: 'user',
     params: customerP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      const c = conversations.getCustomer(params.shopId, params.customerId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const c = await conversations.getCustomer(params.shopId, params.customerId);
       if (!c) throw new ApiError('NOT_FOUND', 'customer not found');
-      return { ...customerView(c), profile: conversations.customerProfile(params.shopId, c.id) };
+      return { ...customerView(c), profile: await conversations.customerProfile(params.shopId, c.id) };
     },
   });
 
@@ -160,10 +160,10 @@ export function registerConversationRoutes(
     auth: 'user',
     params: customerP,
     body: noteBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'manager');
       try {
-        return customerView(conversations.setCustomerNote(params.shopId, params.customerId, body.note, req.user!.user.id));
+        return customerView(await conversations.setCustomerNote(params.shopId, params.customerId, body.note, req.user!.user.id));
       } catch (e) {
         return notFound(e);
       }
@@ -178,12 +178,12 @@ export function registerConversationRoutes(
     auth: 'user',
     params: convP,
     body: readBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'manager');
       const userId = req.user!.user.id;
       try {
-        const lastSeenSeq = conversations.markRead(params.shopId, params.conversationId, userId, body.seq);
-        return { lastSeenSeq, unread: conversations.unreadFor(params.shopId, userId, [params.conversationId]).has(params.conversationId) };
+        const lastSeenSeq = await conversations.markRead(params.shopId, params.conversationId, userId, body.seq);
+        return { lastSeenSeq, unread: (await conversations.unreadFor(params.shopId, userId, [params.conversationId])).has(params.conversationId) };
       } catch (e) {
         return notFound(e);
       }
@@ -197,11 +197,11 @@ export function registerConversationRoutes(
     tag: 'conversations',
     auth: 'user',
     params: convP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      const c = conversations.getConversation(params.shopId, params.conversationId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const c = await conversations.getConversation(params.shopId, params.conversationId);
       if (!c) throw new ApiError('NOT_FOUND', 'conversation not found');
-      return views(params.shopId, req.user!.user.id, [c])[0];
+      return (await views(params.shopId, req.user!.user.id, [c]))[0];
     },
   });
 
@@ -213,10 +213,10 @@ export function registerConversationRoutes(
     auth: 'user',
     params: convP,
     query: messagesQuery,
-    handler: ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
-      if (!conversations.getConversation(params.shopId, params.conversationId)) throw new ApiError('NOT_FOUND', 'conversation not found');
-      const r = conversations.listMessages(params.shopId, params.conversationId, query);
+    handler: async ({ req, params, query }) => {
+      await requireRole(req, params.shopId, 'manager');
+      if (!(await conversations.getConversation(params.shopId, params.conversationId))) throw new ApiError('NOT_FOUND', 'conversation not found');
+      const r = await conversations.listMessages(params.shopId, params.conversationId, query);
       return { hasMore: r.hasMore, items: r.items.map(messageView) };
     },
   });
@@ -229,10 +229,10 @@ export function registerConversationRoutes(
     auth: 'user',
     params: convP,
     body: pauseBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'manager');
       try {
-        return views(params.shopId, req.user!.user.id, [conversations.setAiPaused(params.shopId, params.conversationId, body.paused, req.user!.user.id)])[0];
+        return (await views(params.shopId, req.user!.user.id, [await conversations.setAiPaused(params.shopId, params.conversationId, body.paused, req.user!.user.id)]))[0];
       } catch (e) {
         return notFound(e);
       }
@@ -249,29 +249,31 @@ export function registerConversationRoutes(
     body: sendBody,
     status: 201,
     handler: async ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'manager');
-      const conv = conversations.getConversation(params.shopId, params.conversationId);
+      await requireRole(req, params.shopId, 'manager');
+      const conv = await conversations.getConversation(params.shopId, params.conversationId);
       if (!conv) throw new ApiError('NOT_FOUND', 'conversation not found');
-      const thread = locateThread(params.shopId, conv.conversation.channel, ig, tg);
+      const thread = await locateThread(params.shopId, conv.conversation.channel, ig, tg);
       if (!thread) throw new ApiError('ACCOUNT_NOT_CONNECTED', 'no connected channel can reach this conversation');
       if (thread.kind === 'instagram') {
         // Refuse before anything is recorded or paused.
-        const blocked = ig?.blockReason(params.shopId, params.conversationId);
+        const blocked = await ig?.blockReason(params.shopId, params.conversationId);
         if (blocked) throw new ApiError(blocked, blocked === 'OUTSIDE_MESSAGING_WINDOW' ? 'The 24-hour Instagram messaging window has closed' : 'Instagram is not connected');
       }
-      if (thread.kind === 'telegram' && tg?.blockReason(params.shopId)) throw new ApiError('ACCOUNT_NOT_CONNECTED', 'Telegram is not connected');
+      if (thread.kind === 'telegram' && (await tg?.blockReason(params.shopId))) throw new ApiError('ACCOUNT_NOT_CONNECTED', 'Telegram is not connected');
       const userId = req.user!.user.id;
       let message: ShopMessageRow;
       try {
-        conversations.setAiPaused(params.shopId, params.conversationId, true, userId);
-        message = conversations.recordOutbound(params.shopId, params.conversationId, {
-          senderType: 'human',
-          senderUserId: userId,
-          text: body.text,
-          deliveryStatus: 'pending',
-        }).message;
+        await conversations.setAiPaused(params.shopId, params.conversationId, true, userId);
+        message = (
+          await conversations.recordOutbound(params.shopId, params.conversationId, {
+            senderType: 'human',
+            senderUserId: userId,
+            text: body.text,
+            deliveryStatus: 'pending',
+          })
+        ).message;
         // Replying means the member has read the conversation.
-        conversations.markRead(params.shopId, params.conversationId, userId, message.seq);
+        await conversations.markRead(params.shopId, params.conversationId, userId, message.seq);
       } catch (e) {
         return notFound(e);
       }

@@ -23,9 +23,9 @@ export function registerNotificationFeedRoutes(app: FastifyInstance, deps: { sho
     auth: 'user',
     params: shopP,
     query: feedQuery,
-    handler: ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
-      return feed.feed(params.shopId, req.user!.user.id, query);
+    handler: async ({ req, params, query }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await feed.feed(params.shopId, req.user!.user.id, query);
     },
   });
 
@@ -36,9 +36,9 @@ export function registerNotificationFeedRoutes(app: FastifyInstance, deps: { sho
     tag: 'notifications',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return { seenAt: feed.markSeen(params.shopId, req.user!.user.id) };
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return { seenAt: await feed.markSeen(params.shopId, req.user!.user.id) };
     },
   });
 }

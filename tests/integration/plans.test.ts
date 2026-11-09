@@ -45,7 +45,7 @@ async function newShop(token: string, slug: string) {
 let seq = 0;
 /** A website visitor writes one message and the agent runs on it. Returns the conversation id. */
 async function visitorWrites(shopId: string, text = 'Привіт', session = `web-${++seq}`) {
-  const r = a!.conversations.ingestMessage(shopId, {
+  const r = await a!.conversations.ingestMessage(shopId, {
     channel: WEB_CHANNEL,
     conversationExternalId: session,
     customer: { externalId: session },
@@ -53,14 +53,14 @@ async function visitorWrites(shopId: string, text = 'Привіт', session = `w
     text,
     attachments: [],
   });
-  a!.salesAgent!.trigger(shopId, r.conversation.id, r.message.id);
+  await a!.salesAgent!.trigger(shopId, r.conversation.id, r.message.id);
   await a!.salesAgent!.whenIdle();
   return r.conversation.id;
 }
 /** The same visitor writes again in an existing website conversation. */
 async function writeAgain(shopId: string, conversationId: string, text: string) {
-  const session = a!.conversations.getConversation(shopId, conversationId)!.conversation.externalId;
-  const r = a!.conversations.ingestMessage(shopId, {
+  const session = (await a!.conversations.getConversation(shopId, conversationId))!.conversation.externalId;
+  const r = await a!.conversations.ingestMessage(shopId, {
     channel: WEB_CHANNEL,
     conversationExternalId: session,
     customer: { externalId: session },
@@ -68,11 +68,11 @@ async function writeAgain(shopId: string, conversationId: string, text: string) 
     text,
     attachments: [],
   });
-  a!.salesAgent!.trigger(shopId, conversationId, r.message.id);
+  await a!.salesAgent!.trigger(shopId, conversationId, r.message.id);
   await a!.salesAgent!.whenIdle();
 }
 const setPlan = (shopId: string, body: unknown) => call(a!, a!.admin, 'PUT', `/v1/shops/${shopId}/plan`, body);
-const runs = (shopId: string) => a!.agentRepo.listRuns(shopId, { limit: 100 }).items;
+const runs = async (shopId: string) => (await a!.agentRepo.listRuns(shopId, { limit: 100 })).items;
 const quotaNotices = (s: S) => s.notifier.sent.filter((n) => n.kind === 'ai_quota');
 
 describe('AI-reply cap', () => {
@@ -88,11 +88,11 @@ describe('AI-reply cap', () => {
     const c3 = await visitorWrites(s.shopA, 'Є розмір M?');
     const c4 = await visitorWrites(s.shopA, 'А доставка?');
     expect(s.llm.calls).toHaveLength(2); // no model call at the cap
-    expect(runs(s.shopA).filter((r) => r.detail === 'AI_REPLY_CAP')).toHaveLength(2);
-    expect(runs(s.shopA).find((r) => r.detail === 'AI_REPLY_CAP')).toMatchObject({ status: 'escalated', modelRequests: 0, inputTokens: 0 });
+    expect((await runs(s.shopA)).filter((r) => r.detail === 'AI_REPLY_CAP')).toHaveLength(2);
+    expect((await runs(s.shopA)).find((r) => r.detail === 'AI_REPLY_CAP')).toMatchObject({ status: 'escalated', modelRequests: 0, inputTokens: 0 });
     for (const c of [c3, c4]) {
-      expect(a!.agentRepo.openEscalation(s.shopA, c)).toBeTruthy();
-      const out = a!.conversations.listMessages(s.shopA, c, { limit: 10 }).items.filter((m) => m.direction === 'outgoing');
+      expect(await a!.agentRepo.openEscalation(s.shopA, c)).toBeTruthy();
+      const out = (await a!.conversations.listMessages(s.shopA, c, { limit: 10 })).items.filter((m) => m.direction === 'outgoing');
       expect(out).toMatchObject([{ senderType: 'system', text: 'Дякуємо за повідомлення! Менеджер відповість вам найближчим часом.', deliveryStatus: 'sent' }]);
     }
     expect(quotaNotices(s)).toEqual([{ kind: 'ai_quota', shopId: s.shopA, month: utcMonth(new Date()).month, cap: 2 }]);
@@ -100,8 +100,8 @@ describe('AI-reply cap', () => {
 
     // The customer writes again in the escalated chat: the run is skipped, no second holding text, no second notice.
     await writeAgain(s.shopA, c3, 'Ще раз');
-    expect(runs(s.shopA)[0]).toMatchObject({ status: 'skipped', detail: 'ESCALATION_OPEN' });
-    expect(a!.conversations.listMessages(s.shopA, c3, { limit: 10 }).items.filter((m) => m.senderType === 'system')).toHaveLength(1);
+    expect((await runs(s.shopA))[0]).toMatchObject({ status: 'skipped', detail: 'ESCALATION_OPEN' });
+    expect((await a!.conversations.listMessages(s.shopA, c3, { limit: 10 })).items.filter((m) => m.senderType === 'system')).toHaveLength(1);
     expect(quotaNotices(s)).toHaveLength(1);
 
     const stats = (await call(a!, s.token, 'GET', `/v1/shops/${s.shopA}/stats`)).body;
@@ -134,7 +134,7 @@ describe('AI-reply cap', () => {
     await visitorWrites(s.shopA); // replied
     expect((await call(a!, s.token, 'GET', `/v1/shops/${s.shopA}/usage`)).body.aiReplies).toBe(1);
     a!.handle.raw.prepare("update ai_runs set status = 'send_uncertain' where status = 'replied'").run();
-    expect(a!.plans.usage(s.shopA).aiReplies).toBe(1);
+    expect((await a!.plans.usage(s.shopA)).aiReplies).toBe(1);
   });
 });
 
@@ -143,17 +143,17 @@ describe('month rollover (UTC)', () => {
     const s = await setup();
     s.llm.push(say('1'), say('2'), say('3'));
     for (let i = 0; i < 3; i++) await visitorWrites(s.shopA);
-    const ids = runs(s.shopA).map((r) => r.id);
+    const ids = (await runs(s.shopA)).map((r) => r.id);
     const at = (id: string, iso: string) => a!.handle.raw.prepare('update ai_runs set created_at = ? where id = ?').run(iso, id);
     at(ids[0]!, '2026-10-31T23:59:59.999Z');
     at(ids[1]!, '2026-11-01T00:00:00.000Z');
     at(ids[2]!, '2026-11-30T23:59:59.999Z');
     const nov = new PlanRepository(a!.handle, 'starter', () => new Date('2026-11-15T12:00:00Z'));
-    expect(nov.usage(s.shopA)).toMatchObject({ month: '2026-11', periodStart: '2026-11-01T00:00:00.000Z', periodEnd: '2026-12-01T00:00:00.000Z', aiReplies: 2 });
-    expect(new PlanRepository(a!.handle, 'starter', () => new Date('2026-10-31T23:59:59.999Z')).usage(s.shopA)).toMatchObject({ month: '2026-10', aiReplies: 1 });
-    expect(new PlanRepository(a!.handle, 'starter', () => new Date('2026-12-01T00:00:00.000Z')).usage(s.shopA)).toMatchObject({ month: '2026-12', aiReplies: 0 });
+    expect(await nov.usage(s.shopA)).toMatchObject({ month: '2026-11', periodStart: '2026-11-01T00:00:00.000Z', periodEnd: '2026-12-01T00:00:00.000Z', aiReplies: 2 });
+    expect(await new PlanRepository(a!.handle, 'starter', () => new Date('2026-10-31T23:59:59.999Z')).usage(s.shopA)).toMatchObject({ month: '2026-10', aiReplies: 1 });
+    expect(await new PlanRepository(a!.handle, 'starter', () => new Date('2026-12-01T00:00:00.000Z')).usage(s.shopA)).toMatchObject({ month: '2026-12', aiReplies: 0 });
     // Kyiv is already in December at 23:30 UTC on 30 November; the quota month is still November.
-    expect(new PlanRepository(a!.handle, 'starter', () => new Date('2026-11-30T23:30:00Z')).usage(s.shopA).month).toBe('2026-11');
+    expect((await new PlanRepository(a!.handle, 'starter', () => new Date('2026-11-30T23:30:00Z')).usage(s.shopA)).month).toBe('2026-11');
   });
 
   it('a new month brings the AI back and allows one new owner notice', async () => {
@@ -173,7 +173,7 @@ describe('month rollover (UTC)', () => {
     await visitorWrites(s.shopA);
     expect(quotaNotices(s)).toHaveLength(2);
     expect(quotaNotices(s)[1]).toMatchObject({ month: utcMonth(new Date()).month });
-    expect(a!.plans.claimCapNotice(s.shopA, utcMonth(new Date()).month)).toBe(false);
+    expect(await a!.plans.claimCapNotice(s.shopA, utcMonth(new Date()).month)).toBe(false);
   });
 });
 
@@ -189,8 +189,8 @@ describe('isolation and access', () => {
     s.llm.push(say('B1'));
     await visitorWrites(shopB);
     expect(s.llm.calls).toHaveLength(2);
-    expect(a!.plans.usage(s.shopA)).toMatchObject({ aiReplies: 1, capReached: true });
-    expect(a!.plans.usage(shopB)).toMatchObject({ aiReplies: 1, capReached: true });
+    expect(await a!.plans.usage(s.shopA)).toMatchObject({ aiReplies: 1, capReached: true });
+    expect(await a!.plans.usage(shopB)).toMatchObject({ aiReplies: 1, capReached: true });
     expect(quotaNotices(s).map((n) => n.shopId)).toEqual([s.shopA]);
   });
 

@@ -190,13 +190,13 @@ export class TelegramNotifier implements Notifier {
   }
 
   private async deliver(n: Notification): Promise<void> {
-    const chatId = this.d.agent.getNotifySettings(n.shopId).telegramChatId;
+    const chatId = (await this.d.agent.getNotifySettings(n.shopId)).telegramChatId;
     if (!chatId) return;
-    const shop = this.d.shops.get(n.shopId);
+    const shop = await this.d.shops.get(n.shopId);
     if (!shop) return;
-    const conv = 'conversationId' in n ? this.d.conversations.getConversation(n.shopId, n.conversationId) : undefined;
+    const conv = 'conversationId' in n ? await this.d.conversations.getConversation(n.shopId, n.conversationId) : undefined;
     const customer = conv?.customer.displayName || conv?.customer.handle || '?';
-    const num = 'draftId' in n ? this.d.orders?.getDraft(n.shopId, n.draftId)?.draft.number : undefined;
+    const num = 'draftId' in n ? (await this.d.orders?.getDraft(n.shopId, n.draftId))?.draft.number : undefined;
     const text = renderNotification(n, { shopName: shop.name, language: shop.defaultLanguage, customer, ...(num ? { order: `№${num}` } : {}) });
     const res = await (this.d.fetchImpl ?? fetch)(`${this.d.baseUrl ?? 'https://api.telegram.org'}/bot${this.d.token}/sendMessage`, {
       method: 'POST',

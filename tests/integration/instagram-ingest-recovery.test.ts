@@ -29,9 +29,9 @@ beforeEach(async () => {
     llm: new ScriptedLlm([]),
     fetchImpl,
   });
-  shopId = a.shops.create({ name: 'Shop', slug: 'recovery-shop' }).id;
-  a.igRepo.upsertChannel(shopId, { igUserId: IG, username: 'shop', tokenExpiresAt: null });
-  a.vault.save(shopId, 'instagram', 'test-token');
+  shopId = (await a.shops.create({ name: 'Shop', slug: 'recovery-shop' })).id;
+  await a.igRepo.upsertChannel(shopId, { igUserId: IG, username: 'shop', tokenExpiresAt: null });
+  await a.vault.save(shopId, 'instagram', 'test-token');
 });
 
 afterEach(async () => {
@@ -52,9 +52,9 @@ async function webhook(...events: ReturnType<typeof event>[]) {
   await a.ig.whenIdle();
   return res;
 }
-const messages = () => {
-  const conv = a.conversations.findConversationByExternal(shopId, INSTAGRAM_CHANNEL, CUSTOMER);
-  return conv ? a.conversations.listMessages(shopId, conv.conversation.id).items : [];
+const messages = async () => {
+  const conv = await a.conversations.findConversationByExternal(shopId, INSTAGRAM_CHANNEL, CUSTOMER);
+  return conv ? (await a.conversations.listMessages(shopId, conv.conversation.id)).items : [];
 };
 const polled = (id: string, ms: number, text = 'Hello') => ({
   id,
@@ -72,15 +72,15 @@ describe('Instagram ingestion recovery', () => {
     });
     const batch = [event('retry'), event('stored')];
     expect((await webhook(...batch)).statusCode).toBe(503);
-    expect(messages().map((m) => m.externalId)).toEqual(['stored']);
+    expect((await messages()).map((m) => m.externalId)).toEqual(['stored']);
     expect((await webhook(...batch)).statusCode).toBe(200);
-    expect(messages().map((m) => m.externalId)).toEqual(['stored', 'retry']);
+    expect((await messages()).map((m) => m.externalId)).toEqual(['stored', 'retry']);
     expect(trigger).toHaveBeenCalledTimes(2);
   });
 
   it('acknowledges permanently invalid messages and still ingests the valid events', async () => {
     expect((await webhook(event('invalid', 'x'.repeat(10_001)), event('valid'))).statusCode).toBe(200);
-    expect(messages().map((m) => m.externalId)).toEqual(['valid']);
+    expect((await messages()).map((m) => m.externalId)).toEqual(['valid']);
   });
 
   it('rolls back a message if synchronous agent dispatch fails, allowing its retry', async () => {
@@ -88,9 +88,9 @@ describe('Instagram ingestion recovery', () => {
       throw new Error('dispatch unavailable');
     });
     expect((await webhook(event('dispatch'))).statusCode).toBe(503);
-    expect(messages()).toEqual([]);
+    expect(await messages()).toEqual([]);
     expect((await webhook(event('dispatch'))).statusCode).toBe(200);
-    expect(messages().map((m) => m.externalId)).toEqual(['dispatch']);
+    expect((await messages()).map((m) => m.externalId)).toEqual(['dispatch']);
     expect(trigger).toHaveBeenCalledTimes(2);
   });
 
@@ -99,43 +99,43 @@ describe('Instagram ingestion recovery', () => {
     a.handle.raw.prepare('update instagram_channels set connected_at = ? where shop_id = ?').run(new Date(connectedAt).toISOString(), shopId);
     polledMessages = [polled('old', connectedAt - 1_000), polled('new', connectedAt + 1_000)];
     expect(await a.ig.pollOnce()).toBe(1);
-    expect(messages().map((m) => m.externalId)).toEqual(['new']);
+    expect((await messages()).map((m) => m.externalId)).toEqual(['new']);
   });
 
   it('preserves the polling cursor on a failed write and retries without duplicating successful writes', async () => {
     const baseline = Date.now() - 10_000;
     const cursor = new Date(baseline).toISOString();
-    a.igRepo.setPolledUntil(shopId, cursor);
+    await a.igRepo.setPolledUntil(shopId, cursor);
     polledMessages = [polled('retry', baseline + 1_000), polled('stored', baseline + 2_000)];
     const trigger = vi.spyOn(a.salesAgent!, 'trigger');
     vi.spyOn(a.conversations, 'ingestMessage').mockImplementationOnce(() => {
       throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
     });
     expect(await a.ig.pollOnce()).toBe(1);
-    expect(a.igRepo.getChannel(shopId)!.polledUntil).toBe(cursor);
+    expect((await a.igRepo.getChannel(shopId))!.polledUntil).toBe(cursor);
     expect(await a.ig.pollOnce()).toBe(1);
-    expect(messages().map((m) => m.externalId)).toEqual(['stored', 'retry']);
+    expect((await messages()).map((m) => m.externalId)).toEqual(['stored', 'retry']);
     expect(trigger).toHaveBeenCalledTimes(2);
-    expect(a.igRepo.getChannel(shopId)!.polledUntil).toBe(new Date(baseline + 2_000).toISOString());
+    expect((await a.igRepo.getChannel(shopId))!.polledUntil).toBe(new Date(baseline + 2_000).toISOString());
   });
 
   it('recovers a newly visible message at the same timestamp as the polling cursor', async () => {
     const time = Date.now() - 1_000;
-    a.igRepo.setPolledUntil(shopId, new Date(time - 1_000).toISOString());
+    await a.igRepo.setPolledUntil(shopId, new Date(time - 1_000).toISOString());
     polledMessages = [polled('first', time)];
     expect(await a.ig.pollOnce()).toBe(1);
     polledMessages.push(polled('same-time', time));
     expect(await a.ig.pollOnce()).toBe(1);
     expect(await a.ig.pollOnce()).toBe(0);
-    expect(messages().map((m) => m.externalId)).toEqual(['first', 'same-time']);
+    expect((await messages()).map((m) => m.externalId)).toEqual(['first', 'same-time']);
   });
 
-  it('keeps the polling cursor when reconnecting the same account and resets it when switching accounts', () => {
+  it('keeps the polling cursor when reconnecting the same account and resets it when switching accounts', async () => {
     const cursor = new Date(Date.now() - 1_000).toISOString();
-    a.igRepo.setPolledUntil(shopId, cursor);
-    a.igRepo.upsertChannel(shopId, { igUserId: IG, username: 'shop', tokenExpiresAt: null });
-    expect(a.igRepo.getChannel(shopId)!.polledUntil).toBe(cursor);
-    a.igRepo.upsertChannel(shopId, { igUserId: '17841400000000002', username: 'another-shop', tokenExpiresAt: null });
-    expect(a.igRepo.getChannel(shopId)!.polledUntil).toBeNull();
+    await a.igRepo.setPolledUntil(shopId, cursor);
+    await a.igRepo.upsertChannel(shopId, { igUserId: IG, username: 'shop', tokenExpiresAt: null });
+    expect((await a.igRepo.getChannel(shopId))!.polledUntil).toBe(cursor);
+    await a.igRepo.upsertChannel(shopId, { igUserId: '17841400000000002', username: 'another-shop', tokenExpiresAt: null });
+    expect((await a.igRepo.getChannel(shopId))!.polledUntil).toBeNull();
   });
 });

@@ -15,14 +15,16 @@ export type SendOutcome = { status: 'sent' | 'uncertain' | 'failed'; code: strin
 export async function deliverPending(d: SenderDeps, t: { shopId: string; message: ShopMessageRow } & Delivery, opts: { rethrow?: boolean } = {}): Promise<SendOutcome> {
   if (t.kind === 'internal') {
     // Nothing external to acknowledge: the row is the message. The generated id marks it as ours, not a platform ack.
-    const message = d.conversations.setDeliveryStatus(t.shopId, t.message.id, 'sent', { externalId: `web:${randomUUID()}` });
+    const message = await d.conversations.setDeliveryStatus(t.shopId, t.message.id, 'sent', { externalId: `web:${randomUUID()}` });
     return { status: 'sent', code: null, message };
   }
   if (t.kind === 'instagram') return deliverDirect(d.conversations, d.ig, 'Instagram', t, opts);
   return deliverDirect(d.conversations, d.tg, 'Telegram', t, opts);
 }
 
-type DirectChannel = { send(shopId: string, conversationId: string, text: string): Promise<{ status: 'sent'; externalId: string } | { status: 'uncertain' | 'failed'; code: string }> };
+type DirectChannel = {
+  send(shopId: string, conversationId: string, text: string): Promise<{ status: 'sent'; externalId: string } | { status: 'uncertain' | 'failed'; code: string }>;
+};
 
 /**
  * One attempt through an official channel API (Instagram, Telegram). The channel checks its connection (and Instagram's
@@ -36,21 +38,23 @@ async function deliverDirect(
   t: { shopId: string; message: ShopMessageRow },
   opts: { rethrow?: boolean },
 ): Promise<SendOutcome> {
-  const settle = (status: 'sent' | 'uncertain' | 'failed', code: string | null, externalId?: string): SendOutcome => {
-    const cur = conversations.getMessage(t.shopId, t.message.id)!;
-    if (cur.deliveryStatus !== 'pending' && !(cur.deliveryStatus === 'uncertain' && status === 'sent')) return { status: cur.deliveryStatus === 'sent' ? 'sent' : status, code, message: cur };
-    const message = conversations.setDeliveryStatus(t.shopId, t.message.id, status, { externalId, error: code ?? undefined });
+  const settle = async (status: 'sent' | 'uncertain' | 'failed', code: string | null, externalId?: string): Promise<SendOutcome> => {
+    const cur = (await conversations.getMessage(t.shopId, t.message.id))!;
+    if (cur.deliveryStatus !== 'pending' && !(cur.deliveryStatus === 'uncertain' && status === 'sent'))
+      return { status: cur.deliveryStatus === 'sent' ? 'sent' : status, code, message: cur };
+    const message = await conversations.setDeliveryStatus(t.shopId, t.message.id, status, { externalId, error: code ?? undefined });
     return { status, code, message };
   };
   if (!ch) {
-    const out = settle('failed', 'ACCOUNT_NOT_CONNECTED');
+    const out = await settle('failed', 'ACCOUNT_NOT_CONNECTED');
     if (opts.rethrow) throw new ApiError('ACCOUNT_NOT_CONNECTED', `${name} is not connected`);
     return out;
   }
   const r = await ch.send(t.shopId, t.message.conversationId, t.message.text ?? '');
-  if (r.status === 'sent') return settle('sent', null, r.externalId);
-  const out = settle(r.status, r.code);
-  if (opts.rethrow && r.status === 'failed' && (r.code === 'OUTSIDE_MESSAGING_WINDOW' || r.code === 'ACCOUNT_NOT_CONNECTED')) throw new ApiError(r.code, r.code === 'OUTSIDE_MESSAGING_WINDOW' ? 'The 24-hour Instagram messaging window has closed' : `${name} is not connected`);
+  if (r.status === 'sent') return await settle('sent', null, r.externalId);
+  const out = await settle(r.status, r.code);
+  if (opts.rethrow && r.status === 'failed' && (r.code === 'OUTSIDE_MESSAGING_WINDOW' || r.code === 'ACCOUNT_NOT_CONNECTED'))
+    throw new ApiError(r.code, r.code === 'OUTSIDE_MESSAGING_WINDOW' ? 'The 24-hour Instagram messaging window has closed' : `${name} is not connected`);
   return out;
 }
 
@@ -64,19 +68,19 @@ export async function sendSystemMessage(
   conversationId: string,
   text: string,
 ): Promise<{ status: 'sent' | 'uncertain' | 'failed'; code: string | null }> {
-  const conv = d.conversations.getConversation(shopId, conversationId);
+  const conv = await d.conversations.getConversation(shopId, conversationId);
   if (!conv) return { status: 'failed', code: 'NOT_FOUND' };
-  const thread = locateThread(shopId, conv.conversation.channel, d.ig, d.tg);
+  const thread = await locateThread(shopId, conv.conversation.channel, d.ig, d.tg);
   if (!thread) return { status: 'failed', code: 'ACCOUNT_NOT_CONNECTED' };
-  const { message } = d.conversations.recordOutbound(shopId, conversationId, { senderType: 'system', text, deliveryStatus: 'pending' });
+  const { message } = await d.conversations.recordOutbound(shopId, conversationId, { senderType: 'system', text, deliveryStatus: 'pending' });
   const r = await deliverPending(d, { shopId, ...thread, message });
   return { status: r.status, code: r.code };
 }
 
 /** How to reach a shop conversation: the website channel is internal, Instagram and Telegram use the shop's connected official account or bot. */
-export function locateThread(shopId: string, channel: string, ig?: InstagramService, tg?: TelegramService): Delivery | undefined {
+export async function locateThread(shopId: string, channel: string, ig?: InstagramService, tg?: TelegramService): Promise<Delivery | undefined> {
   if (channel === WEB_CHANNEL) return { kind: 'internal' };
-  if (channel === INSTAGRAM_CHANNEL) return ig?.isConnected(shopId) ? { kind: 'instagram' } : undefined;
-  if (channel === TELEGRAM_CHANNEL) return tg?.isConnected(shopId) ? { kind: 'telegram' } : undefined;
+  if (channel === INSTAGRAM_CHANNEL) return (await ig?.isConnected(shopId)) ? { kind: 'instagram' } : undefined;
+  if (channel === TELEGRAM_CHANNEL) return (await tg?.isConnected(shopId)) ? { kind: 'telegram' } : undefined;
   return undefined;
 }

@@ -46,7 +46,7 @@ export class WebChatService {
     private repo: WebChatRepository,
     private conversations: ConversationRepository,
     private limits: WebChatLimits,
-    private onInbound: (shopId: string, conversationId: string, messageId: string) => void,
+    private onInbound: (shopId: string, conversationId: string, messageId: string) => Promise<void>,
     private clock: () => Date = () => new Date(),
   ) {
     this.sessionsPerIp = new RateLimiter(limits.sessionsPerIpPerHour, 3_600_000);
@@ -55,8 +55,8 @@ export class WebChatService {
   }
 
   /** The enabled config for a widget key, or null. Disabled and unknown keys look the same. */
-  config(widgetKey: string): WebChatConfigRow | null {
-    const c = this.repo.findByKey(widgetKey);
+  async config(widgetKey: string): Promise<WebChatConfigRow | null> {
+    const c = await this.repo.findByKey(widgetKey);
     return c?.enabled ? c : null;
   }
 
@@ -69,42 +69,42 @@ export class WebChatService {
     throw new RateLimitedError(retryAfter);
   }
 
-  openSession(cfg: WebChatConfigRow, ip: string, displayName?: string | null): { token: string; expiresAt: string } {
+  async openSession(cfg: WebChatConfigRow, ip: string, displayName?: string | null): Promise<{ token: string; expiresAt: string }> {
     const wait = this.sessionsPerIp.hit(ip);
     if (wait) this.tooMany(wait);
-    const { session, token } = this.repo.createSession(cfg.shopId, { displayName }, this.limits.sessionTtlMs);
+    const { session, token } = await this.repo.createSession(cfg.shopId, { displayName }, this.limits.sessionTtlMs);
     return { token, expiresAt: session.expiresAt };
   }
 
-  session(cfg: WebChatConfigRow, token: string | undefined): WebChatSessionRow {
-    const s = token ? this.repo.findSession(cfg.shopId, token) : undefined;
+  async session(cfg: WebChatConfigRow, token: string | undefined): Promise<WebChatSessionRow> {
+    const s = token ? await this.repo.findSession(cfg.shopId, token) : undefined;
     if (!s) throw new ApiError('UNAUTHORIZED', 'Chat session missing or expired');
     return s;
   }
 
-  send(cfg: WebChatConfigRow, s: WebChatSessionRow, ip: string, text: string): ShopMessageRow {
+  async send(cfg: WebChatConfigRow, s: WebChatSessionRow, ip: string, text: string): Promise<ShopMessageRow> {
     const wait = this.msgPerSession.hit(s.id) || this.msgPerIp.hit(ip);
     if (wait) this.tooMany(wait);
-    if (this.repo.countInboundSince(cfg.shopId, startOfUtcDay(this.clock())) >= this.limits.dailyMessagesPerShop) this.tooMany(3600);
-    const r = this.conversations.ingestMessage(cfg.shopId, {
+    if ((await this.repo.countInboundSince(cfg.shopId, startOfUtcDay(this.clock()))) >= this.limits.dailyMessagesPerShop) this.tooMany(3600);
+    const r = await this.conversations.ingestMessage(cfg.shopId, {
       channel: WEB_CHANNEL,
       conversationExternalId: s.visitorId,
       customer: { externalId: s.visitorId, displayName: s.displayName ?? `Відвідувач ${s.visitorId.slice(0, 4)}` },
       externalId: `v:${randomUUID()}`,
       text,
     });
-    this.repo.touchSession(s.id);
-    this.onInbound(cfg.shopId, r.conversation.id, r.message.id);
+    await this.repo.touchSession(s.id);
+    await this.onInbound(cfg.shopId, r.conversation.id, r.message.id);
     return r.message;
   }
 
   /** Messages the visitor may see (own and replies that were actually delivered), after `afterSeq`. */
-  messages(cfg: WebChatConfigRow, s: WebChatSessionRow, afterSeq: number): ShopMessageRow[] {
-    this.repo.touchSession(s.id);
-    const conv = this.conversations.findConversationByExternal(cfg.shopId, WEB_CHANNEL, s.visitorId);
+  async messages(cfg: WebChatConfigRow, s: WebChatSessionRow, afterSeq: number): Promise<ShopMessageRow[]> {
+    await this.repo.touchSession(s.id);
+    const conv = await this.conversations.findConversationByExternal(cfg.shopId, WEB_CHANNEL, s.visitorId);
     if (!conv) return [];
-    return this.conversations
-      .listMessages(cfg.shopId, conv.conversation.id, { limit: 200 })
-      .items.filter((m) => m.seq > afterSeq && (m.direction === 'incoming' || m.deliveryStatus === 'sent'));
+    return (await this.conversations.listMessages(cfg.shopId, conv.conversation.id, { limit: 200 })).items.filter(
+      (m) => m.seq > afterSeq && (m.direction === 'incoming' || m.deliveryStatus === 'sent'),
+    );
   }
 }

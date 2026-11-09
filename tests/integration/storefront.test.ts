@@ -21,7 +21,7 @@ async function setup() {
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Льон & Ко', slug: 'lon' })).body.shopId as string;
   const other = (await call(a, token, 'POST', '/v1/shops', { name: 'Інший', slug: 'other' })).body.shopId as string;
   const c = a.catalog;
-  c.createProduct(shopId, {
+  await c.createProduct(shopId, {
     name: 'Сукня',
     description: 'Льон, міді',
     priceMinor: 129_900,
@@ -33,10 +33,10 @@ async function setup() {
       { sku: 'DR-L', options: { size: 'L' }, priceMinor: 139_900, stock: 1 },
     ],
   });
-  c.createProduct(shopId, { name: 'Розпродано', priceMinor: 100, currency: 'UAH', sku: 'SOLD', stock: 0 });
-  c.createProduct(shopId, { name: 'Прихований', priceMinor: 100, currency: 'UAH', sku: 'OFF', stock: 5, active: false });
-  c.createProduct(shopId, { name: '<script>alert(1)</script>', priceMinor: 5_050, currency: 'UAH', sku: 'XSS', stock: 3, media: ['javascript:alert(1)'] });
-  c.createProduct(other, { name: 'Чужий товар', priceMinor: 100, currency: 'UAH', sku: 'OTHER', stock: 5 });
+  await c.createProduct(shopId, { name: 'Розпродано', priceMinor: 100, currency: 'UAH', sku: 'SOLD', stock: 0 });
+  await c.createProduct(shopId, { name: 'Прихований', priceMinor: 100, currency: 'UAH', sku: 'OFF', stock: 5, active: false });
+  await c.createProduct(shopId, { name: '<script>alert(1)</script>', priceMinor: 5_050, currency: 'UAH', sku: 'XSS', stock: 3, media: ['javascript:alert(1)'] });
+  await c.createProduct(other, { name: 'Чужий товар', priceMinor: 100, currency: 'UAH', sku: 'OTHER', stock: 5 });
   return { token, shopId, other };
 }
 
@@ -90,7 +90,7 @@ describe('storefront', () => {
   it('pages after 48 products', async () => {
     const s = await setup();
     await call(a!, s.token, 'PATCH', `/v1/shops/${s.shopId}`, { storefrontEnabled: true });
-    for (let i = 0; i < 50; i++) a!.catalog.createProduct(s.shopId, { name: `Товар ${i}`, priceMinor: 100, currency: 'UAH', sku: `T-${i}`, stock: 1 });
+    for (let i = 0; i < 50; i++) await a!.catalog.createProduct(s.shopId, { name: `Товар ${i}`, priceMinor: 100, currency: 'UAH', sku: `T-${i}`, stock: 1 });
     const p1 = (await page('/s/lon')).body;
     const p2 = (await page('/s/lon?page=2')).body;
     expect((p1.match(/<li class="card">/g) ?? []).length).toBe(48);
@@ -102,7 +102,7 @@ describe('storefront', () => {
   it('offers the shop chats; the website chat widget runs on the storefront origin only while the storefront is on', async () => {
     const s = await setup();
     await call(a!, s.token, 'PATCH', `/v1/shops/${s.shopId}`, { storefrontEnabled: true });
-    a!.tgRepo.upsertChannel(s.shopId, { botId: '1', botUsername: 'lon_shop_bot', webhookId: 'w'.repeat(32), secret: 's'.repeat(43) });
+    await a!.tgRepo.upsertChannel(s.shopId, { botId: '1', botUsername: 'lon_shop_bot', webhookId: 'w'.repeat(32), secret: 's'.repeat(43) });
     const key = (await call(a!, s.token, 'PUT', `/v1/shops/${s.shopId}/web-chat`, { enabled: true })).body.widgetKey as string;
     const html = (await page('/s/lon')).body;
     expect(html).toContain('href="https://t.me/lon_shop_bot"');

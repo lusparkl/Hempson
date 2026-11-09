@@ -95,8 +95,8 @@ export class PaymentService {
   get available(): boolean {
     return this.d.vault.available;
   }
-  connected(shopId: string): boolean {
-    return this.available && this.d.vault.get(shopId, 'monobank')?.status === 'active';
+  async connected(shopId: string): Promise<boolean> {
+    return this.available && (await this.d.vault.get(shopId, 'monobank'))?.status === 'active';
   }
 
   private webhookUrl(webhookId: string | null): string | null {
@@ -104,9 +104,9 @@ export class PaymentService {
   }
 
   /** Non-secret state for the dashboard. */
-  status(shopId: string) {
-    const s = this.d.repo.getSettings(shopId);
-    const cred = this.available ? this.d.vault.get(shopId, 'monobank') : undefined;
+  async status(shopId: string) {
+    const s = await this.d.repo.getSettings(shopId);
+    const cred = this.available ? await this.d.vault.get(shopId, 'monobank') : undefined;
     return {
       available: this.available,
       provider: 'monobank' as const,
@@ -123,16 +123,17 @@ export class PaymentService {
   /** Runs one Monobank call with the shop's token. A refused token marks the credential and tells the owner once. */
   private async withToken<T>(shopId: string, fn: (token: string) => Promise<T>): Promise<T> {
     if (!this.available) throw new ApiError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
-    if (!this.connected(shopId)) throw new ApiError('NOT_CONFIGURED', 'Monobank is not connected for this shop');
+    if (!(await this.connected(shopId))) throw new ApiError('NOT_CONFIGURED', 'Monobank is not connected for this shop');
     try {
       return await this.d.vault.withSecret(shopId, 'monobank', fn);
     } catch (e) {
       if (e instanceof MonobankError && e.kind === 'auth') {
-        this.d.vault.mark(shopId, 'monobank', 'needs_reconnect');
-        this.d.repo.setLastError(shopId, 'TOKEN_REJECTED');
+        await this.d.vault.mark(shopId, 'monobank', 'needs_reconnect');
+        await this.d.repo.setLastError(shopId, 'TOKEN_REJECTED');
         this.d.notifier?.notify({ kind: 'channel_issue', shopId, channel: 'monobank', issue: 'needs_reconnect' });
       }
-      if (e instanceof CredentialMissingError || e instanceof CredentialsUnavailableError || e instanceof CredentialDecryptError) throw new ApiError('NOT_CONFIGURED', 'Monobank is not connected for this shop');
+      if (e instanceof CredentialMissingError || e instanceof CredentialsUnavailableError || e instanceof CredentialDecryptError)
+        throw new ApiError('NOT_CONFIGURED', 'Monobank is not connected for this shop');
       throw e;
     }
   }
@@ -154,13 +155,15 @@ export class PaymentService {
     try {
       const me = await this.d.api.merchantDetails(token);
       const pubKey = await this.d.api.pubKey(token);
-      this.d.repo.db.transaction(() => {
-        this.d.vault.save(shopId, 'monobank', token);
-        // A fresh webhook path per connection: a URL given to an earlier token stops matching.
-        this.d.repo.setProvider(shopId, { webhookId: randomBytes(24).toString('base64url'), merchantId: me.merchantId, merchantName: me.merchantName, pubKey });
-      });
+      // A fresh webhook path per connection: a URL given to an earlier token stops matching.
+      await this.d.repo.connect(
+        shopId,
+        { webhookId: randomBytes(24).toString('base64url'), merchantId: me.merchantId, merchantName: me.merchantName, pubKey },
+        this.d.vault,
+        token,
+      );
       this.d.log.info({ shopId }, 'monobank connected');
-      return this.status(shopId);
+      return await this.status(shopId);
     } catch (e) {
       if (e instanceof MonobankError) this.d.log.warn({ shopId, kind: e.kind, code: e.code }, 'monobank connect failed');
       this.translate(e);
@@ -168,8 +171,8 @@ export class PaymentService {
   }
 
   /** Deletes the token. The public key and webhook path stay, so a payment already made is still recognised. */
-  disconnect(shopId: string): void {
-    if (this.available) this.d.vault.delete(shopId, 'monobank');
+  async disconnect(shopId: string): Promise<void> {
+    if (this.available) await this.d.vault.delete(shopId, 'monobank');
   }
 
   // ---------- links ----------
@@ -181,8 +184,8 @@ export class PaymentService {
   }
 
   /** Fire and forget after a member cancelled an order: its unpaid invoice is deactivated so nobody can pay it any more. */
-  afterCancel(shopId: string, draftId: string): void {
-    const p = this.d.repo.activeFor(shopId, draftId);
+  async afterCancel(shopId: string, draftId: string): Promise<void> {
+    const p = await this.d.repo.activeFor(shopId, draftId);
     if (!p?.invoiceId || !['created', 'processing', 'hold'].includes(p.state)) return;
     this.track(this.remove(shopId, p).catch(() => undefined));
   }
@@ -198,8 +201,8 @@ export class PaymentService {
     while (this.inflight.size) await Promise.allSettled([...this.inflight]);
   }
 
-  private notifyOrder(shopId: string, draftId: string, event: OrderEvent, link: string | null = null) {
-    const d = this.d.orders.getDraft(shopId, draftId)?.draft;
+  private async notifyOrder(shopId: string, draftId: string, event: OrderEvent, link: string | null = null) {
+    const d = (await this.d.orders.getDraft(shopId, draftId))?.draft;
     if (d) this.d.notifier?.notify({ kind: 'order_update', shopId, conversationId: d.conversationId, draftId, event, ttn: null, link });
   }
 
@@ -209,79 +212,91 @@ export class PaymentService {
    */
   async createLink(shopId: string, draftId: string): Promise<OrderPaymentRow> {
     const { repo, orders, log } = this.d;
-    const d = orders.getDraft(shopId, draftId)?.draft;
+    const d = (await orders.getDraft(shopId, draftId))?.draft;
     if (!d) throw new ApiError('NOT_FOUND', 'order draft not found');
-    const fail = (code: string, notify = true): never => {
+    const fail = async (code: string, notify = true): Promise<never> => {
       log.warn({ shopId, draftId, code }, 'payment link not created');
-      if (notify) this.notifyOrder(shopId, draftId, 'payment_link_failed');
-      throw new ApiError(code === 'NOT_CONNECTED' ? 'NOT_CONFIGURED' : 'VALIDATION_ERROR', code === 'NOT_CONNECTED' ? 'Monobank is not connected for this shop' : `The payment link could not be created (${code})`);
+      if (notify) await this.notifyOrder(shopId, draftId, 'payment_link_failed');
+      throw new ApiError(
+        code === 'NOT_CONNECTED' ? 'NOT_CONFIGURED' : 'VALIDATION_ERROR',
+        code === 'NOT_CONNECTED' ? 'Monobank is not connected for this shop' : `The payment link could not be created (${code})`,
+      );
     };
-    if (!this.connected(shopId)) fail('NOT_CONNECTED');
-    if (CURRENCY_NUMERIC[d.currency] === undefined) fail('CURRENCY_NOT_SUPPORTED');
-    const due = d.paymentDueAt ? Date.parse(d.paymentDueAt) : this.now().getTime() + repo.getSettings(shopId).paymentTimeoutHours * 3600_000;
+    if (!(await this.connected(shopId))) await fail('NOT_CONNECTED');
+    if (CURRENCY_NUMERIC[d.currency] === undefined) await fail('CURRENCY_NOT_SUPPORTED');
+    const due = d.paymentDueAt ? Date.parse(d.paymentDueAt) : this.now().getTime() + (await repo.getSettings(shopId)).paymentTimeoutHours * 3600_000;
     const left = due - this.now().getTime();
-    if (left < MIN_LINK_MS) fail('DEADLINE_TOO_CLOSE');
+    if (left < MIN_LINK_MS) await fail('DEADLINE_TOO_CLOSE');
     let pay: OrderPaymentRow;
     try {
-      pay = repo.claim(shopId, draftId, { provider: 'monobank', expiresAt: new Date(due).toISOString() });
+      pay = await repo.claim(shopId, draftId, { provider: 'monobank', expiresAt: new Date(due).toISOString() });
     } catch (e) {
       this.translate(e);
     }
     try {
-      const inv = await this.withToken(shopId, (token) =>
+      const inv = await this.withToken(shopId, async (token) =>
         this.d.api.createInvoice(token, {
           amountMinor: pay.amountMinor,
           ccy: CURRENCY_NUMERIC[pay.currency]!,
           reference: draftId,
           destination: `Замовлення ${orderLabel(d)}`,
           validitySec: Math.floor(left / 1000),
-          webHookUrl: this.webhookUrl(repo.getSettings(shopId).webhookId),
+          webHookUrl: this.webhookUrl((await repo.getSettings(shopId)).webhookId),
           redirectUrl: null,
         }),
       );
-      pay = repo.completeCreate(shopId, pay.id, inv);
+      pay = await repo.completeCreate(shopId, pay.id, inv);
     } catch (e) {
       // Nobody has seen the page of an invoice whose answer was lost, so nobody can pay it: the slot is freed for a retry.
       const code = e instanceof MonobankError ? `MONO_${e.kind.toUpperCase()}${e.code ? `_${e.code}` : ''}` : e instanceof EgressDeniedError ? 'EGRESS_DENIED' : 'NOT_CONNECTED';
-      repo.failCreate(shopId, pay.id, code.slice(0, 64));
-      fail(code, true);
+      await repo.failCreate(shopId, pay.id, code.slice(0, 64));
+      await fail(code, true);
     }
     log.info({ shopId, draftId }, 'payment link created');
     await this.sendLink(shopId, pay, 'link');
-    return repo.get(shopId, pay.id)!;
+    return (await repo.get(shopId, pay.id))!;
   }
 
   private async sendLink(shopId: string, pay: OrderPaymentRow, kind: 'link' | 'reminder'): Promise<void> {
-    const d = this.d.orders.getDraft(shopId, pay.draftId)?.draft;
+    const d = (await this.d.orders.getDraft(shopId, pay.draftId))?.draft;
     if (!d || !pay.pageUrl) return;
-    if (kind === 'link' && !this.d.repo.claimLinkMessage(shopId, pay.id)) return;
-    const text = paymentText(kind, { language: this.d.shops.get(shopId)?.defaultLanguage ?? 'uk', order: orderLabel(d), amountMinor: pay.amountMinor, url: pay.pageUrl, expiresAt: pay.expiresAt });
+    if (kind === 'link' && !(await this.d.repo.claimLinkMessage(shopId, pay.id))) return;
+    const text = paymentText(kind, {
+      language: (await this.d.shops.get(shopId))?.defaultLanguage ?? 'uk',
+      order: orderLabel(d),
+      amountMinor: pay.amountMinor,
+      url: pay.pageUrl,
+      expiresAt: pay.expiresAt,
+    });
     let r: { status: string; code: string | null };
     try {
       r = await this.d.send(shopId, d.conversationId, text);
     } catch {
       r = { status: 'failed', code: 'SEND_ERROR' };
     }
-    if (kind === 'link') this.d.repo.setLinkDelivery(shopId, pay.id, r.status === 'sent' ? 'sent' : `${r.status}:${r.code ?? ''}`);
+    if (kind === 'link') await this.d.repo.setLinkDelivery(shopId, pay.id, r.status === 'sent' ? 'sent' : `${r.status}:${r.code ?? ''}`);
     // The customer did not get it (Instagram window closed, channel disconnected): the shop gets the link to pass on.
-    if (r.status === 'failed') this.notifyOrder(shopId, d.id, kind === 'link' ? 'payment_link_undeliverable' : 'payment_reminder_undeliverable', pay.pageUrl);
+    if (r.status === 'failed') await this.notifyOrder(shopId, d.id, kind === 'link' ? 'payment_link_undeliverable' : 'payment_reminder_undeliverable', pay.pageUrl);
   }
 
   private async remove(shopId: string, p: OrderPaymentRow): Promise<boolean> {
     try {
       await this.withToken(shopId, (token) => this.d.api.removeInvoice(token, p.invoiceId!));
-      this.d.repo.markRemoved(shopId, p.id);
+      await this.d.repo.markRemoved(shopId, p.id);
       return true;
     } catch (e) {
-      this.d.log.warn({ shopId, paymentId: p.id, code: e instanceof MonobankError ? `${e.kind}:${e.code ?? ''}` : e instanceof Error ? e.name : 'ERROR' }, 'monobank invoice not removed');
+      this.d.log.warn(
+        { shopId, paymentId: p.id, code: e instanceof MonobankError ? `${e.kind}:${e.code ?? ''}` : e instanceof Error ? e.name : 'ERROR' },
+        'monobank invoice not removed',
+      );
       return false;
     }
   }
 
   /** A member records a refund request (D24/D25); the shop is told to refund in the provider's cabinet. */
-  refundRequested(shopId: string, draftId: string, userId: string, note?: string): OrderDraft {
-    const d = this.d.orders.requestRefund(shopId, draftId, userId, note);
-    this.notifyOrder(shopId, draftId, 'refund_requested');
+  async refundRequested(shopId: string, draftId: string, userId: string, note?: string): Promise<OrderDraft> {
+    const d = await this.d.orders.requestRefund(shopId, draftId, userId, note);
+    await this.notifyOrder(shopId, draftId, 'refund_requested');
     return d;
   }
 
@@ -292,14 +307,14 @@ export class PaymentService {
    * the raw body verifies with this shop's cached Monobank key; a failure refreshes the key once (rate-limited) and retries.
    */
   async handleWebhook(webhookId: string, rawBody: Buffer, xSign: string | undefined): Promise<boolean> {
-    const s = this.d.repo.findByWebhookId(webhookId);
+    const s = await this.d.repo.findByWebhookId(webhookId);
     if (!s) return false;
     let ok = verifyMonobankSignature(rawBody, xSign, s.providerPubKey);
     const stale = !s.providerPubKeyAt || this.now().getTime() - Date.parse(s.providerPubKeyAt) > PUBKEY_REFRESH_MS;
-    if (!ok && xSign && stale && this.connected(s.shopId)) {
+    if (!ok && xSign && stale && (await this.connected(s.shopId))) {
       try {
         const key = await this.withToken(s.shopId, (token) => this.d.api.pubKey(token));
-        this.d.repo.setPubKey(s.shopId, key);
+        await this.d.repo.setPubKey(s.shopId, key);
         ok = verifyMonobankSignature(rawBody, xSign, key);
       } catch (e) {
         this.d.log.warn({ shopId: s.shopId, code: e instanceof MonobankError ? e.kind : 'ERROR' }, 'monobank public key refresh failed');
@@ -320,13 +335,13 @@ export class PaymentService {
       this.d.log.warn({ shopId: s.shopId }, 'monobank webhook body not understood');
       return true;
     }
-    this.apply(s.shopId, st, 'webhook');
+    await this.apply(s.shopId, st, 'webhook');
     return true;
   }
 
   /** Applies one verified status and does what the outcome needs: TTN, notices, escalations. */
-  private apply(shopId: string, st: MonoInvoiceStatus, source: 'webhook' | 'status') {
-    const r = this.d.repo.applyStatus(shopId, 'monobank', {
+  private async apply(shopId: string, st: MonoInvoiceStatus, source: 'webhook' | 'status') {
+    const r = await this.d.repo.applyStatus(shopId, 'monobank', {
       invoiceId: st.invoiceId,
       status: st.status,
       amountMinor: st.amount,
@@ -339,22 +354,24 @@ export class PaymentService {
     const p = r.payment;
     if (r.outcome !== 'duplicate' && r.outcome !== 'stale') this.d.log.info({ shopId, outcome: r.outcome, status: st.status, source }, 'monobank status');
     if (!p) return r;
-    const conv = () => this.d.orders.getDraft(shopId, p.draftId)?.draft.conversationId;
-    const escalate = (reason: string) => {
-      const c = conv();
+    const conv = async () => (await this.d.orders.getDraft(shopId, p.draftId))?.draft.conversationId;
+    const escalate = async (reason: string) => {
+      const c = await conv();
       if (!c) return;
-      const e = this.d.agent.escalate(shopId, c, reason);
+      const e = await this.d.agent.escalate(shopId, c, reason);
       if (e.created) this.d.notifier?.notify({ kind: 'escalation', shopId, conversationId: c, reason });
     };
-    const dr = this.d.orders.getDraft(shopId, p.draftId)?.draft;
+    const dr = (await this.d.orders.getDraft(shopId, p.draftId))?.draft;
     const id = dr ? orderLabel(dr) : p.draftId.slice(0, 8);
     if (r.outcome === 'paid') {
-      this.notifyOrder(shopId, p.draftId, 'paid');
-      this.d.delivery.afterPaid(shopId, p.draftId);
-    } else if (r.outcome === 'mismatch') escalate(`Оплата monobank не збігається із замовленням ${id} (сума або валюта). Замовлення не позначено оплаченим, перевірте кабінет monobank.`);
-    else if (r.outcome === 'paid_after_cancel') escalate(`Надійшла оплата monobank за скасоване замовлення ${id}. Перевірте замовлення і поверніть кошти в кабінеті monobank, якщо потрібно.`);
-    else if (r.outcome === 'failed') this.notifyOrder(shopId, p.draftId, 'payment_failed');
-    else if (r.outcome === 'reversed') this.notifyOrder(shopId, p.draftId, 'payment_reversed');
+      await this.notifyOrder(shopId, p.draftId, 'paid');
+      await this.d.delivery.afterPaid(shopId, p.draftId);
+    } else if (r.outcome === 'mismatch')
+      await escalate(`Оплата monobank не збігається із замовленням ${id} (сума або валюта). Замовлення не позначено оплаченим, перевірте кабінет monobank.`);
+    else if (r.outcome === 'paid_after_cancel')
+      await escalate(`Надійшла оплата monobank за скасоване замовлення ${id}. Перевірте замовлення і поверніть кошти в кабінеті monobank, якщо потрібно.`);
+    else if (r.outcome === 'failed') await this.notifyOrder(shopId, p.draftId, 'payment_failed');
+    else if (r.outcome === 'reversed') await this.notifyOrder(shopId, p.draftId, 'payment_reversed');
     return r;
   }
 
@@ -375,42 +392,52 @@ export class PaymentService {
     let reminded = 0;
     const dead = new Set<string>();
     const check = async (p: OrderPaymentRow) => {
-      if (dead.has(p.shopId) || !this.connected(p.shopId)) return;
+      if (dead.has(p.shopId) || !(await this.connected(p.shopId))) return;
       try {
         const st = await this.withToken(p.shopId, (token) => this.d.api.invoiceStatus(token, p.invoiceId!));
         checked++;
-        this.apply(p.shopId, st, 'status');
+        await this.apply(p.shopId, st, 'status');
       } catch (e) {
         if (e instanceof MonobankError && e.kind === 'auth') dead.add(p.shopId);
-        this.d.log.warn({ shopId: p.shopId, code: e instanceof MonobankError ? `${e.kind}:${e.code ?? ''}` : e instanceof Error ? e.name : 'ERROR' }, 'monobank status check failed');
+        this.d.log.warn(
+          { shopId: p.shopId, code: e instanceof MonobankError ? `${e.kind}:${e.code ?? ''}` : e instanceof Error ? e.name : 'ERROR' },
+          'monobank status check failed',
+        );
       } finally {
-        repo.markChecked(p.shopId, p.id);
+        await repo.markChecked(p.shopId, p.id);
       }
     };
-    for (const p of repo.listToReconcile(new Date(nowMs - RECONCILE_AFTER_MS).toISOString())) await check(p);
+    for (const p of await repo.listToReconcile(new Date(nowMs - RECONCILE_AFTER_MS).toISOString())) await check(p);
 
-    for (const o of orders.listAwaitingPayment()) {
+    for (const o of await orders.listAwaitingPayment()) {
       const due = Date.parse(o.paymentDueAt!);
-      const settings = repo.getSettings(o.shopId);
-      let p = repo.activeFor(o.shopId, o.id);
+      const settings = await repo.getSettings(o.shopId);
+      let p = await repo.activeFor(o.shopId, o.id);
       if (nowMs >= due) {
         if (p?.invoiceId && ['created', 'processing', 'hold'].includes(p.state)) {
           await check(p);
-          if (orders.getDraft(o.shopId, o.id)?.draft.status !== 'awaiting_payment') continue;
-          p = repo.get(o.shopId, p.id);
+          if ((await orders.getDraft(o.shopId, o.id))?.draft.status !== 'awaiting_payment') continue;
+          p = await repo.get(o.shopId, p.id);
           // Money may be on its way: wait a little before cancelling.
           if (p && (p.state === 'processing' || p.state === 'hold') && nowMs < due + PROCESSING_GRACE_MS) continue;
           if (p && ['created', 'processing', 'hold'].includes(p.state)) await this.remove(o.shopId, p);
         }
-        if (orders.expireUnpaid(o.shopId, o.id)) {
+        if (await orders.expireUnpaid(o.shopId, o.id)) {
           expired++;
-          this.notifyOrder(o.shopId, o.id, 'payment_expired');
+          await this.notifyOrder(o.shopId, o.id, 'payment_expired');
         }
         continue;
       }
       // D25: one reminder, only for a link that was sent, `reminderHoursBefore` before the deadline (0 = none).
       const remindAt = due - settings.reminderHoursBefore * 3600_000;
-      if (settings.reminderHoursBefore > 0 && nowMs >= remindAt && p?.state === 'created' && p.linkSentAt && !o.paymentReminderAt && orders.claimPaymentReminder(o.shopId, o.id)) {
+      if (
+        settings.reminderHoursBefore > 0 &&
+        nowMs >= remindAt &&
+        p?.state === 'created' &&
+        p.linkSentAt &&
+        !o.paymentReminderAt &&
+        (await orders.claimPaymentReminder(o.shopId, o.id))
+      ) {
         reminded++;
         await this.sendLink(o.shopId, p, 'reminder');
       }

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, DbHandle } from './db';
+import { isUniqueViolation, queryRow, queryRows } from './dialect';
 import * as t from './schema';
 
 export type CustomerRow = typeof t.customers.$inferSelect;
@@ -94,7 +95,6 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   if (!r.success) throw new ConversationValidationError(r.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`));
   return r.data;
 }
-const isUnique = (e: unknown) => (e as { code?: string })?.code === 'SQLITE_CONSTRAINT_UNIQUE';
 const page = (limit: number | undefined, def: number, max: number) => Math.min(Math.max(Math.trunc(limit ?? def), 1), max);
 
 /** From -> allowed next delivery states. Incoming (`received`), `sent` and `failed` are final. */
@@ -229,19 +229,22 @@ export class ConversationRepository {
   }
 
   /** Finds or creates the customer and conversation for a channel thread without storing a message. */
-  ensureConversation(shopId: string, input: { channel: string; conversationExternalId: string; customer: z.input<typeof customerInput> }): ConversationWithCustomer {
+  async ensureConversation(shopId: string, input: { channel: string; conversationExternalId: string; customer: z.input<typeof customerInput> }): Promise<ConversationWithCustomer> {
     const v = parse(z.strictObject({ channel, conversationExternalId: externalId, customer: customerInput }), input);
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       const customer = this.upsertCustomer(shopId, v.channel, v.customer);
       const conv = this.conversationFor(shopId, v.channel, v.conversationExternalId, customer);
       return { conversation: conv, customer };
-    })();
+    });
   }
 
   /** Upserts the customer and conversation, then stores the inbound message once. A new inbound message reopens a closed conversation. */
-  ingestMessage(shopId: string, input: IngestMessageInput): { message: ShopMessageRow; conversation: ShopConversationRow; customer: CustomerRow; duplicated: boolean } {
+  async ingestMessage(
+    shopId: string,
+    input: IngestMessageInput,
+  ): Promise<{ message: ShopMessageRow; conversation: ShopConversationRow; customer: CustomerRow; duplicated: boolean }> {
     const v = parse(ingestInput, input);
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       const customer = this.upsertCustomer(shopId, v.channel, v.customer);
       const conv = this.conversationFor(shopId, v.channel, v.conversationExternalId, customer);
       const { message, duplicated } = this.insertMessage(shopId, conv, {
@@ -254,14 +257,34 @@ export class ConversationRepository {
         attachments: v.attachments,
         occurredAt: v.occurredAt,
       });
-      return { message, duplicated, customer, conversation: this.getConversation(shopId, conv.id)!.conversation };
-    })();
+      return { message, duplicated, customer, conversation: this.getConversationTx(shopId, conv.id)!.conversation };
+    });
+  }
+
+  /** Undoes `ingestMessage` for a new message whose dispatch failed, so a redelivery is not treated as a duplicate. */
+  async discardIngested(shopId: string, conversationId: string, messageId: string): Promise<void> {
+    this.handle.transaction(() => {
+      this.db
+        .delete(t.shopMessages)
+        .where(and(eq(t.shopMessages.shopId, shopId), eq(t.shopMessages.id, messageId)))
+        .run();
+      const last = this.db
+        .select({ at: sql<string | null>`max(${t.shopMessages.occurredAt})` })
+        .from(t.shopMessages)
+        .where(eq(t.shopMessages.conversationId, conversationId))
+        .get()!.at;
+      this.db
+        .update(t.shopConversations)
+        .set({ lastMessageAt: last, updatedAt: this.now() })
+        .where(and(eq(t.shopConversations.shopId, shopId), eq(t.shopConversations.id, conversationId)))
+        .run();
+    });
   }
 
   /** Records an outgoing message: `pending` (to be sent), `sent` (already on the channel, needs its channel id) or `uncertain` (send attempted, outcome unknown). */
-  recordOutbound(shopId: string, conversationId: string, input: RecordOutboundInput): { message: ShopMessageRow; duplicated: boolean } {
+  async recordOutbound(shopId: string, conversationId: string, input: RecordOutboundInput): Promise<{ message: ShopMessageRow; duplicated: boolean }> {
     const v = parse(outboundInput, input);
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       const conv = this.db
         .select()
         .from(t.shopConversations)
@@ -286,13 +309,18 @@ export class ConversationRepository {
         attachments: v.attachments,
         occurredAt: v.occurredAt,
       });
-    })();
+    });
   }
 
   /** pending -> sent | failed | uncertain; uncertain -> sent | failed. `sent` needs a channel id (given now or already stored). */
-  setDeliveryStatus(shopId: string, messageId: string, status: DeliveryStatus, extra: z.input<typeof deliveryUpdate> = {}): ShopMessageRow {
+  async setDeliveryStatus(shopId: string, messageId: string, status: DeliveryStatus, extra: z.input<typeof deliveryUpdate> = {}): Promise<ShopMessageRow> {
+    return this.setDeliveryStatusTx(shopId, messageId, status, extra);
+  }
+
+  /** Sync body of `setDeliveryStatus`: runs inside the caller's transaction. Package-internal. */
+  setDeliveryStatusTx(shopId: string, messageId: string, status: DeliveryStatus, extra: z.input<typeof deliveryUpdate> = {}): ShopMessageRow {
     const x = parse(deliveryUpdate, extra);
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       const m = this.db
         .select()
         .from(t.shopMessages)
@@ -310,13 +338,13 @@ export class ConversationRepository {
           .returning()
           .get()!;
       } catch (e) {
-        if (isUnique(e)) throw new ConversationConflictError('channel message id already stored in this conversation');
+        if (isUniqueViolation(e)) throw new ConversationConflictError('channel message id already stored in this conversation');
         throw e;
       }
-    })();
+    });
   }
 
-  setConversationStatus(shopId: string, conversationId: string, status: ShopConversationRow['status']): ShopConversationRow {
+  async setConversationStatus(shopId: string, conversationId: string, status: ShopConversationRow['status']): Promise<ShopConversationRow> {
     if (status !== 'open' && status !== 'closed') throw new ConversationValidationError(['status: must be open or closed']);
     const r = this.db
       .update(t.shopConversations)
@@ -328,7 +356,7 @@ export class ConversationRepository {
     return r;
   }
 
-  getCustomer(shopId: string, customerId: string): CustomerRow | undefined {
+  async getCustomer(shopId: string, customerId: string): Promise<CustomerRow | undefined> {
     return this.db
       .select()
       .from(t.customers)
@@ -336,7 +364,7 @@ export class ConversationRepository {
       .get();
   }
 
-  listCustomers(shopId: string, f: { limit?: number; offset?: number } = {}): { items: CustomerRow[]; total: number } {
+  async listCustomers(shopId: string, f: { limit?: number; offset?: number } = {}): Promise<{ items: CustomerRow[]; total: number }> {
     const where = eq(t.customers.shopId, shopId);
     const total = this.db
       .select({ n: sql<number>`count(*)` })
@@ -354,7 +382,12 @@ export class ConversationRepository {
     return { items, total };
   }
 
-  getConversation(shopId: string, conversationId: string): ConversationWithCustomer | undefined {
+  async getConversation(shopId: string, conversationId: string): Promise<ConversationWithCustomer | undefined> {
+    return this.getConversationTx(shopId, conversationId);
+  }
+
+  /** Sync body of `getConversation`: runs inside the caller's transaction. Package-internal. */
+  getConversationTx(shopId: string, conversationId: string): ConversationWithCustomer | undefined {
     const r = this.db
       .select({ conversation: t.shopConversations, customer: t.customers })
       .from(t.shopConversations)
@@ -365,10 +398,10 @@ export class ConversationRepository {
   }
 
   /** Most recently active first. */
-  listConversations(
+  async listConversations(
     shopId: string,
     f: { status?: ShopConversationRow['status']; customerId?: string; limit?: number; offset?: number } = {},
-  ): { items: ConversationWithCustomer[]; total: number } {
+  ): Promise<{ items: ConversationWithCustomer[]; total: number }> {
     const conds = [eq(t.shopConversations.shopId, shopId)];
     if (f.status) conds.push(eq(t.shopConversations.status, f.status));
     if (f.customerId) conds.push(eq(t.shopConversations.customerId, f.customerId));
@@ -391,8 +424,8 @@ export class ConversationRepository {
   }
 
   /** The newest `limit` messages (before `beforeSeq` when given), returned oldest first. */
-  listMessages(shopId: string, conversationId: string, f: { limit?: number; beforeSeq?: number } = {}): { items: ShopMessageRow[]; hasMore: boolean } {
-    if (!this.getConversation(shopId, conversationId)) throw new ConversationNotFoundError('conversation');
+  async listMessages(shopId: string, conversationId: string, f: { limit?: number; beforeSeq?: number } = {}): Promise<{ items: ShopMessageRow[]; hasMore: boolean }> {
+    if (!this.getConversationTx(shopId, conversationId)) throw new ConversationNotFoundError('conversation');
     const limit = page(f.limit, 50, 200);
     const conds = [eq(t.shopMessages.shopId, shopId), eq(t.shopMessages.conversationId, conversationId)];
     if (f.beforeSeq !== undefined) conds.push(lt(t.shopMessages.seq, f.beforeSeq));
@@ -406,7 +439,7 @@ export class ConversationRepository {
     return { hasMore: rows.length > limit, items: rows.slice(0, limit).reverse() };
   }
 
-  findConversationByExternal(shopId: string, ch: string, extId: string): ConversationWithCustomer | undefined {
+  async findConversationByExternal(shopId: string, ch: string, extId: string): Promise<ConversationWithCustomer | undefined> {
     return this.db
       .select({ conversation: t.shopConversations, customer: t.customers })
       .from(t.shopConversations)
@@ -415,7 +448,12 @@ export class ConversationRepository {
       .get();
   }
 
-  findMessageByExternal(shopId: string, conversationId: string, extId: string): ShopMessageRow | undefined {
+  async findMessageByExternal(shopId: string, conversationId: string, extId: string): Promise<ShopMessageRow | undefined> {
+    return this.findMessageByExternalTx(shopId, conversationId, extId);
+  }
+
+  /** Sync body of `findMessageByExternal`: runs inside the caller's transaction. Package-internal. */
+  findMessageByExternalTx(shopId: string, conversationId: string, extId: string): ShopMessageRow | undefined {
     return this.db
       .select()
       .from(t.shopMessages)
@@ -428,16 +466,16 @@ export class ConversationRepository {
    * message with the same text instead of recording a second row (D11/D12 reconciliation). No-op when that channel id
    * is already stored or no such pending message exists.
    */
-  adoptPendingOutbound(
+  async adoptPendingOutbound(
     shopId: string,
     conversationId: string,
     text: string,
     extId: string,
     status: 'sent' | 'uncertain',
     senderType: 'ai' | 'human' | 'system' = 'ai',
-  ): ShopMessageRow | undefined {
-    return this.handle.raw.transaction(() => {
-      if (this.findMessageByExternal(shopId, conversationId, extId)) return undefined;
+  ): Promise<ShopMessageRow | undefined> {
+    return this.handle.transaction(() => {
+      if (this.findMessageByExternalTx(shopId, conversationId, extId)) return undefined;
       const pending = this.db
         .select()
         .from(t.shopMessages)
@@ -454,14 +492,14 @@ export class ConversationRepository {
         )
         .orderBy(desc(t.shopMessages.seq))
         .get();
-      return pending && this.setDeliveryStatus(shopId, pending.id, status, { externalId: extId });
-    })();
+      return pending && this.setDeliveryStatusTx(shopId, pending.id, status, { externalId: extId });
+    });
   }
 
   /** Human takeover switch (Feature 8). Idempotent: pausing a paused conversation keeps the first pauser and time. */
-  setAiPaused(shopId: string, conversationId: string, paused: boolean, userId: string | null): ConversationWithCustomer {
-    return this.handle.raw.transaction(() => {
-      const cur = this.getConversation(shopId, conversationId);
+  async setAiPaused(shopId: string, conversationId: string, paused: boolean, userId: string | null): Promise<ConversationWithCustomer> {
+    return this.handle.transaction(() => {
+      const cur = this.getConversationTx(shopId, conversationId);
       if (!cur) throw new ConversationNotFoundError('conversation');
       if (cur.conversation.aiPaused === paused) return cur;
       this.db
@@ -469,12 +507,12 @@ export class ConversationRepository {
         .set(paused ? { aiPaused: true, aiPausedAt: this.now(), aiPausedByUserId: userId } : { aiPaused: false, aiPausedAt: null, aiPausedByUserId: null })
         .where(and(eq(t.shopConversations.shopId, shopId), eq(t.shopConversations.id, conversationId)))
         .run();
-      return this.getConversation(shopId, conversationId)!;
-    })();
+      return this.getConversationTx(shopId, conversationId)!;
+    });
   }
 
   /** When the customer last wrote in this conversation (channel time), or undefined: the start of Instagram's 24-hour window. */
-  lastInboundAt(shopId: string, conversationId: string): string | undefined {
+  async lastInboundAt(shopId: string, conversationId: string): Promise<string | undefined> {
     return (
       this.db
         .select({ at: sql<string>`max(${t.shopMessages.occurredAt})` })
@@ -484,7 +522,7 @@ export class ConversationRepository {
     );
   }
 
-  getMessage(shopId: string, messageId: string): ShopMessageRow | undefined {
+  async getMessage(shopId: string, messageId: string): Promise<ShopMessageRow | undefined> {
     return this.db
       .select()
       .from(t.shopMessages)
@@ -492,18 +530,22 @@ export class ConversationRepository {
       .get();
   }
   /** P10: the newest non-system message of each given conversation of this shop. */
-  lastMessages(shopId: string, conversationIds: string[]): Map<string, LastMessage> {
+  async lastMessages(shopId: string, conversationIds: string[]): Promise<Map<string, LastMessage>> {
     const out = new Map<string, LastMessage>();
     for (let i = 0; i < conversationIds.length; i += 500) {
       const ids = conversationIds.slice(i, i + 500);
-      const rows = this.handle.raw
-        .prepare(
-          `select m.conversation_id c, m.text, m.sender_type s, m.attachments a, m.occurred_at at from shop_messages m
-           where m.shop_id = ? and m.conversation_id in (${ids.map(() => '?').join(',')})
-             and m.seq = (select max(x.seq) from shop_messages x where x.conversation_id = m.conversation_id and x.sender_type <> 'system')`,
+      const rows = this.db
+        .select({ c: t.shopMessages.conversationId, text: t.shopMessages.text, s: t.shopMessages.senderType, a: t.shopMessages.attachments, at: t.shopMessages.occurredAt })
+        .from(t.shopMessages)
+        .where(
+          and(
+            eq(t.shopMessages.shopId, shopId),
+            inArray(t.shopMessages.conversationId, ids),
+            sql`${t.shopMessages.seq} = (select max(x.seq) from shop_messages x where x.conversation_id = ${t.shopMessages.conversationId} and x.sender_type <> 'system')`,
+          ),
         )
-        .all(shopId, ...ids) as Array<{ c: string; text: string | null; s: ShopMessageRow['senderType']; a: string; at: string }>;
-      for (const r of rows) out.set(r.c, { text: r.text, senderType: r.s, attachments: (JSON.parse(r.a) as unknown[]).length, at: r.at });
+        .all();
+      for (const r of rows) out.set(r.c, { text: r.text, senderType: r.s, attachments: r.a.length, at: r.at });
     }
     return out;
   }
@@ -512,44 +554,40 @@ export class ConversationRepository {
    * P10: which of the given conversations have a customer message this member has not seen (newer than their read
    * marker; no marker = any customer message is unread).
    */
-  unreadFor(shopId: string, userId: string, conversationIds: string[]): Set<string> {
+  async unreadFor(shopId: string, userId: string, conversationIds: string[]): Promise<Set<string>> {
     const out = new Set<string>();
     for (let i = 0; i < conversationIds.length; i += 500) {
       const ids = conversationIds.slice(i, i + 500);
-      const rows = this.handle.raw
-        .prepare(
-          `select c.id from shop_conversations c
-           left join conversation_reads r on r.conversation_id = c.id and r.user_id = @user
-           where c.shop_id = @shop and c.id in (${ids.map((_, k) => `@id${k}`).join(',')})
+      const rows = queryRows<{ id: string }>(
+        this.db,
+        sql`select c.id from shop_conversations c
+           left join conversation_reads r on r.conversation_id = c.id and r.user_id = ${userId}
+           where c.shop_id = ${shopId} and c.id in ${ids}
              and exists (select 1 from shop_messages m where m.conversation_id = c.id and m.direction = 'incoming' and m.seq > coalesce(r.last_seen_seq, 0))`,
-        )
-        .all({ shop: shopId, user: userId, ...Object.fromEntries(ids.map((id, k) => [`id${k}`, id])) }) as Array<{ id: string }>;
+      );
       for (const r of rows) out.add(r.id);
     }
     return out;
   }
 
   /** P10: how many conversations of the shop are unread for this member (the inbox nav count). */
-  unreadCount(shopId: string, userId: string): number {
-    return (
-      this.handle.raw
-        .prepare(
-          `select count(*) n from shop_conversations c
-           left join conversation_reads r on r.conversation_id = c.id and r.user_id = @user
-           where c.shop_id = @shop
+  async unreadCount(shopId: string, userId: string): Promise<number> {
+    return queryRow<{ n: number }>(
+      this.db,
+      sql`select count(*) n from shop_conversations c
+           left join conversation_reads r on r.conversation_id = c.id and r.user_id = ${userId}
+           where c.shop_id = ${shopId}
              and exists (select 1 from shop_messages m where m.conversation_id = c.id and m.direction = 'incoming' and m.seq > coalesce(r.last_seen_seq, 0))`,
-        )
-        .get({ shop: shopId, user: userId }) as { n: number }
-    ).n;
+    )!.n;
   }
 
   /**
    * P10: the member has seen the conversation up to `seq` (default: its newest message). The marker only moves forward
    * and never past the newest message. Returns the stored marker.
    */
-  markRead(shopId: string, conversationId: string, userId: string, seq?: number): number {
-    return this.handle.raw.transaction(() => {
-      if (!this.getConversation(shopId, conversationId)) throw new ConversationNotFoundError('conversation');
+  async markRead(shopId: string, conversationId: string, userId: string, seq?: number): Promise<number> {
+    return this.handle.transaction(() => {
+      if (!this.getConversationTx(shopId, conversationId)) throw new ConversationNotFoundError('conversation');
       const max = this.db
         .select({ n: sql<number>`coalesce(max(${t.shopMessages.seq}), 0)` })
         .from(t.shopMessages)
@@ -568,11 +606,11 @@ export class ConversationRepository {
         .onConflictDoUpdate({ target: [t.conversationReads.conversationId, t.conversationReads.userId], set: { lastSeenSeq: target, updatedAt: this.now() } })
         .run();
       return target;
-    })();
+    });
   }
 
   /** P10: replaces the shop's private note about a customer (empty text clears it). */
-  setCustomerNote(shopId: string, customerId: string, note: string, userId: string): CustomerRow {
+  async setCustomerNote(shopId: string, customerId: string, note: string, userId: string): Promise<CustomerRow> {
     const v = note.trim();
     if (v.length > NOTE_MAX) throw new ConversationValidationError([`note: at most ${NOTE_MAX} characters`]);
     const r = this.db
@@ -586,7 +624,7 @@ export class ConversationRepository {
   }
 
   /** P10: contact data and order history of one customer across all of their conversations in this shop. */
-  customerProfile(shopId: string, customerId: string): CustomerProfile {
+  async customerProfile(shopId: string, customerId: string): Promise<CustomerProfile> {
     const contact = this.db
       .select({ phone: sql<string | null>`coalesce(${t.orderDrafts.recipientPhone}, ${t.orderDrafts.contactPhone})`, city: t.orderDrafts.npCityName })
       .from(t.orderDrafts)

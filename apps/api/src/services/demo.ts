@@ -1,4 +1,14 @@
-import type { AgentRepository, AuthRepository, CatalogRepository, CreateProductInput, DbHandle, PolicyRepository, PolicyTopic, ShopRepository } from '@hepson/database';
+import {
+  seedShop,
+  type AgentRepository,
+  type AuthRepository,
+  type CatalogRepository,
+  type CreateProductInput,
+  type DbHandle,
+  type PolicyRepository,
+  type PolicyTopic,
+  type ShopRepository,
+} from '@hepson/database';
 
 export const DEMO_SLUG = 'hepson-demo';
 
@@ -56,21 +66,15 @@ const PRODUCTS: CreateProductInput[] = [
  * The shop behind the public demo (D45): test catalog, no members, created once. A shop with this slug that has members
  * belongs to a real owner, so the demo stays off (null) rather than exposing that shop's catalog.
  */
-export function ensureDemoShop(d: {
+export async function ensureDemoShop(d: {
   handle: DbHandle;
   shops: ShopRepository;
   auth: AuthRepository;
   catalog: CatalogRepository;
   policies: PolicyRepository;
   agent: AgentRepository;
-}): string | null {
-  const existing = d.shops.getBySlug(DEMO_SLUG);
-  if (existing) return d.auth.listMembers(existing.id).length ? null : existing.id;
-  return d.handle.raw.transaction(() => {
-    const shop = d.shops.create({ name: 'Hepson Demo', slug: DEMO_SLUG });
-    for (const p of PRODUCTS) d.catalog.createProduct(shop.id, p);
-    for (const [topic, text] of Object.entries(POLICIES)) d.policies.save(shop.id, topic as PolicyTopic, text, null);
-    d.agent.updateSettings(shop.id, { instructions: NOTES });
-    return shop.id;
-  })();
+}): Promise<string | null> {
+  const existing = await d.shops.getBySlug(DEMO_SLUG);
+  if (existing) return (await d.auth.listMembers(existing.id)).length ? null : existing.id;
+  return await seedShop(d, { name: 'Hepson Demo', slug: DEMO_SLUG }, PRODUCTS, POLICIES, NOTES);
 }

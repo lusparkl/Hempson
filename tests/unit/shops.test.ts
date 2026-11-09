@@ -7,41 +7,41 @@ import { openDb, runMigrations, ShopNotFoundError, ShopRepository, ShopSlugTaken
 let h: DbHandle;
 let repo: ShopRepository;
 let tick: number;
-beforeEach(() => {
+beforeEach(async () => {
   h = openDb(':memory:');
-  runMigrations(h);
+  await runMigrations(h);
   tick = Date.UTC(2026, 0, 1);
   repo = new ShopRepository(h, () => new Date((tick += 1000)));
 });
 afterEach(() => h.close());
 
 describe('ShopRepository', () => {
-  it('creates with defaults and fetches by id and slug', () => {
-    const s = repo.create({ name: '  Мій магазин ', slug: 'my-shop' });
+  it('creates with defaults and fetches by id and slug', async () => {
+    const s = await repo.create({ name: '  Мій магазин ', slug: 'my-shop' });
     expect(s).toMatchObject({ name: 'Мій магазин', slug: 'my-shop', defaultCurrency: 'UAH', defaultLanguage: 'uk' });
     expect(s.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(s.createdAt).toBe(s.updatedAt);
-    expect(repo.get(s.id)).toEqual(s);
-    expect(repo.getBySlug('my-shop')).toEqual(s);
-    expect(repo.get('missing')).toBeUndefined();
+    expect(await repo.get(s.id)).toEqual(s);
+    expect(await repo.getBySlug('my-shop')).toEqual(s);
+    expect(await repo.get('missing')).toBeUndefined();
   });
 
-  it('accepts explicit currency and language', () => {
-    expect(repo.create({ name: 'Shop', slug: 'shop-pl', defaultCurrency: 'PLN', defaultLanguage: 'pl' })).toMatchObject({ defaultCurrency: 'PLN', defaultLanguage: 'pl' });
+  it('accepts explicit currency and language', async () => {
+    expect(await repo.create({ name: 'Shop', slug: 'shop-pl', defaultCurrency: 'PLN', defaultLanguage: 'pl' })).toMatchObject({ defaultCurrency: 'PLN', defaultLanguage: 'pl' });
   });
 
-  it('lists in creation order', () => {
-    const a = repo.create({ name: 'A', slug: 'aa' });
-    const b = repo.create({ name: 'B', slug: 'bb' });
-    expect(repo.list().map((s) => s.id)).toEqual([a.id, b.id]);
+  it('lists in creation order', async () => {
+    const a = await repo.create({ name: 'A', slug: 'aa' });
+    const b = await repo.create({ name: 'B', slug: 'bb' });
+    expect((await repo.list()).map((s) => s.id)).toEqual([a.id, b.id]);
   });
 
-  it('rejects duplicate slug on create and update', () => {
-    repo.create({ name: 'A', slug: 'aa' });
-    const b = repo.create({ name: 'B', slug: 'bb' });
-    expect(() => repo.create({ name: 'C', slug: 'aa' })).toThrow(ShopSlugTakenError);
-    expect(() => repo.update(b.id, { slug: 'aa' })).toThrow(ShopSlugTakenError);
-    expect(repo.get(b.id)?.slug).toBe('bb');
+  it('rejects duplicate slug on create and update', async () => {
+    await repo.create({ name: 'A', slug: 'aa' });
+    const b = await repo.create({ name: 'B', slug: 'bb' });
+    await expect(async () => await repo.create({ name: 'C', slug: 'aa' })).rejects.toThrow(ShopSlugTakenError);
+    await expect(async () => await repo.update(b.id, { slug: 'aa' })).rejects.toThrow(ShopSlugTakenError);
+    expect((await repo.get(b.id))?.slug).toBe('bb');
   });
 
   it.each([
@@ -54,41 +54,41 @@ describe('ShopRepository', () => {
     [{ name: 'x', slug: 'ok', defaultLanguage: 'ukrainian' }],
     [{ name: 'x', slug: 'ok', id: 'forced' }],
     [{ slug: 'ok' }],
-  ])('rejects invalid create %j', (input) => {
-    expect(() => repo.create(input as never)).toThrow(ShopValidationError);
-    expect(repo.list()).toHaveLength(0);
+  ])('rejects invalid create %j', async (input) => {
+    await expect(async () => await repo.create(input as never)).rejects.toThrow(ShopValidationError);
+    expect(await repo.list()).toHaveLength(0);
   });
 
-  it('updates fields and bumps updatedAt only', () => {
-    const s = repo.create({ name: 'A', slug: 'aa' });
-    const u = repo.update(s.id, { name: 'New', defaultCurrency: 'EUR' });
+  it('updates fields and bumps updatedAt only', async () => {
+    const s = await repo.create({ name: 'A', slug: 'aa' });
+    const u = await repo.update(s.id, { name: 'New', defaultCurrency: 'EUR' });
     expect(u).toMatchObject({ id: s.id, name: 'New', slug: 'aa', defaultCurrency: 'EUR', defaultLanguage: 'uk', createdAt: s.createdAt });
     expect(u.updatedAt > s.updatedAt).toBe(true);
-    expect(repo.get(s.id)).toEqual(u);
+    expect(await repo.get(s.id)).toEqual(u);
   });
 
-  it('rejects invalid, empty or immutable-field updates and unknown id', () => {
-    const s = repo.create({ name: 'A', slug: 'aa' });
-    expect(() => repo.update(s.id, {})).toThrow(ShopValidationError);
-    expect(() => repo.update(s.id, { slug: 'BAD' })).toThrow(ShopValidationError);
-    expect(() => repo.update(s.id, { id: 'x' } as never)).toThrow(ShopValidationError);
-    expect(() => repo.update('missing', { name: 'x' })).toThrow(ShopNotFoundError);
-    expect(repo.get(s.id)).toEqual(s);
+  it('rejects invalid, empty or immutable-field updates and unknown id', async () => {
+    const s = await repo.create({ name: 'A', slug: 'aa' });
+    await expect(async () => await repo.update(s.id, {})).rejects.toThrow(ShopValidationError);
+    await expect(async () => await repo.update(s.id, { slug: 'BAD' })).rejects.toThrow(ShopValidationError);
+    await expect(async () => await repo.update(s.id, { id: 'x' } as never)).rejects.toThrow(ShopValidationError);
+    await expect(async () => await repo.update('missing', { name: 'x' })).rejects.toThrow(ShopNotFoundError);
+    expect(await repo.get(s.id)).toEqual(s);
   });
 });
 
 describe('persistence', () => {
-  it('survives reopen of a file database', () => {
+  it('survives reopen of a file database', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'hepson-shops-'));
     try {
       const file = path.join(dir, 'x.db');
       const a = openDb(file);
-      runMigrations(a);
-      const s = new ShopRepository(a).create({ name: 'A', slug: 'aa' });
+      await runMigrations(a);
+      const s = await new ShopRepository(a).create({ name: 'A', slug: 'aa' });
       a.close();
       const b = openDb(file);
-      runMigrations(b);
-      expect(new ShopRepository(b).get(s.id)).toEqual(s);
+      await runMigrations(b);
+      expect(await new ShopRepository(b).get(s.id)).toEqual(s);
       b.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -3,6 +3,6 @@ import { loadConfig } from '../apps/api/src/config';
 
 const cfg = loadConfig();
 const h = openDb(cfg.dbFile);
-runMigrations(h);
+await runMigrations(h);
 h.close();
 console.log(`migrations applied: ${cfg.dbFile}`);

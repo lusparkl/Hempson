@@ -1,4 +1,6 @@
+import { sql } from 'drizzle-orm';
 import type { DbHandle } from './db';
+import { execute, queryRow, queryRows } from './dialect';
 
 const DAY_MS = 86_400_000;
 /** The feed looks this far back. */
@@ -29,50 +31,50 @@ export class NotificationRepository {
     private readonly clock: () => Date = () => new Date(),
   ) {}
 
-  seenAt(shopId: string, userId: string): string | null {
-    const r = this.handle.raw.prepare(`select seen_at s from notification_reads where shop_id = ? and user_id = ?`).get(shopId, userId) as { s: string } | undefined;
+  async seenAt(shopId: string, userId: string): Promise<string | null> {
+    return this.seenAtTx(shopId, userId);
+  }
+
+  /** Sync body of `seenAt`: runs inside the caller's transaction. Package-internal. */
+  seenAtTx(shopId: string, userId: string): string | null {
+    const r = queryRow<{ s: string }>(this.handle.db, sql`select seen_at as s from notification_reads where shop_id = ${shopId} and user_id = ${userId}`);
     return r?.s ?? null;
   }
 
   /** Newest first, at most `limit` items of the last 30 days; `unread` counts all unread items of that window. */
-  feed(shopId: string, userId: string, f: { limit?: number } = {}): NotificationFeed {
+  async feed(shopId: string, userId: string, f: { limit?: number } = {}): Promise<NotificationFeed> {
     const limit = Math.min(Math.max(Math.trunc(f.limit ?? 30), 1), 100);
     const since = new Date(this.clock().getTime() - FEED_DAYS * DAY_MS).toISOString();
-    const seenAt = this.seenAt(shopId, userId);
-    const raw = this.handle.raw;
-    const p = { shop: shopId, since };
-    const customer = `coalesce(cu.display_name, cu.handle)`;
-    const order = `d.id draftId, d.number number, d.currency currency, d.total_minor totalMinor, ${customer} customer`;
+    const seenAt = this.seenAtTx(shopId, userId);
+    const db = this.handle.db;
+    const customer = sql`coalesce(cu.display_name, cu.handle) as customer`;
+    const order = sql`d.id as "draftId", d.number as "number", d.currency as currency, d.total_minor as "totalMinor", ${customer}`;
 
-    const handoffs = raw
-      .prepare(
-        `select e.id, e.created_at at, e.conversation_id conversationId, e.reason, e.status = 'resolved' resolved, ${customer} customer
+    const handoffs = queryRows<{ id: string; at: string; conversationId: string; reason: string; resolved: number; customer: string | null }>(
+      db,
+      sql`select e.id, e.created_at as "at", e.conversation_id as "conversationId", e.reason, case when e.status = 'resolved' then 1 else 0 end as resolved, ${customer}
          from escalations e join shop_conversations c on c.id = e.conversation_id join customers cu on cu.id = c.customer_id
-         where e.shop_id = @shop and e.created_at >= @since`,
-      )
-      .all(p) as Array<{ id: string; at: string; conversationId: string; reason: string; resolved: number; customer: string | null }>;
-    const orders = raw
-      .prepare(
-        `select ev.id, ev.created_at at, d.created_by createdBy, d.status, ${order}
+         where e.shop_id = ${shopId} and e.created_at >= ${since}`,
+    );
+    const orders = queryRows<Order & { id: string; at: string; createdBy: 'ai' | 'user'; status: string }>(
+      db,
+      sql`select ev.id, ev.created_at as "at", d.created_by as "createdBy", d.status, ${order}
          from order_events ev join order_drafts d on d.id = ev.draft_id and d.shop_id = ev.shop_id join customers cu on cu.id = d.customer_id
-         where ev.shop_id = @shop and ev.from_status is null and ev.to_status = 'pending_approval' and ev.created_at >= @since`,
-      )
-      .all(p) as Array<Order & { id: string; at: string; createdBy: 'ai' | 'user'; status: string }>;
-    const payments = raw
-      .prepare(
-        `select pa.id, pa.updated_at at, pa.state, pa.flag, ${order}
+         where ev.shop_id = ${shopId} and ev.from_status is null and ev.to_status = 'pending_approval' and ev.created_at >= ${since}`,
+    );
+    const payments = queryRows<Order & { id: string; at: string; state: string; flag: string | null }>(
+      db,
+      sql`select pa.id, pa.updated_at as "at", pa.state, pa.flag, ${order}
          from order_payments pa join order_drafts d on d.id = pa.draft_id and d.shop_id = pa.shop_id join customers cu on cu.id = d.customer_id
-         where pa.shop_id = @shop and pa.updated_at >= @since
-           and (pa.state in (${PAYMENT_PROBLEM_STATES.map((s) => `'${s}'`).join(',')}) or pa.flag in (${PAYMENT_PROBLEM_FLAGS.map((s) => `'${s}'`).join(',')}))`,
-      )
-      .all(p) as Array<Order & { id: string; at: string; state: string; flag: string | null }>;
-    const ttns = raw
-      .prepare(
-        `select d.updated_at at, d.ttn_state ttnState, d.ttn_error ttnError, ${order}
+         where pa.shop_id = ${shopId} and pa.updated_at >= ${since}
+           and (pa.state in ${PAYMENT_PROBLEM_STATES} or pa.flag in ${PAYMENT_PROBLEM_FLAGS})`,
+    );
+    const ttns = queryRows<Order & { at: string; ttnState: 'failed' | 'uncertain'; ttnError: string | null }>(
+      db,
+      sql`select d.updated_at as "at", d.ttn_state as "ttnState", d.ttn_error as "ttnError", ${order}
          from order_drafts d join customers cu on cu.id = d.customer_id
-         where d.shop_id = @shop and d.ttn_state in ('failed', 'uncertain') and d.updated_at >= @since`,
-      )
-      .all(p) as Array<Order & { at: string; ttnState: 'failed' | 'uncertain'; ttnError: string | null }>;
+         where d.shop_id = ${shopId} and d.ttn_state in ('failed', 'uncertain') and d.updated_at >= ${since}`,
+    );
 
     const unread = (at: string) => !seenAt || at > seenAt;
     const all: FeedItem[] = [
@@ -85,14 +87,13 @@ export class NotificationRepository {
   }
 
   /** Marks everything up to now as seen. The marker never moves back. */
-  markSeen(shopId: string, userId: string): string {
+  async markSeen(shopId: string, userId: string): Promise<string> {
     const now = this.clock().toISOString();
-    this.handle.raw
-      .prepare(
-        `insert into notification_reads (shop_id, user_id, seen_at) values (?, ?, ?)
-         on conflict (shop_id, user_id) do update set seen_at = max(seen_at, excluded.seen_at)`,
-      )
-      .run(shopId, userId, now);
-    return this.seenAt(shopId, userId)!;
+    execute(
+      this.handle.db,
+      sql`insert into notification_reads (shop_id, user_id, seen_at) values (${shopId}, ${userId}, ${now})
+         on conflict (shop_id, user_id) do update set seen_at = case when excluded.seen_at > notification_reads.seen_at then excluded.seen_at else notification_reads.seen_at end`,
+    );
+    return this.seenAtTx(shopId, userId)!;
   }
 }

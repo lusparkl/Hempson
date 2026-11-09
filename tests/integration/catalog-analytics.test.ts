@@ -59,12 +59,12 @@ describe('XLSX import', () => {
     const dry = await call(a!, s.token, 'POST', `${s.base}/products/import-xlsx`, { file: b64(file) });
     expect(dry.status).toBe(200);
     expect(dry.body).toMatchObject({ dryRun: true, applied: false, rows: 3, created: { products: 2, variants: 3 }, errors: [] });
-    expect(a!.catalog.findVariantBySku(s.shopId, 'DR-S')).toBeUndefined();
+    expect(await a!.catalog.findVariantBySku(s.shopId, 'DR-S')).toBeUndefined();
 
     const run = await call(a!, s.token, 'POST', `${s.base}/products/import-xlsx`, { file: b64(file), dryRun: false });
     expect(run.body).toMatchObject({ applied: true });
-    expect(a!.catalog.findVariantBySku(s.shopId, '1001')).toMatchObject({ stock: 9 });
-    expect(a!.catalog.findVariantBySku(s.shopId, 'DR-M')).toMatchObject({ stock: 2, options: { size: 'M' } });
+    expect(await a!.catalog.findVariantBySku(s.shopId, '1001')).toMatchObject({ stock: 9 });
+    expect(await a!.catalog.findVariantBySku(s.shopId, 'DR-M')).toMatchObject({ stock: 2, options: { size: 'M' } });
 
     const bad = excelLikeWorkbook(
       '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="7"><c r="A7" t="s"><v>2</v></c><c r="B7"><v>12.345</v></c></row>',
@@ -72,7 +72,7 @@ describe('XLSX import', () => {
     );
     const r = await call(a!, s.token, 'POST', `${s.base}/products/import-xlsx`, { file: b64(bad), dryRun: false });
     expect(r.body).toMatchObject({ applied: false, errors: [{ line: 7 }] });
-    expect(a!.catalog.findVariantBySku(s.shopId, 'X-1')).toBeUndefined();
+    expect(await a!.catalog.findVariantBySku(s.shopId, 'X-1')).toBeUndefined();
 
     const mgr = await login('m@example.com');
     await call(a!, s.token, 'POST', `${s.base}/members`, { email: 'm@example.com', role: 'manager' });
@@ -95,12 +95,12 @@ describe('Google Sheets import', () => {
     const dry = await call(a!, s.token, 'POST', `${s.base}/products/import-sheet`, { url: SHEET });
     expect(dry.status).toBe(200);
     expect(dry.body).toMatchObject({ dryRun: true, applied: false, rows: 2, created: { variants: 2 }, errors: [] });
-    expect(a!.catalog.findVariantBySku(s.shopId, 'TEE-S')).toBeUndefined();
+    expect(await a!.catalog.findVariantBySku(s.shopId, 'TEE-S')).toBeUndefined();
     expect(s.google.calls).toEqual([`https://docs.google.com/spreadsheets/d/${ID}/export?format=csv&gid=0`, 'https://doc-0c-1a-sheets.googleusercontent.com/export/x?format=csv']);
 
     const run = await call(a!, s.token, 'POST', `${s.base}/products/import-sheet`, { url: SHEET, dryRun: false });
     expect(run.body).toMatchObject({ applied: true });
-    expect(a!.catalog.findVariantBySku(s.shopId, 'TEE-M')).toMatchObject({ stock: 3 });
+    expect(await a!.catalog.findVariantBySku(s.shopId, 'TEE-M')).toMatchObject({ stock: 3 });
 
     const mgr = await login('m@example.com');
     await call(a!, s.token, 'POST', `${s.base}/members`, { email: 'm@example.com', role: 'manager' });
@@ -124,35 +124,38 @@ describe('Google Sheets import', () => {
 });
 
 /** A website conversation with a COD draft created by `who`; returns the draft id. */
-function draft(s: S, who: 'ai' | 'user', session: string) {
-  const conv = a!.conversations.ensureConversation(s.shopId, { channel: WEB_CHANNEL, conversationExternalId: session, customer: { externalId: session, displayName: 'Олена' } })
-    .conversation.id;
-  return a!.orders.createDraft(s.shopId, {
-    conversationId: conv,
-    createdBy: who,
-    items: [{ sku: 'HOODIE-M', quantity: 1 }],
-    checkout: {
-      firstName: 'Олена',
-      lastName: 'Коваль',
-      phone: '050 111 22 33',
-      npCityRef: NP.kyivRef,
-      npCityName: 'Київ',
-      npWarehouseRef: NP.branch5Ref,
-      npWarehouseName: 'Відділення №5',
-      paymentMethod: 'cod',
-    },
-  }).draft.id;
+async function draft(s: S, who: 'ai' | 'user', session: string) {
+  const conv = (
+    await a!.conversations.ensureConversation(s.shopId, { channel: WEB_CHANNEL, conversationExternalId: session, customer: { externalId: session, displayName: 'Олена' } })
+  ).conversation.id;
+  return (
+    await a!.orders.createDraft(s.shopId, {
+      conversationId: conv,
+      createdBy: who,
+      items: [{ sku: 'HOODIE-M', quantity: 1 }],
+      checkout: {
+        firstName: 'Олена',
+        lastName: 'Коваль',
+        phone: '050 111 22 33',
+        npCityRef: NP.kyivRef,
+        npCityName: 'Київ',
+        npWarehouseRef: NP.branch5Ref,
+        npWarehouseName: 'Відділення №5',
+        paymentMethod: 'cod',
+      },
+    })
+  ).draft.id;
 }
-const withCatalog = (s: S) =>
-  a!.catalog.createProduct(s.shopId, { name: 'Худі Classic', priceMinor: 129_900, currency: 'UAH', variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 50 }] });
+const withCatalog = async (s: S) =>
+  await a!.catalog.createProduct(s.shopId, { name: 'Худі Classic', priceMinor: 129_900, currency: 'UAH', variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 50 }] });
 
 describe('Excel export of orders', () => {
   it('a workbook with one row per order of the period; members only; period checked', async () => {
     const s = await setup();
-    withCatalog(s);
-    const id = draft(s, 'ai', 'w1');
+    await withCatalog(s);
+    const id = await draft(s, 'ai', 'w1');
     await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/approve`, {});
-    draft(s, 'user', 'w2');
+    await draft(s, 'user', 'w2');
     const res = await a!.app.inject({ method: 'GET', url: `${s.base}/order-drafts/export.xlsx`, headers: { authorization: `Bearer ${s.token}` } });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -178,11 +181,11 @@ describe('Excel export of orders', () => {
 describe('funnel and AI vs human', () => {
   it('stage counts equal the order_events rows; sources split by creator and approver', async () => {
     const s = await setup();
-    withCatalog(s);
+    await withCatalog(s);
     await call(a!, s.token, 'PUT', `${s.base}/ai`, { enabled: true });
     // Two customers write; the AI drafts three orders, a manager one.
     for (const w of ['w1', 'w2'])
-      a!.conversations.ingestMessage(s.shopId, {
+      await a!.conversations.ingestMessage(s.shopId, {
         channel: WEB_CHANNEL,
         conversationExternalId: w,
         customer: { externalId: w },
@@ -190,21 +193,21 @@ describe('funnel and AI vs human', () => {
         text: 'Привіт',
         attachments: [],
       });
-    const [d1, d2, d3, d4] = [draft(s, 'ai', 'w1'), draft(s, 'ai', 'w2'), draft(s, 'ai', 'w3'), draft(s, 'user', 'w4')];
+    const [d1, d2, d3, d4] = [await draft(s, 'ai', 'w1'), await draft(s, 'ai', 'w2'), await draft(s, 'ai', 'w3'), await draft(s, 'user', 'w4')];
     await call(a!, s.token, 'POST', `${s.base}/order-drafts/${d1}/approve`, {});
-    expect(a!.orders.autoConfirm(s.shopId, d2, { maxTotalMinor: null })).toMatchObject({ approved: true });
+    expect(await a!.orders.autoConfirm(s.shopId, d2, { maxTotalMinor: null })).toMatchObject({ approved: true });
     await call(a!, s.token, 'POST', `${s.base}/order-drafts/${d4}/approve`, {});
     await call(a!, s.token, 'POST', `${s.base}/order-drafts/${d3}/reject`, {});
     for (const d of [d1, d2]) {
-      a!.orders.claimTtn(s.shopId, d);
-      a!.orders.completeTtn(s.shopId, d, { ttn: `2045000000000${d === d1 ? 1 : 2}`, documentRef: 'r' });
+      await a!.orders.claimTtn(s.shopId, d);
+      await a!.orders.completeTtn(s.shopId, d, { ttn: `2045000000000${d === d1 ? 1 : 2}`, documentRef: 'r' });
     }
-    a!.orders.applyTracking(s.shopId, d1, { code: '9', text: 'Отримано', outcome: 'delivered', refusal: false });
+    await a!.orders.applyTracking(s.shopId, d1, { code: '9', text: 'Отримано', outcome: 'delivered', refusal: false });
     // A prepaid order paid: the only way into `paid`.
-    const d5 = draft(s, 'ai', 'w5');
+    const d5 = await draft(s, 'ai', 'w5');
     a!.handle.raw.prepare("update order_drafts set payment_method = 'prepaid' where id = ?").run(d5);
     await call(a!, s.token, 'POST', `${s.base}/order-drafts/${d5}/approve`, {});
-    a!.orders.markPaid(s.shopId, d5, 'provider:monobank', 'test');
+    await a!.orders.markPaid(s.shopId, d5, 'provider:monobank', 'test');
     await a!.payments.whenIdle();
     await a!.notices.whenIdle();
 

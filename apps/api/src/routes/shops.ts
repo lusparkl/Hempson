@@ -9,6 +9,7 @@ import {
   ShopNotFoundError,
   ShopSlugTakenError,
   ShopValidationError,
+  createShopWithOwner,
   emailSchema,
   roleSchema,
   type AuthRepository,
@@ -60,9 +61,9 @@ function translate(e: unknown): never {
  * the authenticated user's membership.
  */
 export function makeRequireRole(shops: ShopRepository, auth: AuthRepository) {
-  return function requireRole(req: FastifyRequest, id: string, min: Role): { shop: ShopRow; role: Role } {
-    const m = auth.getMembership(id, req.user!.user.id);
-    const shop = m && shops.get(id);
+  return async function requireRole(req: FastifyRequest, id: string, min: Role): Promise<{ shop: ShopRow; role: Role }> {
+    const m = await auth.getMembership(id, req.user!.user.id);
+    const shop = m && (await shops.get(id));
     if (!m || !shop) throw new ApiError('NOT_FOUND', 'Shop not found');
     if (min === 'owner' && m.role !== 'owner') throw new ApiError('FORBIDDEN', 'Owner role required');
     return { shop, role: m.role };
@@ -81,13 +82,9 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     auth: 'user',
     body: createBody,
     status: 201,
-    handler: ({ req, body }) => {
+    handler: async ({ req, body }) => {
       try {
-        const shop = handle.raw.transaction(() => {
-          const s = shops.create(body);
-          auth.addMember(s.id, req.user!.user.id, 'owner');
-          return s;
-        })();
+        const shop = await createShopWithOwner({ handle, shops, auth }, body, req.user!.user.id);
         return shopView(shop, 'owner');
       } catch (e) {
         translate(e);
@@ -101,7 +98,7 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     summary: 'Shops the caller belongs to',
     tag: 'shops',
     auth: 'user',
-    handler: ({ req }) => auth.listShopsForUser(req.user!.user.id).map(({ shop, role }) => shopView(shop, role)),
+    handler: async ({ req }) => (await auth.listShopsForUser(req.user!.user.id)).map(({ shop, role }) => shopView(shop, role)),
   });
 
   route(app, {
@@ -111,8 +108,8 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     tag: 'shops',
     auth: 'user',
     params: shopId,
-    handler: ({ req, params }) => {
-      const { shop, role } = requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, params }) => {
+      const { shop, role } = await requireRole(req, params.shopId, 'manager');
       return shopView(shop, role);
     },
   });
@@ -125,10 +122,10 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     auth: 'user',
     params: shopId,
     body: updateBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        return shopView(shops.update(params.shopId, body), 'owner');
+        return shopView(await shops.update(params.shopId, body), 'owner');
       } catch (e) {
         translate(e);
       }
@@ -142,11 +139,15 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     tag: 'shops',
     auth: 'user',
     params: shopId,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return auth
-        .listMembers(params.shopId)
-        .map(({ membership, user }) => ({ userId: user.id, email: user.email, displayName: user.displayName, role: membership.role, since: membership.createdAt }));
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return (await auth.listMembers(params.shopId)).map(({ membership, user }) => ({
+        userId: user.id,
+        email: user.email,
+        displayName: user.displayName,
+        role: membership.role,
+        since: membership.createdAt,
+      }));
     },
   });
 
@@ -159,13 +160,13 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     params: shopId,
     body: addMemberBody,
     status: 201,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       const email = emailSchema.safeParse(body.email);
-      const user = email.success ? auth.getUserByEmail(email.data) : undefined;
+      const user = email.success ? await auth.getUserByEmail(email.data) : undefined;
       if (!user) throw new ApiError('NOT_FOUND', 'No registered user with that email');
       try {
-        const m = auth.addMember(params.shopId, user.id, body.role);
+        const m = await auth.addMember(params.shopId, user.id, body.role);
         return { userId: user.id, email: user.email, displayName: user.displayName, role: m.role, since: m.createdAt };
       } catch (e) {
         translate(e);
@@ -181,10 +182,10 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     auth: 'user',
     params: memberParams,
     body: roleBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        const m = auth.changeRole(params.shopId, params.userId, body.role);
+        const m = await auth.changeRole(params.shopId, params.userId, body.role);
         return { userId: m.userId, role: m.role };
       } catch (e) {
         translate(e);
@@ -199,11 +200,11 @@ export function registerShopRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     tag: 'shops',
     auth: 'user',
     params: memberParams,
-    handler: ({ req, params }) => {
+    handler: async ({ req, params }) => {
       const self = params.userId === req.user!.user.id;
-      requireRole(req, params.shopId, self ? 'manager' : 'owner');
+      await requireRole(req, params.shopId, self ? 'manager' : 'owner');
       try {
-        auth.removeMember(params.shopId, params.userId);
+        await auth.removeMember(params.shopId, params.userId);
         return { ok: true };
       } catch (e) {
         translate(e);

@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { ApiKeyRepository, MIGRATIONS_DIR, openDb, runMigrations } from '@hepson/database';
 
 describe('migration 0017 (Phase 1 connector removed, D41)', () => {
-  it('keeps admin keys, drops account-scoped keys and every connector table', () => {
+  it('keeps admin keys, drops account-scoped keys and every connector table', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'hepson-mig-'));
     try {
       // Migrations folder up to 0016, as before the upgrade.
@@ -44,13 +44,13 @@ describe('migration 0017 (Phase 1 connector removed, D41)', () => {
       run(`insert into events (id, account_id, type, payload, occurred_at, sequence) values ('e', 'acc', 'message.received', '{}', ?, 1)`, at);
       run(`insert into connector_state (account_id) values ('acc')`);
 
-      runMigrations(h);
+      await runMigrations(h);
       const tables = (h.raw.prepare(`select name from sqlite_master where type = 'table'`).all() as Array<{ name: string }>).map((r) => r.name);
       for (const t of ['store_accounts', 'conversations', 'messages', 'outbox', 'events', 'connector_state']) expect(tables).not.toContain(t);
       expect(h.raw.prepare(`select id, name from api_keys`).all()).toEqual([{ id: 'k-admin', name: 'admin' }]);
       const keys = new ApiKeyRepository(h);
-      expect(keys.find('hep_admin')?.id).toBe('k-admin');
-      expect(keys.find('hep_scoped')).toBeUndefined();
+      expect((await keys.find('hep_admin'))?.id).toBe('k-admin');
+      expect(await keys.find('hep_scoped')).toBeUndefined();
       expect(h.raw.prepare(`select id from shops`).all()).toEqual([{ id: 's1' }]);
       h.close();
     } finally {

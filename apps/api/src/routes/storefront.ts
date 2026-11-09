@@ -66,10 +66,10 @@ footer{color:var(--ink-500);font-size:13px;padding-top:40px;padding-bottom:40px}
 type Card = { name: string; description: string; image: string | null; minPrice: number; maxPrice: number; currency: string; options: string[] };
 
 /** Active products with at least one active in-stock variant; only those variants count (D36). */
-function cards(catalog: CatalogRepository, shopId: string): Card[] {
+async function cards(catalog: CatalogRepository, shopId: string): Promise<Card[]> {
   const out: Card[] = [];
   for (let offset = 0; offset < MAX_PRODUCTS; offset += 200) {
-    const page = catalog.listProducts(shopId, { active: true, limit: 200, offset });
+    const page = await catalog.listProducts(shopId, { active: true, limit: 200, offset });
     for (const pw of page.items) {
       const c = card(pw);
       if (c) out.push(c);
@@ -168,9 +168,9 @@ export function registerStorefrontRoutes(
     tag: 'storefront',
     auth: 'user',
     params: z.object({ shopId: z.uuid() }),
-    handler: ({ req, params }) => {
-      const { shop } = requireRole(req, params.shopId, 'manager');
-      return { enabled: shop.storefrontEnabled, url: `${publicUrl}/s/${shop.slug}`, products: cards(catalog, shop.id).length };
+    handler: async ({ req, params }) => {
+      const { shop } = await requireRole(req, params.shopId, 'manager');
+      return { enabled: shop.storefrontEnabled, url: `${publicUrl}/s/${shop.slug}`, products: (await cards(catalog, shop.id)).length };
     },
   });
 
@@ -189,7 +189,7 @@ export function registerStorefrontRoutes(
     auth: 'none',
     params: slugP,
     query: pageQ,
-    handler: ({ params, query, reply }) => {
+    handler: async ({ params, query, reply }) => {
       reply
         .type('text/html; charset=utf-8')
         .header('x-content-type-options', 'nosniff')
@@ -199,16 +199,16 @@ export function registerStorefrontRoutes(
           'content-security-policy',
           `default-src 'none'; img-src https: http:; style-src 'unsafe-inline'; font-src ${origin}; script-src ${origin}; connect-src ${origin}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
         );
-      const shop = shops.getBySlug(params.slug);
+      const shop = await shops.getBySlug(params.slug);
       if (!shop?.storefrontEnabled) {
         reply.status(404).header('cache-control', 'no-store');
         return notFound;
       }
-      const all = cards(catalog, shop.id);
+      const all = await cards(catalog, shop.id);
       const n = Math.min(query.page ?? 1, Math.max(1, Math.ceil(all.length / PER_PAGE)));
-      const wc = webChat.getConfig(shop.id);
-      const tg = tgRepo.getChannel(shop.id);
-      const ig = igRepo.getChannel(shop.id);
+      const wc = await webChat.getConfig(shop.id);
+      const tg = await tgRepo.getChannel(shop.id);
+      const ig = await igRepo.getChannel(shop.id);
       const contacts: Contacts = {
         widgetKey: wc?.enabled ? wc.widgetKey : null,
         telegram: tg?.status === 'connected' && tg.botUsername && /^\w{5,64}$/.test(tg.botUsername) ? tg.botUsername : null,

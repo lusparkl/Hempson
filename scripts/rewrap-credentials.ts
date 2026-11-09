@@ -10,9 +10,9 @@ if (!ring) {
   process.exit(1);
 }
 const h = openDb(loadConfig().dbFile);
-runMigrations(h);
+await runMigrations(h);
 try {
-  const r = new CredentialVault(h, ring).rewrapAll();
+  const r = await new CredentialVault(h, ring).rewrapAll();
   console.log(`credentials: ${r.total} total, ${r.rewrapped} re-wrapped to master key version ${ring.currentVersion}`);
 } catch (e) {
   console.error(`rewrap failed, nothing changed: ${e instanceof Error ? e.message : 'error'}`);

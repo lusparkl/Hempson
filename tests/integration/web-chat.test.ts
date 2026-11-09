@@ -99,9 +99,9 @@ describe('web chat conversation', () => {
 
     const convs = (await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/conversations`)).body.items;
     expect(convs).toMatchObject([{ channel: 'website', customer: { channel: 'website', displayName: expect.stringContaining('Відвідувач') } }]);
-    const m = a!.conversations.listMessages(s.shopId, convs[0].conversationId).items;
+    const m = (await a!.conversations.listMessages(s.shopId, convs[0].conversationId)).items;
     expect(m[1]).toMatchObject({ senderType: 'ai', deliveryStatus: 'sent', externalId: expect.stringMatching(/^web:/) });
-    expect(a!.agentRepo.listRuns(s.shopId).items).toMatchObject([{ status: 'replied' }]);
+    expect((await a!.agentRepo.listRuns(s.shopId)).items).toMatchObject([{ status: 'replied' }]);
   });
 
   it('no AI: the message is stored, nobody answers, and a human can reply and take over', async () => {
@@ -115,7 +115,10 @@ describe('web chat conversation', () => {
     const r = await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${convId}/messages`, { text: 'Так, я менеджер.' });
     expect(r.status).toBe(201);
     expect(r.body).toMatchObject({ senderType: 'human', deliveryStatus: 'sent', aiPaused: true });
-    expect((await read(s, v)).map((m) => [m.from, m.fromAi, m.text])).toEqual([['visitor', false, 'Є хтось?'], ['shop', false, 'Так, я менеджер.']]);
+    expect((await read(s, v)).map((m) => [m.from, m.fromAi, m.text])).toEqual([
+      ['visitor', false, 'Є хтось?'],
+      ['shop', false, 'Так, я менеджер.'],
+    ]);
   });
 
   it('a paused conversation is not answered by the AI; unsent (pending) replies are invisible to the visitor', async () => {
@@ -125,7 +128,7 @@ describe('web chat conversation', () => {
     await say_(s, v, 'hi'); // script is empty => model call fails => failed run, no reply
     const convId = (await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/conversations`)).body.items[0].conversationId as string;
     await call(a!, s.token, 'PUT', `/v1/shops/${s.shopId}/conversations/${convId}/ai`, { paused: true });
-    a!.conversations.recordOutbound(s.shopId, convId, { senderType: 'system', text: 'draft not delivered', deliveryStatus: 'pending' });
+    await a!.conversations.recordOutbound(s.shopId, convId, { senderType: 'system', text: 'draft not delivered', deliveryStatus: 'pending' });
     const calls = llm.calls.length;
     await say_(s, v, 'ще раз');
     expect(llm.calls).toHaveLength(calls);

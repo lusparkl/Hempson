@@ -23,9 +23,9 @@ export function registerPolicyRoutes(app: FastifyInstance, deps: { shops: ShopRe
     tag: 'policies',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return { items: policies.list(params.shopId).map(view) };
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return { items: (await policies.list(params.shopId)).map(view) };
     },
   });
 
@@ -37,10 +37,10 @@ export function registerPolicyRoutes(app: FastifyInstance, deps: { shops: ShopRe
     auth: 'user',
     params: topicP,
     body,
-    handler: ({ req, params, body: b }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body: b }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        return view(policies.save(params.shopId, params.topic, b.text, req.user!.user.id));
+        return view(await policies.save(params.shopId, params.topic, b.text, req.user!.user.id));
       } catch (e) {
         if (e instanceof PolicyValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
         throw e;

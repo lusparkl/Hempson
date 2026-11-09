@@ -23,7 +23,7 @@ async function setup(llm: ScriptedLlm | null) {
   await call(a, null, 'POST', '/v1/auth/register', { email: 'o@example.com', displayName: 'O', password: PW });
   const token = (await call(a, null, 'POST', '/v1/auth/login', { email: 'o@example.com', password: PW })).body.token as string;
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Магазин', slug: 'shop-one' })).body.shopId as string;
-  a.catalog.createProduct(shopId, {
+  await a.catalog.createProduct(shopId, {
     name: 'Худі Classic',
     description: 'Бавовна',
     priceMinor: 129_900,
@@ -43,12 +43,12 @@ async function setup(llm: ScriptedLlm | null) {
 }
 
 /** Nothing a real run leaves behind: runs, conversations, drafts, escalations, reply-cap use. */
-function expectNoTrace(shopId: string) {
-  expect(a!.agentRepo.listRuns(shopId).items).toEqual([]);
-  expect(a!.conversations.listConversations(shopId).items).toEqual([]);
-  expect(a!.orders.listDrafts(shopId).items).toEqual([]);
-  expect(a!.agentRepo.listEscalations(shopId).items).toEqual([]);
-  expect(a!.plans.usage(shopId).aiReplies).toBe(0);
+async function expectNoTrace(shopId: string) {
+  expect((await a!.agentRepo.listRuns(shopId)).items).toEqual([]);
+  expect((await a!.conversations.listConversations(shopId)).items).toEqual([]);
+  expect((await a!.orders.listDrafts(shopId)).items).toEqual([]);
+  expect((await a!.agentRepo.listEscalations(shopId)).items).toEqual([]);
+  expect((await a!.plans.usage(shopId)).aiReplies).toBe(0);
 }
 
 describe('AI playground', () => {
@@ -62,7 +62,7 @@ describe('AI playground', () => {
     expect(JSON.parse(r.body.tools[0].result).products[0].name).toBe('Худі Classic');
     expect(llm.calls[0]!.messages[0]!.content).toContain('Звертайся на "ви".');
     expect(llm.calls[0]!.tools.map((t) => t.name)).not.toContain('search_by_photo');
-    expectNoTrace(s.shopId);
+    await expectNoTrace(s.shopId);
   });
 
   it('uses unsaved notes and the given history; the last customer messages may be echoed back', async () => {
@@ -93,7 +93,7 @@ describe('AI playground', () => {
     const r = await s.play({ messages: [{ role: 'customer', text: 'Скільки худі?' }] });
     expect(r.body).toMatchObject({ outcome: 'blocked', reply: null });
     expect(r.body.blocked.join(' ')).toContain('500.00');
-    expectNoTrace(s.shopId);
+    await expectNoTrace(s.shopId);
   });
 
   it('checks an order like a real draft but creates nothing; escalate notifies nobody', async () => {
@@ -126,9 +126,9 @@ describe('AI playground', () => {
       'get_order_status',
       'escalate',
     ]);
-    expectNoTrace(s.shopId);
+    await expectNoTrace(s.shopId);
     expect(s.sent).toEqual([]);
-    expect(a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M')!.stock).toBe(3);
+    expect((await a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M'))!.stock).toBe(3);
   });
 
   it('a silent escalation is reported without a reply', async () => {

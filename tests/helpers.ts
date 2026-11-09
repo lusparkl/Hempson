@@ -8,7 +8,7 @@ import { buildApp, type App } from '../apps/api/src/server';
 export async function makeApp(over: Parameters<typeof buildApp>[0] & { dir?: string } = {}) {
   const dir = over.dir ?? mkdtempSync(path.join(os.tmpdir(), 'hepson-test-'));
   const a = await buildApp({ dataDir: dir, dbFile: path.join(dir, 'hepson.db'), logger: false, ...over });
-  const admin = a.apiKeys.create('admin').key;
+  const admin = (await a.apiKeys.create('admin')).key;
   return { ...a, dir, admin, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 export type TestApp = Awaited<ReturnType<typeof makeApp>>;
@@ -32,8 +32,14 @@ const safeJson = (s: string) => {
  * the agent. Default channel is the website chat (replies are delivered internally); returns the shop conversation id.
  */
 export async function customerWrites(a: TestApp, shopId: string, thread: string, text: string, channel = WEB_CHANNEL) {
-  const r = a.conversations.ingestMessage(shopId, { channel, conversationExternalId: thread, customer: { externalId: thread, displayName: 'Олена' }, externalId: `in:${randomUUID()}`, text });
-  a.salesAgent?.trigger(shopId, r.conversation.id, r.message.id);
+  const r = await a.conversations.ingestMessage(shopId, {
+    channel,
+    conversationExternalId: thread,
+    customer: { externalId: thread, displayName: 'Олена' },
+    externalId: `in:${randomUUID()}`,
+    text,
+  });
+  await a.salesAgent?.trigger(shopId, r.conversation.id, r.message.id);
   await a.salesAgent?.whenIdle();
   return r.conversation.id;
 }

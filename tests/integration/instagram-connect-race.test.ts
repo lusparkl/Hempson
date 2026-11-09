@@ -50,8 +50,8 @@ beforeEach(async () => {
       throw new Error('Unexpected Graph request');
     }) as typeof fetch,
   });
-  shopId = a.shops.create({ name: 'Connection race', slug: 'connection-race' }).id;
-  userId = a.auth.createUser({ email: 'race@example.test', displayName: 'Race test' }, 'unused').id;
+  shopId = (await a.shops.create({ name: 'Connection race', slug: 'connection-race' })).id;
+  userId = (await a.auth.createUser({ email: 'race@example.test', displayName: 'Race test' }, 'unused')).id;
 });
 
 afterEach(async () => {
@@ -59,8 +59,8 @@ afterEach(async () => {
   a?.cleanup();
 });
 
-const connect = (code = 'first') => {
-  const state = new URL(a.ig.startConnect(shopId, userId).authorizeUrl).searchParams.get('state')!;
+const connect = async (code = 'first') => {
+  const state = new URL((await a.ig.startConnect(shopId, userId)).authorizeUrl).searchParams.get('state')!;
   return a.ig.completeConnect(code, state);
 };
 const subscriptionCalls = (method: string) => calls.filter((c) => c.method === method && c.path.endsWith('/subscribed_apps'));
@@ -80,8 +80,8 @@ describe('Instagram connection cancellation', () => {
     response.resolve(json({ success: true }));
 
     expect(await pending).toMatchObject({ code: 'TEMPORARY_FAILURE' });
-    expect(a.igRepo.getChannel(shopId)).toBeUndefined();
-    expect(a.vault.get(shopId, 'instagram')).toBeUndefined();
+    expect(await a.igRepo.getChannel(shopId)).toBeUndefined();
+    expect(await a.vault.get(shopId, 'instagram')).toBeUndefined();
     expect(subscriptionCalls('DELETE')).toEqual([{ method: 'DELETE', path: `/v26.0/${IG}/subscribed_apps`, token: `Bearer ${TOKEN}` }]);
   });
 
@@ -101,8 +101,8 @@ describe('Instagram connection cancellation', () => {
     expect(await pending).toMatchObject({ code: 'TEMPORARY_FAILURE' });
     expect(subscriptionCalls('POST')).toEqual([]);
     expect(subscriptionCalls('DELETE')).toEqual([]);
-    expect(a.igRepo.getChannel(shopId)).toBeUndefined();
-    expect(a.vault.get(shopId, 'instagram')).toBeUndefined();
+    expect(await a.igRepo.getChannel(shopId)).toBeUndefined();
+    expect(await a.vault.get(shopId, 'instagram')).toBeUndefined();
   });
 
   it('rejects overlapping connection attempts for the same shop', async () => {
@@ -120,7 +120,7 @@ describe('Instagram connection cancellation', () => {
     response.resolve(json({ success: true }));
 
     await expect(pending).resolves.toEqual({ shopId });
-    expect(a.igRepo.getChannel(shopId)!.igUserId).toBe(IG);
+    expect((await a.igRepo.getChannel(shopId))!.igUserId).toBe(IG);
   });
 
   it.each(['pending', 'connected'])('preserves the newer %s connection while the canceled subscription finishes cleanup', async (newerStatus) => {
@@ -154,7 +154,7 @@ describe('Instagram connection cancellation', () => {
       await expect(second).resolves.toEqual({ shopId });
     }
 
-    expect(a.igRepo.getChannel(shopId)!.igUserId).toBe(OTHER_IG);
+    expect((await a.igRepo.getChannel(shopId))!.igUserId).toBe(OTHER_IG);
     expect(await a.vault.withSecret(shopId, 'instagram', (token) => token === OTHER_TOKEN)).toBe(true);
     expect(subscriptionCalls('DELETE').map((c) => c.path)).toEqual([`/v26.0/${IG}/subscribed_apps`]);
   });
@@ -185,7 +185,7 @@ describe('Instagram connection cancellation', () => {
     subscribe = () => json({ success: true });
 
     await expect(connect()).resolves.toEqual({ shopId });
-    expect(a.igRepo.getChannel(shopId)!.igUserId).toBe(IG);
+    expect((await a.igRepo.getChannel(shopId))!.igUserId).toBe(IG);
   });
 
   it('holds the shop reservation until an existing connection has finished disconnecting', async () => {
@@ -205,7 +205,7 @@ describe('Instagram connection cancellation', () => {
     await pending;
 
     await expect(connect('other')).resolves.toEqual({ shopId });
-    expect(a.igRepo.getChannel(shopId)!.igUserId).toBe(OTHER_IG);
+    expect((await a.igRepo.getChannel(shopId))!.igUserId).toBe(OTHER_IG);
     expect(await a.vault.withSecret(shopId, 'instagram', (token) => token === OTHER_TOKEN)).toBe(true);
   });
 });

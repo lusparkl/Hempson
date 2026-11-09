@@ -83,7 +83,7 @@ describe('photo index', () => {
     expect((await call(a!, s.token, 'GET', `${s.base}/photo-index`)).body).toEqual({ available: true, withPhoto: 2, indexed: 2, failed: 0, pending: 0 });
     expect(s.vision.described).toEqual([{ url: DRESS }, { url: TEE }]);
     expect(s.net.calls.some((c) => c.includes('shop.example'))).toBe(false);
-    expect(a!.photoRepo.get(s.shopId, s.dress.productId)).toMatchObject({ status: 'ready', imageUrl: DRESS, description: 'red linen midi dress, wooden buttons' });
+    expect(await a!.photoRepo.get(s.shopId, s.dress.productId)).toMatchObject({ status: 'ready', imageUrl: DRESS, description: 'red linen midi dress, wooden buttons' });
 
     // A product edit that keeps the main image does not re-index; a new main image does; a broken link fails once and stays failed.
     await call(a!, s.token, 'PATCH', `${s.base}/products/${s.tee.productId}`, { name: 'Футболка' });
@@ -94,8 +94,8 @@ describe('photo index', () => {
     await call(a!, s.token, 'PATCH', `${s.base}/products/${s.dress.productId}`, { media: ['https://shop.example/img/logo.png', DRESS] });
     await a!.photos!.whenIdle();
     expect((await call(a!, s.token, 'GET', `${s.base}/photo-index`)).body).toMatchObject({ withPhoto: 2, indexed: 0, failed: 2, pending: 0 });
-    expect(a!.photoRepo.get(s.shopId, s.tee.productId)).toMatchObject({ status: 'failed', error: 'IMAGE_UNREADABLE' });
-    expect(a!.photoRepo.get(s.shopId, s.dress.productId)).toMatchObject({ status: 'failed', error: 'NO_PRODUCT' });
+    expect(await a!.photoRepo.get(s.shopId, s.tee.productId)).toMatchObject({ status: 'failed', error: 'IMAGE_UNREADABLE' });
+    expect(await a!.photoRepo.get(s.shopId, s.dress.productId)).toMatchObject({ status: 'failed', error: 'NO_PRODUCT' });
 
     s.vision.byUrl.set('https://shop.example/img/broken.jpg', 'white cotton t-shirt');
     const mgr = await login('m@example.com');
@@ -120,7 +120,7 @@ describe('photo index', () => {
   it('is unavailable without a vision model, and the agent is not offered the tool', async () => {
     const s = await setup({ vision: null, script: [say('Вітаю!')] });
     expect((await call(a!, s.token, 'GET', `${s.base}/photo-index`)).body).toEqual({ available: false, withPhoto: 0, indexed: 0, failed: 0, pending: 0 });
-    customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'image', ref: 'https://x.example/1.jpg' }]);
+    await customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'image', ref: 'https://x.example/1.jpg' }]);
     await a!.salesAgent!.whenIdle();
     expect(s.llm.calls[0]!.tools.map((t) => t.name)).not.toContain('search_by_photo');
   });
@@ -131,9 +131,16 @@ async function login(email: string) {
   return (await call(a!, null, 'POST', '/v1/auth/login', { email, password: PW })).body.token as string;
 }
 
-function customerSends(s: S, channel: string, attachments: Array<{ kind: string; ref?: string }>, text: string | null = null) {
-  const r = a!.conversations.ingestMessage(s.shopId, { channel, conversationExternalId: 'c1', customer: { externalId: 'c1' }, externalId: `m${Math.random()}`, text, attachments });
-  a!.salesAgent!.trigger(s.shopId, r.conversation.id, r.message.id);
+async function customerSends(s: S, channel: string, attachments: Array<{ kind: string; ref?: string }>, text: string | null = null) {
+  const r = await a!.conversations.ingestMessage(s.shopId, {
+    channel,
+    conversationExternalId: 'c1',
+    customer: { externalId: 'c1' },
+    externalId: `m${Math.random()}`,
+    text,
+    attachments,
+  });
+  await a!.salesAgent!.trigger(s.shopId, r.conversation.id, r.message.id);
   return r.conversation.id;
 }
 
@@ -176,8 +183,8 @@ describe('search_by_photo', () => {
     expect(res.statusCode).toBe(200);
     await a!.salesAgent!.whenIdle();
 
-    const conv = a!.conversations.findConversationByExternal(s.shopId, TELEGRAM_CHANNEL, String(CHAT))!;
-    const items = a!.conversations.listMessages(s.shopId, conv.conversation.id, { limit: 10 }).items;
+    const conv = (await a!.conversations.findConversationByExternal(s.shopId, TELEGRAM_CHANNEL, String(CHAT)))!;
+    const items = (await a!.conversations.listMessages(s.shopId, conv.conversation.id, { limit: 10 })).items;
     expect(items[0]!.attachments).toEqual([{ kind: 'image', ref: 'BIG' }]);
     expect(items.at(-1)).toMatchObject({ senderType: 'ai', deliveryStatus: 'sent' });
     expect(s.vision.described.at(-1)).toEqual({ data: jpeg('customer-dress'), mime: 'image/jpeg' });
@@ -199,7 +206,7 @@ describe('search_by_photo', () => {
         },
       ],
     });
-    customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'image', ref: 'https://scontent-waw.cdn-ig.example/m/1.jpg' }]);
+    await customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'image', ref: 'https://scontent-waw.cdn-ig.example/m/1.jpg' }]);
     await a!.salesAgent!.whenIdle();
     expect(s.net.calls.some((c) => c.includes('cdn-ig.example'))).toBe(false);
   });
@@ -221,7 +228,7 @@ describe('search_by_photo', () => {
         },
       ],
     });
-    customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'post', ref: 'https://scontent-waw.cdn-ig.example/m/1.jpg' }]);
+    await customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'post', ref: 'https://scontent-waw.cdn-ig.example/m/1.jpg' }]);
     await a!.salesAgent!.whenIdle();
     expect(calls).toBe(1);
     expect(s.net.calls.filter((c) => c.includes('cdn-ig.example'))).toHaveLength(1);
@@ -239,15 +246,15 @@ describe('search_by_photo', () => {
       ],
       extraHosts: ['.cdn-ig.example'],
     });
-    customerSends(s, INSTAGRAM_CHANNEL, [], 'Привіт');
+    await customerSends(s, INSTAGRAM_CHANNEL, [], 'Привіт');
     await a!.salesAgent!.whenIdle();
     s.net.cdn.set('https://scontent-waw.cdn-ig.example/m/2.jpg', jpeg('selfie'));
     s.vision.byBytes.set(jpeg('selfie').toString('latin1'), NO_PRODUCT);
-    customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'image', ref: 'https://scontent-waw.cdn-ig.example/m/2.jpg' }]);
+    await customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'image', ref: 'https://scontent-waw.cdn-ig.example/m/2.jpg' }]);
     await a!.salesAgent!.whenIdle();
     s.net.cdn.set('https://scontent-waw.cdn-ig.example/m/3.jpg', jpeg('boots'));
     s.vision.byBytes.set(jpeg('boots').toString('latin1'), 'black leather ankle boots');
-    customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'image', ref: 'https://scontent-waw.cdn-ig.example/m/3.jpg' }]);
+    await customerSends(s, INSTAGRAM_CHANNEL, [{ kind: 'image', ref: 'https://scontent-waw.cdn-ig.example/m/3.jpg' }]);
     await a!.salesAgent!.whenIdle();
     expect(s.llm.calls).toHaveLength(6);
   });

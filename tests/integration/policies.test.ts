@@ -28,11 +28,11 @@ type S = Awaited<ReturnType<typeof setup>>;
 const customerWrites = async (s: S, text: string) => {
   await writes(a!, s.shopId, THREAD, text);
 };
-const aiMsgs = (s: S) => {
-  const c = a!.conversations.listConversations(s.shopId).items.find((x) => x.conversation.externalId === THREAD)!;
-  return a!.conversations.listMessages(s.shopId, c.conversation.id, { limit: 200 }).items.filter((m) => m.senderType === 'ai');
+const aiMsgs = async (s: S) => {
+  const c = (await a!.conversations.listConversations(s.shopId)).items.find((x) => x.conversation.externalId === THREAD)!;
+  return (await a!.conversations.listMessages(s.shopId, c.conversation.id, { limit: 200 })).items.filter((m) => m.senderType === 'ai');
 };
-const lastRun = (s: S) => a!.agentRepo.listRuns(s.shopId).items[0]!;
+const lastRun = async (s: S) => (await a!.agentRepo.listRuns(s.shopId)).items[0]!;
 
 describe('policy routes', () => {
   it('owner edits with versions; a manager only reads; outsiders and other shops see nothing', async () => {
@@ -60,7 +60,7 @@ describe('policy routes', () => {
     const shop2 = (await call(a!, t2, 'POST', '/v1/shops', { name: 'Інший', slug: 'shop-two' })).body.shopId as string;
     expect((await call(a!, t2, 'GET', `/v1/shops/${shop2}/policies`)).body.items.every((p: any) => p.text === '')).toBe(true);
     expect((await call(a!, t2, 'PUT', `${base}/returns`, { text: 'hack' })).status).toBe(404);
-    expect(a!.policies.get(s.shopId, 'returns')!.text).toBe(RETURNS);
+    expect((await a!.policies.get(s.shopId, 'returns'))!.text).toBe(RETURNS);
   });
 });
 
@@ -76,8 +76,8 @@ describe('agent and policies', () => {
     const s = await setup(llm);
     await call(a!, s.token, 'PUT', `/v1/shops/${s.shopId}/policies/returns`, { text: RETURNS });
     await customerWrites(s, 'Чи можна повернути товар?');
-    expect(lastRun(s)).toMatchObject({ status: 'replied' });
-    expect(aiMsgs(s)).toHaveLength(1);
+    expect(await lastRun(s)).toMatchObject({ status: 'replied' });
+    expect(await aiMsgs(s)).toHaveLength(1);
   });
 
   it('a return period not in the policy text is blocked and the conversation escalates', async () => {
@@ -86,29 +86,32 @@ describe('agent and policies', () => {
     await call(a!, s.token, 'PUT', `/v1/shops/${s.shopId}/policies/returns`, { text: RETURNS });
     await customerWrites(s, 'Скільки днів на повернення?');
     expect(llm.calls[2]!.messages.at(-1)!.content).toContain('period 30 is not in the shop policy');
-    expect(lastRun(s)).toMatchObject({ status: 'escalated', detail: 'GUARD_BLOCKED' });
-    expect(aiMsgs(s)).toHaveLength(0);
-    expect(a!.agentRepo.openEscalation(s.shopId, lastRun(s).conversationId)).toBeTruthy();
+    expect(await lastRun(s)).toMatchObject({ status: 'escalated', detail: 'GUARD_BLOCKED' });
+    expect(await aiMsgs(s)).toHaveLength(0);
+    expect(await a!.agentRepo.openEscalation(s.shopId, (await lastRun(s)).conversationId)).toBeTruthy();
   });
 
   it('a delivery time stated without get_policy is blocked even when it sounds plausible', async () => {
     const llm = new ScriptedLlm([say('Доставка займе 1-2 дні.'), say('Відправимо за 1-2 дні.')]);
     const s = await setup(llm);
     await customerWrites(s, 'Коли доставите?');
-    expect(lastRun(s)).toMatchObject({ status: 'escalated', detail: 'GUARD_BLOCKED' });
-    expect(aiMsgs(s)).toHaveLength(0);
+    expect(await lastRun(s)).toMatchObject({ status: 'escalated', detail: 'GUARD_BLOCKED' });
+    expect(await aiMsgs(s)).toHaveLength(0);
   });
 
   it('a shop with no policy text gets an escalation instead of an invented answer', async () => {
     const llm = new ScriptedLlm([
       useTool('get_policy', { topic: 'returns' }),
-      (req) => (expect(lastToolResult(req)).toMatchObject({ available: false, instruction: expect.stringContaining('escalate') }), useTool('escalate', { reason: 'Питання про повернення, політики немає' })),
+      (req) => (
+        expect(lastToolResult(req)).toMatchObject({ available: false, instruction: expect.stringContaining('escalate') }),
+        useTool('escalate', { reason: 'Питання про повернення, політики немає' })
+      ),
       say('Щодо повернення вам відповість менеджер.'),
     ]);
     const s = await setup(llm);
     await customerWrites(s, 'Як повернути товар?');
-    expect(lastRun(s)).toMatchObject({ status: 'escalated' });
-    expect(aiMsgs(s)).toMatchObject([{ text: 'Щодо повернення вам відповість менеджер.' }]);
+    expect(await lastRun(s)).toMatchObject({ status: 'escalated' });
+    expect(await aiMsgs(s)).toMatchObject([{ text: 'Щодо повернення вам відповість менеджер.' }]);
   });
 
   it('a model that ignores the missing policy and answers anyway is blocked', async () => {
@@ -116,16 +119,20 @@ describe('agent and policies', () => {
     const s = await setup(llm);
     await customerWrites(s, 'Можна повернути?');
     expect(llm.calls[2]!.messages.at(-1)!.content).toContain('no returns policy text');
-    expect(lastRun(s)).toMatchObject({ status: 'escalated', detail: 'GUARD_BLOCKED' });
-    expect(aiMsgs(s)).toHaveLength(0);
+    expect(await lastRun(s)).toMatchObject({ status: 'escalated', detail: 'GUARD_BLOCKED' });
+    expect(await aiMsgs(s)).toHaveLength(0);
   });
 
   it('policy text is shop-scoped: the tool never returns another shop’s text', async () => {
-    const llm = new ScriptedLlm([useTool('get_policy', { topic: 'returns' }), (req) => (expect(lastToolResult(req).available).toBe(false), useTool('escalate', { reason: 'немає політики' })), say('Передам менеджеру.')]);
+    const llm = new ScriptedLlm([
+      useTool('get_policy', { topic: 'returns' }),
+      (req) => (expect(lastToolResult(req).available).toBe(false), useTool('escalate', { reason: 'немає політики' })),
+      say('Передам менеджеру.'),
+    ]);
     const s = await setup(llm);
-    const other = a!.shops.create({ name: 'Other', slug: 'other-shop' }).id;
-    a!.policies.save(other, 'returns', RETURNS, null);
+    const other = (await a!.shops.create({ name: 'Other', slug: 'other-shop' })).id;
+    await a!.policies.save(other, 'returns', RETURNS, null);
     await customerWrites(s, 'Повернення?');
-    expect(lastRun(s).status).toBe('escalated');
+    expect((await lastRun(s)).status).toBe('escalated');
   });
 });

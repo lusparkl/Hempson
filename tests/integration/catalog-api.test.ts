@@ -35,7 +35,11 @@ describe('catalog API', () => {
     expect(r.status).toBe(201);
     expect(r.body).toMatchObject({ name: 'Футболка', currency: 'UAH', priceMinor: 49900 });
     expect(r.body.variants[0]).toMatchObject({ sku: 'TEE-1', stock: 3, priceMinor: 49900, priceOverrideMinor: null });
-    const withV = await call(a, owner.token, 'POST', `/v1/shops/${shop}/products`, { name: 'Куртка', priceMinor: 1000, variants: [{ sku: 'j-m', options: { size: 'M' }, priceMinor: 1500 }] });
+    const withV = await call(a, owner.token, 'POST', `/v1/shops/${shop}/products`, {
+      name: 'Куртка',
+      priceMinor: 1000,
+      variants: [{ sku: 'j-m', options: { size: 'M' }, priceMinor: 1500 }],
+    });
     expect(withV.body.variants[0].priceMinor).toBe(1500);
   });
 
@@ -188,17 +192,17 @@ describe('hardening', () => {
     const day = 86_400_000;
     let now = Date.now();
     const repo = new AuthRepository(a.handle, () => new Date(now));
-    const expired = repo.createSession(userId, day);
-    const revoked = repo.createSession(userId, 30 * day);
-    repo.revokeSession(revoked.id);
-    const live = repo.createSession(userId, 30 * day);
-    expect(repo.purgeDeadSessions()).toBe(0);
+    const expired = await repo.createSession(userId, day);
+    const revoked = await repo.createSession(userId, 30 * day);
+    await repo.revokeSession(revoked.id);
+    const live = await repo.createSession(userId, 30 * day);
+    expect(await repo.purgeDeadSessions()).toBe(0);
     now += 6 * day;
-    expect(repo.purgeDeadSessions()).toBe(0);
+    expect(await repo.purgeDeadSessions()).toBe(0);
     now += 3 * day;
-    expect(repo.purgeDeadSessions()).toBe(2);
-    expect(repo.findSession(live.token)).toBeDefined();
-    expect(repo.findSession(expired.token)).toBeUndefined();
+    expect(await repo.purgeDeadSessions()).toBe(2);
+    expect(await repo.findSession(live.token)).toBeDefined();
+    expect(await repo.findSession(expired.token)).toBeUndefined();
     expect((await call(a, u.token, 'GET', '/v1/auth/me')).status).toBe(200);
   });
 });

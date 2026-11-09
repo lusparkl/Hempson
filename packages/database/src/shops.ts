@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, DbHandle } from './db';
+import { isUniqueViolation } from './dialect';
 import * as t from './schema';
 
 export type ShopRow = typeof t.shops.$inferSelect;
@@ -54,8 +55,6 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   return r.data;
 }
 
-const isUniqueViolation = (e: unknown) => (e as { code?: string })?.code === 'SQLITE_CONSTRAINT_UNIQUE';
-
 /** Internal service: no HTTP exposure and no authorization yet (Feature 2 adds memberships). */
 export class ShopRepository {
   readonly db: Db;
@@ -66,7 +65,12 @@ export class ShopRepository {
     this.db = handle.db;
   }
 
-  create(input: CreateShopInput): ShopRow {
+  async create(input: CreateShopInput): Promise<ShopRow> {
+    return this.createTx(input);
+  }
+
+  /** Sync body of `create`: runs inside the caller's transaction. Package-internal. */
+  createTx(input: CreateShopInput): ShopRow {
     const v = parse(createSchema, input);
     const ts = this.clock().toISOString();
     const row: ShopRow = { id: randomUUID(), ...v, storefrontEnabled: false, createdAt: ts, updatedAt: ts };
@@ -79,19 +83,19 @@ export class ShopRepository {
     return row;
   }
 
-  get(id: string): ShopRow | undefined {
+  async get(id: string): Promise<ShopRow | undefined> {
     return this.db.select().from(t.shops).where(eq(t.shops.id, id)).get();
   }
 
-  getBySlug(slugValue: string): ShopRow | undefined {
+  async getBySlug(slugValue: string): Promise<ShopRow | undefined> {
     return this.db.select().from(t.shops).where(eq(t.shops.slug, slugValue)).get();
   }
 
-  list(): ShopRow[] {
+  async list(): Promise<ShopRow[]> {
     return this.db.select().from(t.shops).orderBy(asc(t.shops.createdAt), asc(t.shops.slug)).all();
   }
 
-  update(id: string, input: UpdateShopInput): ShopRow {
+  async update(id: string, input: UpdateShopInput): Promise<ShopRow> {
     const v = parse(updateSchema, input);
     try {
       const row = this.db

@@ -1,5 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
+import type { CredentialVault } from './credentials';
 import type { Db, DbHandle } from './db';
 import * as t from './schema';
 
@@ -31,15 +32,25 @@ export class TelegramRepository {
     return this.clock().toISOString();
   }
 
-  getChannel(shopId: string): TelegramChannelRow | undefined {
+  async getChannel(shopId: string): Promise<TelegramChannelRow | undefined> {
+    return this.getChannelTx(shopId);
+  }
+
+  /** Sync body of `getChannel`: runs inside the caller's transaction. Package-internal. */
+  getChannelTx(shopId: string): TelegramChannelRow | undefined {
     return this.db.select().from(t.telegramChannels).where(eq(t.telegramChannels.shopId, shopId)).get();
   }
 
-  findByBotId(botId: string): TelegramChannelRow | undefined {
+  async findByBotId(botId: string): Promise<TelegramChannelRow | undefined> {
+    return this.findByBotIdTx(botId);
+  }
+
+  /** Sync body of `findByBotId`: runs inside the caller's transaction. Package-internal. */
+  findByBotIdTx(botId: string): TelegramChannelRow | undefined {
     return this.db.select().from(t.telegramChannels).where(eq(t.telegramChannels.botId, botId)).get();
   }
 
-  findByWebhookId(webhookId: string): TelegramChannelRow | undefined {
+  async findByWebhookId(webhookId: string): Promise<TelegramChannelRow | undefined> {
     return this.db.select().from(t.telegramChannels).where(eq(t.telegramChannels.webhookId, webhookId)).get();
   }
 
@@ -48,24 +59,46 @@ export class TelegramRepository {
     return timingSafeEqual(sha(given), Buffer.from(ch.webhookAuthHash, 'hex'));
   }
 
+  /** Saves the channel and its token as one atomic step. */
+  async connect(shopId: string, c: { botId: string; botUsername: string | null; webhookId: string; secret: string }, vault: CredentialVault, token: string): Promise<void> {
+    this.handle.transaction(() => {
+      this.upsertChannelTx(shopId, c);
+      vault.saveTx(shopId, 'telegram_bot', token);
+    });
+  }
+
   /** Links a bot to a shop with a fresh webhook path and secret (re-connecting replaces both). */
-  upsertChannel(shopId: string, c: { botId: string; botUsername: string | null; webhookId: string; secret: string }): TelegramChannelRow {
-    return this.handle.raw.transaction(() => {
+  async upsertChannel(shopId: string, c: { botId: string; botUsername: string | null; webhookId: string; secret: string }): Promise<TelegramChannelRow> {
+    return this.upsertChannelTx(shopId, c);
+  }
+
+  /** Sync body of `upsertChannel`: runs inside the caller's transaction. Package-internal. */
+  upsertChannelTx(shopId: string, c: { botId: string; botUsername: string | null; webhookId: string; secret: string }): TelegramChannelRow {
+    return this.handle.transaction(() => {
       const ts = this.now();
-      const owner = this.findByBotId(c.botId);
+      const owner = this.findByBotIdTx(c.botId);
       if (owner && owner.shopId !== shopId) throw new TelegramBotTakenError();
-      const values = { botId: c.botId, botUsername: c.botUsername, webhookId: c.webhookId, webhookAuthHash: sha(c.secret).toString('hex'), status: 'connected' as const, lastError: null, connectedAt: ts, updatedAt: ts };
-      const mine = this.getChannel(shopId);
+      const values = {
+        botId: c.botId,
+        botUsername: c.botUsername,
+        webhookId: c.webhookId,
+        webhookAuthHash: sha(c.secret).toString('hex'),
+        status: 'connected' as const,
+        lastError: null,
+        connectedAt: ts,
+        updatedAt: ts,
+      };
+      const mine = this.getChannelTx(shopId);
       if (mine) return this.db.update(t.telegramChannels).set(values).where(eq(t.telegramChannels.id, mine.id)).returning().get()!;
       return this.db
         .insert(t.telegramChannels)
         .values({ id: randomUUID(), shopId, ...values })
         .returning()
         .get();
-    })();
+    });
   }
 
-  setNeedsReconnect(shopId: string, code: string): boolean {
+  async setNeedsReconnect(shopId: string, code: string): Promise<boolean> {
     const r = this.db
       .update(t.telegramChannels)
       .set({ status: 'needs_reconnect', lastError: code, updatedAt: this.now() })
@@ -74,7 +107,7 @@ export class TelegramRepository {
     return r.changes > 0;
   }
 
-  deleteChannel(shopId: string): boolean {
+  async deleteChannel(shopId: string): Promise<boolean> {
     return this.db.delete(t.telegramChannels).where(eq(t.telegramChannels.shopId, shopId)).run().changes > 0;
   }
 }

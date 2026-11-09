@@ -10,11 +10,11 @@ if (!email) {
 }
 const cfg = loadConfig();
 const h = openDb(cfg.dbFile);
-runMigrations(h);
+await runMigrations(h);
 const auth = new AuthRepository(h);
-const user = auth.getUserByEmail(email);
+const user = await auth.getUserByEmail(email);
 if (user) {
-  const link = resetLink(cfg.dashboardUrl, auth.createPasswordReset(user.id, RESET_TTL_MS));
+  const link = resetLink(cfg.dashboardUrl, await auth.createPasswordReset(user.id, RESET_TTL_MS));
   console.log(`One-time password reset link, valid for 1 hour. Anyone holding it can take over this account:\n\n${link}\n`);
 } else {
   console.error('No user with that email');

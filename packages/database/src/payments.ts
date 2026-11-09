@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import type { CredentialVault } from './credentials';
 import type { Db, DbHandle } from './db';
 import { OrderRepository } from './orders';
 import type { PAYMENT_PROVIDERS, PAYMENT_STATES } from './order-kinds';
+import { orderedId } from './ids';
 import * as t from './schema';
 
 export type PaymentSettingsRow = typeof t.shopPaymentSettings.$inferSelect;
@@ -87,7 +88,12 @@ export class PaymentRepository {
 
   // ---------- settings ----------
 
-  getSettings(shopId: string): PaymentSettingsRow {
+  async getSettings(shopId: string): Promise<PaymentSettingsRow> {
+    return this.getSettingsTx(shopId);
+  }
+
+  /** Sync body of `getSettings`: runs inside the caller's transaction. Package-internal. */
+  getSettingsTx(shopId: string): PaymentSettingsRow {
     return (
       this.db.select().from(t.shopPaymentSettings).where(eq(t.shopPaymentSettings.shopId, shopId)).get() ?? {
         shopId,
@@ -105,35 +111,60 @@ export class PaymentRepository {
   }
 
   private write(shopId: string, patch: Partial<Omit<PaymentSettingsRow, 'shopId'>>): PaymentSettingsRow {
-    const row = { ...this.getSettings(shopId), ...patch, shopId, updatedAt: this.now() };
+    const row = { ...this.getSettingsTx(shopId), ...patch, shopId, updatedAt: this.now() };
     const { shopId: _s, ...set } = row;
     this.db.insert(t.shopPaymentSettings).values(row).onConflictDoUpdate({ target: t.shopPaymentSettings.shopId, set }).run();
     return row;
   }
 
-  updateSettings(shopId: string, input: z.input<typeof settingsInput>): PaymentSettingsRow {
+  async updateSettings(shopId: string, input: z.input<typeof settingsInput>): Promise<PaymentSettingsRow> {
     const r = settingsInput.safeParse(input);
     if (!r.success) throw new PaymentValidationError(issues(r.error));
-    const next = { ...this.getSettings(shopId), ...Object.fromEntries(Object.entries(r.data).filter(([, v]) => v !== undefined)) };
+    const next = { ...this.getSettingsTx(shopId), ...Object.fromEntries(Object.entries(r.data).filter(([, v]) => v !== undefined)) };
     if (next.reminderHoursBefore >= next.paymentTimeoutHours) throw new PaymentValidationError(['reminderHoursBefore: must be less than paymentTimeoutHours']);
     return this.write(shopId, { paymentTimeoutHours: next.paymentTimeoutHours, reminderHoursBefore: next.reminderHoursBefore });
   }
 
-  /** Merchant identity, public key and a fresh webhook id, saved when the owner connects the provider token. */
-  setProvider(shopId: string, p: { webhookId: string; merchantId: string | null; merchantName: string | null; pubKey: string }): PaymentSettingsRow {
-    return this.write(shopId, { webhookId: p.webhookId, merchantId: p.merchantId, merchantName: p.merchantName, providerPubKey: p.pubKey, providerPubKeyAt: this.now(), lastError: null });
+  /** Stores the Monobank token and the provider settings as one atomic step. */
+  async connect(
+    shopId: string,
+    p: { webhookId: string; merchantId: string | null; merchantName: string | null; pubKey: string },
+    vault: CredentialVault,
+    token: string,
+  ): Promise<void> {
+    this.handle.transaction(() => {
+      vault.saveTx(shopId, 'monobank', token);
+      this.setProviderTx(shopId, p);
+    });
   }
 
-  setPubKey(shopId: string, pubKey: string): void {
+  /** Merchant identity, public key and a fresh webhook id, saved when the owner connects the provider token. */
+  async setProvider(shopId: string, p: { webhookId: string; merchantId: string | null; merchantName: string | null; pubKey: string }): Promise<PaymentSettingsRow> {
+    return this.setProviderTx(shopId, p);
+  }
+
+  /** Sync body of `setProvider`: runs inside the caller's transaction. Package-internal. */
+  setProviderTx(shopId: string, p: { webhookId: string; merchantId: string | null; merchantName: string | null; pubKey: string }): PaymentSettingsRow {
+    return this.write(shopId, {
+      webhookId: p.webhookId,
+      merchantId: p.merchantId,
+      merchantName: p.merchantName,
+      providerPubKey: p.pubKey,
+      providerPubKeyAt: this.now(),
+      lastError: null,
+    });
+  }
+
+  async setPubKey(shopId: string, pubKey: string): Promise<void> {
     this.write(shopId, { providerPubKey: pubKey, providerPubKeyAt: this.now() });
   }
 
-  setLastError(shopId: string, code: string | null): void {
+  async setLastError(shopId: string, code: string | null): Promise<void> {
     this.write(shopId, { lastError: code });
   }
 
   /** The shop a webhook path belongs to. Not shop-scoped by design: the opaque id is the only thing the caller has. */
-  findByWebhookId(webhookId: string): PaymentSettingsRow | undefined {
+  async findByWebhookId(webhookId: string): Promise<PaymentSettingsRow | undefined> {
     return this.db.select().from(t.shopPaymentSettings).where(eq(t.shopPaymentSettings.webhookId, webhookId)).get();
   }
 
@@ -143,16 +174,16 @@ export class PaymentRepository {
    * Claims a new payment link for an unpaid prepaid order: refused while another attempt is active (the partial unique
    * index makes two concurrent claims impossible). The amount and currency are the order's, computed by the server.
    */
-  claim(shopId: string, draftId: string, p: { provider: PaymentProvider; expiresAt: string }): OrderPaymentRow {
-    return this.handle.raw.transaction(() => {
-      const d = this.orders.getDraft(shopId, draftId)?.draft;
+  async claim(shopId: string, draftId: string, p: { provider: PaymentProvider; expiresAt: string }): Promise<OrderPaymentRow> {
+    return this.handle.transaction(() => {
+      const d = this.orders.getDraftTx(shopId, draftId)?.draft;
       if (!d) throw new PaymentStateError('order not found');
       if (d.status !== 'awaiting_payment' || d.paymentMethod !== 'prepaid') throw new PaymentStateError(`no payment link can be created for an order in status ${d.status}`);
-      const cur = this.activeFor(shopId, draftId);
+      const cur = this.activeForTx(shopId, draftId);
       if (cur) throw new PaymentStateError(cur.state === 'creating' ? 'the payment link is being created' : 'this order already has a payment link');
       const ts = this.now();
       const row: OrderPaymentRow = {
-        id: randomUUID(),
+        id: orderedId(),
         shopId,
         draftId,
         provider: p.provider,
@@ -175,10 +206,10 @@ export class PaymentRepository {
       };
       this.db.insert(t.orderPayments).values(row).run();
       return row;
-    })();
+    });
   }
 
-  completeCreate(shopId: string, paymentId: string, inv: { invoiceId: string; pageUrl: string }): OrderPaymentRow {
+  async completeCreate(shopId: string, paymentId: string, inv: { invoiceId: string; pageUrl: string }): Promise<OrderPaymentRow> {
     const r = this.db
       .update(t.orderPayments)
       .set({ state: 'created', invoiceId: inv.invoiceId, pageUrl: inv.pageUrl, updatedAt: this.now() })
@@ -190,7 +221,7 @@ export class PaymentRepository {
   }
 
   /** No invoice is known for this attempt: it stops being active, so a member (or a later call) may create a new link. */
-  failCreate(shopId: string, paymentId: string, code: string): void {
+  async failCreate(shopId: string, paymentId: string, code: string): Promise<void> {
     this.db
       .update(t.orderPayments)
       .set({ state: 'create_failed', active: false, flag: code, updatedAt: this.now() })
@@ -199,7 +230,7 @@ export class PaymentRepository {
   }
 
   /** Claims the one link message of an attempt (compare-and-set). */
-  claimLinkMessage(shopId: string, paymentId: string): boolean {
+  async claimLinkMessage(shopId: string, paymentId: string): Promise<boolean> {
     const r = this.db
       .update(t.orderPayments)
       .set({ linkSentAt: this.now(), updatedAt: this.now() })
@@ -208,12 +239,16 @@ export class PaymentRepository {
     return r.changes > 0;
   }
 
-  setLinkDelivery(shopId: string, paymentId: string, outcome: string): void {
-    this.db.update(t.orderPayments).set({ linkDelivery: outcome.slice(0, 64), updatedAt: this.now() }).where(and(eq(t.orderPayments.shopId, shopId), eq(t.orderPayments.id, paymentId))).run();
+  async setLinkDelivery(shopId: string, paymentId: string, outcome: string): Promise<void> {
+    this.db
+      .update(t.orderPayments)
+      .set({ linkDelivery: outcome.slice(0, 64), updatedAt: this.now() })
+      .where(and(eq(t.orderPayments.shopId, shopId), eq(t.orderPayments.id, paymentId)))
+      .run();
   }
 
   /** The unpaid invoice was deactivated at the provider (order cancelled or expired). */
-  markRemoved(shopId: string, paymentId: string): void {
+  async markRemoved(shopId: string, paymentId: string): Promise<void> {
     this.db
       .update(t.orderPayments)
       .set({ state: 'removed', active: false, updatedAt: this.now() })
@@ -221,15 +256,28 @@ export class PaymentRepository {
       .run();
   }
 
-  markChecked(shopId: string, paymentId: string): void {
-    this.db.update(t.orderPayments).set({ lastCheckedAt: this.now() }).where(and(eq(t.orderPayments.shopId, shopId), eq(t.orderPayments.id, paymentId))).run();
+  async markChecked(shopId: string, paymentId: string): Promise<void> {
+    this.db
+      .update(t.orderPayments)
+      .set({ lastCheckedAt: this.now() })
+      .where(and(eq(t.orderPayments.shopId, shopId), eq(t.orderPayments.id, paymentId)))
+      .run();
   }
 
-  get(shopId: string, paymentId: string): OrderPaymentRow | undefined {
-    return this.db.select().from(t.orderPayments).where(and(eq(t.orderPayments.shopId, shopId), eq(t.orderPayments.id, paymentId))).get();
+  async get(shopId: string, paymentId: string): Promise<OrderPaymentRow | undefined> {
+    return this.db
+      .select()
+      .from(t.orderPayments)
+      .where(and(eq(t.orderPayments.shopId, shopId), eq(t.orderPayments.id, paymentId)))
+      .get();
   }
 
-  activeFor(shopId: string, draftId: string): OrderPaymentRow | undefined {
+  async activeFor(shopId: string, draftId: string): Promise<OrderPaymentRow | undefined> {
+    return this.activeForTx(shopId, draftId);
+  }
+
+  /** Sync body of `activeFor`: runs inside the caller's transaction. Package-internal. */
+  activeForTx(shopId: string, draftId: string): OrderPaymentRow | undefined {
     return this.db
       .select()
       .from(t.orderPayments)
@@ -238,39 +286,39 @@ export class PaymentRepository {
   }
 
   /** The newest attempt of each order, for order views. */
-  latestFor(shopId: string, draftIds: string[]): Map<string, OrderPaymentRow> {
+  async latestFor(shopId: string, draftIds: string[]): Promise<Map<string, OrderPaymentRow>> {
     const out = new Map<string, OrderPaymentRow>();
     if (!draftIds.length) return out;
     const rows = this.db
       .select()
       .from(t.orderPayments)
       .where(and(eq(t.orderPayments.shopId, shopId), inArray(t.orderPayments.draftId, draftIds)))
-      .orderBy(desc(t.orderPayments.createdAt), sql`rowid desc`)
+      .orderBy(desc(t.orderPayments.createdAt), desc(t.orderPayments.id))
       .all();
     for (const r of rows) if (!out.has(r.draftId)) out.set(r.draftId, r);
     return out;
   }
 
-  listFor(shopId: string, draftId: string): OrderPaymentRow[] {
+  async listFor(shopId: string, draftId: string): Promise<OrderPaymentRow[]> {
     return this.db
       .select()
       .from(t.orderPayments)
       .where(and(eq(t.orderPayments.shopId, shopId), eq(t.orderPayments.draftId, draftId)))
-      .orderBy(asc(t.orderPayments.createdAt), sql`rowid`)
+      .orderBy(asc(t.orderPayments.createdAt), asc(t.orderPayments.id))
       .all();
   }
 
-  listEvents(shopId: string, paymentId: string): PaymentEventRow[] {
+  async listEvents(shopId: string, paymentId: string): Promise<PaymentEventRow[]> {
     return this.db
       .select()
       .from(t.paymentEvents)
       .where(and(eq(t.paymentEvents.shopId, shopId), eq(t.paymentEvents.paymentId, paymentId)))
-      .orderBy(asc(t.paymentEvents.createdAt), sql`rowid`)
+      .orderBy(asc(t.paymentEvents.createdAt), asc(t.paymentEvents.id))
       .all();
   }
 
   /** Open invoices across shops for the reconciliation job, least recently checked first. */
-  listToReconcile(createdBefore: string, limit = 200): OrderPaymentRow[] {
+  async listToReconcile(createdBefore: string, limit = 200): Promise<OrderPaymentRow[]> {
     return this.db
       .select()
       .from(t.orderPayments)
@@ -287,8 +335,8 @@ export class PaymentRepository {
    * - amount or currency different from the stored attempt: nothing applied, the attempt is flagged (`mismatch`);
    * - `success` moves the order `awaiting_payment` to `paid` (`provider:<name>`) in the same transaction.
    */
-  applyStatus(shopId: string, provider: PaymentProvider, ev: ProviderEvent): { outcome: ApplyOutcome; payment: OrderPaymentRow | null } {
-    return this.handle.raw.transaction(() => {
+  async applyStatus(shopId: string, provider: PaymentProvider, ev: ProviderEvent): Promise<{ outcome: ApplyOutcome; payment: OrderPaymentRow | null }> {
+    return this.handle.transaction(() => {
       const pay = this.db
         .select()
         .from(t.orderPayments)
@@ -304,7 +352,7 @@ export class PaymentRepository {
       const ins = this.db
         .insert(t.paymentEvents)
         .values({
-          id: randomUUID(),
+          id: orderedId(),
           shopId,
           paymentId: pay?.id ?? null,
           provider,
@@ -341,8 +389,8 @@ export class PaymentRepository {
         .returning()
         .get()!;
       if (ev.status === 'success') {
-        if (this.orders.markPaid(shopId, pay.draftId, `provider:${provider}`, `invoice ${ev.invoiceId}`)) return { outcome: 'paid' as const, payment: p };
-        const status = this.orders.getDraft(shopId, pay.draftId)?.draft.status;
+        if (this.orders.markPaidTx(shopId, pay.draftId, `provider:${provider}`, `invoice ${ev.invoiceId}`)) return { outcome: 'paid' as const, payment: p };
+        const status = this.orders.getDraftTx(shopId, pay.draftId)?.draft.status;
         if (status === 'cancelled' || status === 'rejected') {
           const flagged = this.db.update(t.orderPayments).set({ flag: 'PAID_AFTER_CANCEL', updatedAt: this.now() }).where(eq(t.orderPayments.id, pay.id)).returning().get()!;
           return { outcome: 'paid_after_cancel' as const, payment: flagged };
@@ -351,7 +399,7 @@ export class PaymentRepository {
       }
       const outcome: ApplyOutcome = ev.status === 'failure' ? 'failed' : ev.status === 'expired' ? 'expired' : ev.status === 'reversed' ? 'reversed' : 'updated';
       return { outcome, payment: p };
-    })();
+    });
   }
 
   /** Whether `ev` comes after the last applied status of this attempt. */

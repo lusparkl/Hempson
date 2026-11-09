@@ -16,14 +16,14 @@ export class ApiKeyRepository {
   }
 
   /** Returns the plaintext key ONCE. */
-  create(name: string): { key: string; row: ApiKeyRow } {
+  async create(name: string): Promise<{ key: string; row: ApiKeyRow }> {
     const key = `hep_${randomBytes(32).toString('base64url')}`;
     const row: ApiKeyRow = { id: randomUUID(), name, hashedKey: hashKey(key), createdAt: now(), revokedAt: null };
     this.db.insert(t.apiKeys).values(row).run();
     return { key, row };
   }
 
-  find(key: string): ApiKeyRow | undefined {
+  async find(key: string): Promise<ApiKeyRow | undefined> {
     return this.db
       .select()
       .from(t.apiKeys)
@@ -31,7 +31,7 @@ export class ApiKeyRepository {
       .get();
   }
 
-  revoke(id: string): void {
+  async revoke(id: string): Promise<void> {
     this.db.update(t.apiKeys).set({ revokedAt: now() }).where(eq(t.apiKeys.id, id)).run();
   }
 }

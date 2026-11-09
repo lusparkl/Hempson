@@ -8,14 +8,18 @@ import { TelegramNotifier, renderNotification } from '../../apps/api/src/service
 const dir = mkdtempSync(path.join(os.tmpdir(), 'hepson-notifier-'));
 afterEach(() => vi.restoreAllMocks());
 
-function setup(fetchImpl: typeof fetch, log = { warn: vi.fn() }) {
+async function setup(fetchImpl: typeof fetch, log = { warn: vi.fn() }) {
   const handle = openDb(path.join(dir, `${Math.random()}.db`));
-  runMigrations(handle);
+  await runMigrations(handle);
   const shops = new ShopRepository(handle);
   const agent = new AgentRepository(handle);
   const conversations = new ConversationRepository(handle);
-  const shop = shops.create({ name: 'Магазин', slug: 'shop-one' });
-  const { conversation } = conversations.ensureConversation(shop.id, { channel: 'mock', conversationExternalId: 't1', customer: { externalId: 't1', displayName: 'Олена', handle: null } });
+  const shop = await shops.create({ name: 'Магазин', slug: 'shop-one' });
+  const { conversation } = await conversations.ensureConversation(shop.id, {
+    channel: 'mock',
+    conversationExternalId: 't1',
+    customer: { externalId: 't1', displayName: 'Олена', handle: null },
+  });
   const n = new TelegramNotifier({ token: 'SECRET:TOKEN', agent, shops, conversations, log, fetchImpl, baseUrl: 'https://tg.test' });
   return { shop, agent, conversation, n, log };
 }
@@ -23,8 +27,8 @@ function setup(fetchImpl: typeof fetch, log = { warn: vi.fn() }) {
 describe('TelegramNotifier', () => {
   it('posts one plain-text message to the shop chat; the token is only in the URL', async () => {
     const f = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
-    const s = setup(f as never);
-    s.agent.updateNotifySettings(s.shop.id, { telegramChatId: '-100123' });
+    const s = await setup(f as never);
+    await s.agent.updateNotifySettings(s.shop.id, { telegramChatId: '-100123' });
     s.n.notify({ kind: 'escalation', shopId: s.shop.id, conversationId: s.conversation.id, reason: 'Знижка <b>30%</b>' });
     await s.n.whenIdle();
     expect(f).toHaveBeenCalledOnce();
@@ -39,7 +43,7 @@ describe('TelegramNotifier', () => {
 
   it('sends nothing when the shop has no chat id', async () => {
     const f = vi.fn();
-    const s = setup(f as never);
+    const s = await setup(f as never);
     s.n.notify({ kind: 'escalation', shopId: s.shop.id, conversationId: s.conversation.id, reason: 'x' });
     await s.n.whenIdle();
     expect(f).not.toHaveBeenCalled();
@@ -47,8 +51,8 @@ describe('TelegramNotifier', () => {
 
   it('a failing or throwing Telegram never throws and never logs the token', async () => {
     for (const f of [vi.fn(async () => new Response('no', { status: 403 })), vi.fn(async () => Promise.reject(new TypeError('connect https://tg.test/botSECRET:TOKEN failed')))]) {
-      const s = setup(f as never);
-      s.agent.updateNotifySettings(s.shop.id, { telegramChatId: '1' });
+      const s = await setup(f as never);
+      await s.agent.updateNotifySettings(s.shop.id, { telegramChatId: '1' });
       s.n.notify({ kind: 'order_draft', shopId: s.shop.id, conversationId: s.conversation.id, draftId: 'd', currency: 'UAH', totalMinor: 100, itemCount: 1 });
       await s.n.whenIdle();
       expect(s.log.warn).toHaveBeenCalledOnce();

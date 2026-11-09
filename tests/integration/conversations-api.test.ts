@@ -22,16 +22,16 @@ async function setup() {
   const shop = (await call(a, owner, 'POST', '/v1/shops', { name: 'S', slug: 'shop-one' })).body.shopId as string;
   await call(a, owner, 'POST', `/v1/shops/${shop}/members`, { email: 'mgr@example.com', role: 'manager' });
   const other = (await call(a, out, 'POST', '/v1/shops', { name: 'O', slug: 'shop-two' })).body.shopId as string;
-  const seed = (shopId: string) => {
-    const x = a.conversations.ingestMessage(shopId, {
+  const seed = async (shopId: string) => {
+    const x = await a.conversations.ingestMessage(shopId, {
       channel: 'instagram',
       conversationExternalId: 't1',
       customer: { externalId: 'u1', displayName: 'Оксана' },
       externalId: 'm1',
       text: 'Привіт',
     });
-    a.conversations.ingestMessage(shopId, { channel: 'instagram', conversationExternalId: 't1', customer: { externalId: 'u1' }, externalId: 'm2', text: 'Є розмір M?' });
-    a.conversations.recordOutbound(shopId, x.conversation.id, { senderType: 'ai', text: 'Так' });
+    await a.conversations.ingestMessage(shopId, { channel: 'instagram', conversationExternalId: 't1', customer: { externalId: 'u1' }, externalId: 'm2', text: 'Є розмір M?' });
+    await a.conversations.recordOutbound(shopId, x.conversation.id, { senderType: 'ai', text: 'Так' });
     return x;
   };
   return { owner, mgr, out, shop, other, seed };
@@ -40,7 +40,7 @@ async function setup() {
 describe('conversation read API', () => {
   it('any member lists customers, conversations and messages', async () => {
     const { owner, mgr, shop, seed } = await setup();
-    const x = seed(shop);
+    const x = await seed(shop);
     for (const token of [owner, mgr]) {
       const customers = await call(a, token, 'GET', `/v1/shops/${shop}/customers`);
       expect(customers.body).toMatchObject({ total: 1, items: [{ customerId: x.customer.id, channel: 'instagram', displayName: 'Оксана' }] });
@@ -64,7 +64,7 @@ describe('conversation read API', () => {
 
   it('pages messages with limit and beforeSeq', async () => {
     const { owner, shop, seed } = await setup();
-    const x = seed(shop);
+    const x = await seed(shop);
     const p1 = await call(a, owner, 'GET', `/v1/shops/${shop}/conversations/${x.conversation.id}/messages?limit=2`);
     expect(p1.body).toMatchObject({ hasMore: true, items: [{ seq: 2 }, { seq: 3 }] });
     const p2 = await call(a, owner, 'GET', `/v1/shops/${shop}/conversations/${x.conversation.id}/messages?limit=2&beforeSeq=2`);
@@ -73,8 +73,8 @@ describe('conversation read API', () => {
 
   it('non-members get 404 and see nothing; ids from another shop are 404', async () => {
     const { out, owner, shop, other, seed } = await setup();
-    const x = seed(shop);
-    const y = seed(other);
+    const x = await seed(shop);
+    const y = await seed(other);
     for (const path of ['customers', 'conversations', `conversations/${x.conversation.id}`, `conversations/${x.conversation.id}/messages`]) {
       expect((await call(a, out, 'GET', `/v1/shops/${shop}/${path}`)).status).toBe(404);
     }

@@ -1,6 +1,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, DbHandle } from './db';
+import { queryRow } from './dialect';
 import { PLAN_NAMES, PLANS } from './order-kinds';
 import * as t from './schema';
 
@@ -53,7 +54,12 @@ export class PlanRepository {
     return this.clock().toISOString();
   }
 
-  get(shopId: string): ShopPlan {
+  async get(shopId: string): Promise<ShopPlan> {
+    return this.getTx(shopId);
+  }
+
+  /** Sync body of `get`: runs inside the caller's transaction. Package-internal. */
+  getTx(shopId: string): ShopPlan {
     const r = this.db.select().from(t.shopPlans).where(eq(t.shopPlans.shopId, shopId)).get();
     const plan = (r?.plan as PlanName | undefined) ?? this.defaultPlan;
     const customCap = r?.customCap ?? null;
@@ -61,7 +67,7 @@ export class PlanRepository {
   }
 
   /** Operator only (the route checks the admin key). `customCap` null or absent means the plan's own cap. */
-  set(shopId: string, input: z.input<typeof planInput>): ShopPlan {
+  async set(shopId: string, input: z.input<typeof planInput>): Promise<ShopPlan> {
     const r = planInput.safeParse(input);
     if (!r.success) throw new PlanValidationError(r.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; '));
     const row = { plan: r.data.plan, customCap: r.data.customCap ?? null, updatedAt: this.now() };
@@ -70,20 +76,19 @@ export class PlanRepository {
       .values({ shopId, ...row, capNoticeMonth: null })
       .onConflictDoUpdate({ target: t.shopPlans.shopId, set: row })
       .run();
-    return this.get(shopId);
+    return this.getTx(shopId);
   }
 
   /** This UTC month's AI replies against the cap. `exceptRunId`: the run asking (already `running`) does not count itself. */
-  usage(shopId: string, exceptRunId?: string): AiUsage {
-    const p = this.get(shopId);
+  async usage(shopId: string, exceptRunId?: string): Promise<AiUsage> {
+    const p = this.getTx(shopId);
     const m = utcMonth(this.clock());
-    const { n } = this.handle.raw
-      .prepare(
-        `select count(*) n from ai_runs
-         where shop_id = ? and created_at >= ? and created_at < ? and id != ?
+    const { n } = queryRow<{ n: number }>(
+      this.db,
+      sql`select count(*) n from ai_runs
+         where shop_id = ${shopId} and created_at >= ${m.start} and created_at < ${m.end} and id != ${exceptRunId ?? ''}
            and (status = 'running' or (reply_message_id is not null and status in ('replied', 'send_uncertain', 'escalated')))`,
-      )
-      .get(shopId, m.start, m.end, exceptRunId ?? '') as { n: number };
+    )!;
     return {
       plan: p.plan,
       aiReplyCap: p.aiReplyCap,
@@ -97,10 +102,10 @@ export class PlanRepository {
   }
 
   /** Claims the owner's cap notice for `month` (compare-and-set): true for exactly one caller per shop and month. */
-  claimCapNotice(shopId: string, month: string): boolean {
+  async claimCapNotice(shopId: string, month: string): Promise<boolean> {
     const r = this.db
       .insert(t.shopPlans)
-      .values({ shopId, plan: this.get(shopId).plan, customCap: null, capNoticeMonth: month, updatedAt: this.now() })
+      .values({ shopId, plan: this.getTx(shopId).plan, customCap: null, capNoticeMonth: month, updatedAt: this.now() })
       .onConflictDoUpdate({
         target: t.shopPlans.shopId,
         set: { capNoticeMonth: month },

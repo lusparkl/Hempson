@@ -20,14 +20,17 @@ export class WebChatValidationError extends Error {
 }
 
 /** `scheme://host[:port]` exactly as a browser sends it in `Origin`: no path, no trailing slash, no wildcard. */
-const origin = z.string().trim().refine((o) => {
-  try {
-    const u = new URL(o);
-    return (u.protocol === 'https:' || u.protocol === 'http:') && u.origin === o && !u.username && !u.password && !o.includes('*');
-  } catch {
-    return false;
-  }
-}, 'must be an exact origin such as https://shop.example (no path, no wildcard)');
+const origin = z
+  .string()
+  .trim()
+  .refine((o) => {
+    try {
+      const u = new URL(o);
+      return (u.protocol === 'https:' || u.protocol === 'http:') && u.origin === o && !u.username && !u.password && !o.includes('*');
+    } catch {
+      return false;
+    }
+  }, 'must be an exact origin such as https://shop.example (no path, no wildcard)');
 const configInput = z.strictObject({ enabled: z.boolean().optional(), allowedOrigins: z.array(origin).max(20).optional() });
 const sessionInput = z.strictObject({ displayName: z.string().trim().min(1).max(60).nullish() });
 
@@ -50,21 +53,37 @@ export class WebChatRepository {
     return this.clock().toISOString();
   }
 
-  getConfig(shopId: string): WebChatConfigRow | undefined {
+  async getConfig(shopId: string): Promise<WebChatConfigRow | undefined> {
+    return this.getConfigTx(shopId);
+  }
+
+  /** Sync body of `getConfig`: runs inside the caller's transaction. Package-internal. */
+  getConfigTx(shopId: string): WebChatConfigRow | undefined {
     return this.db.select().from(t.webChatConfigs).where(eq(t.webChatConfigs.shopId, shopId)).get();
   }
 
-  findByKey(widgetKey: string): WebChatConfigRow | undefined {
+  async findByKey(widgetKey: string): Promise<WebChatConfigRow | undefined> {
     return this.db.select().from(t.webChatConfigs).where(eq(t.webChatConfigs.widgetKey, widgetKey)).get();
   }
 
   /** Creates the config (disabled, no origins, fresh key) on first write. Origins are normalized to lowercase and deduplicated. */
-  updateConfig(shopId: string, input: z.input<typeof configInput>): WebChatConfigRow {
+  async updateConfig(shopId: string, input: z.input<typeof configInput>): Promise<WebChatConfigRow> {
+    return this.updateConfigTx(shopId, input);
+  }
+
+  /** Sync body of `updateConfig`: runs inside the caller's transaction. Package-internal. */
+  updateConfigTx(shopId: string, input: z.input<typeof configInput>): WebChatConfigRow {
     const r = configInput.safeParse(input);
     if (!r.success) throw new WebChatValidationError(r.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`));
-    const cur = this.getConfig(shopId);
+    const cur = this.getConfigTx(shopId);
     const origins = r.data.allowedOrigins ? [...new Set(r.data.allowedOrigins.map((o) => o.toLowerCase()))] : (cur?.allowedOrigins ?? []);
-    const row: WebChatConfigRow = { shopId, enabled: r.data.enabled ?? cur?.enabled ?? false, widgetKey: cur?.widgetKey ?? newKey(), allowedOrigins: origins, updatedAt: this.now() };
+    const row: WebChatConfigRow = {
+      shopId,
+      enabled: r.data.enabled ?? cur?.enabled ?? false,
+      widgetKey: cur?.widgetKey ?? newKey(),
+      allowedOrigins: origins,
+      updatedAt: this.now(),
+    };
     this.db
       .insert(t.webChatConfigs)
       .values(row)
@@ -74,12 +93,12 @@ export class WebChatRepository {
   }
 
   /** New widget key (old snippets stop working at once). Existing visitor sessions stay valid for the new key. */
-  rotateKey(shopId: string): WebChatConfigRow {
-    if (!this.getConfig(shopId)) this.updateConfig(shopId, {});
+  async rotateKey(shopId: string): Promise<WebChatConfigRow> {
+    if (!this.getConfigTx(shopId)) this.updateConfigTx(shopId, {});
     return this.db.update(t.webChatConfigs).set({ widgetKey: newKey(), updatedAt: this.now() }).where(eq(t.webChatConfigs.shopId, shopId)).returning().get()!;
   }
 
-  createSession(shopId: string, input: z.input<typeof sessionInput> = {}, ttlMs: number): { session: WebChatSessionRow; token: string } {
+  async createSession(shopId: string, input: z.input<typeof sessionInput> = {}, ttlMs: number): Promise<{ session: WebChatSessionRow; token: string }> {
     const r = sessionInput.safeParse(input);
     if (!r.success) throw new WebChatValidationError(r.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`));
     const token = VISITOR_TOKEN_PREFIX + randomBytes(24).toString('base64url');
@@ -99,7 +118,7 @@ export class WebChatRepository {
   }
 
   /** The live session behind a token, only for that shop (a token never works for another shop's key). */
-  findSession(shopId: string, token: string): WebChatSessionRow | undefined {
+  async findSession(shopId: string, token: string): Promise<WebChatSessionRow | undefined> {
     if (!token.startsWith(VISITOR_TOKEN_PREFIX) || token.length > 200) return undefined;
     return this.db
       .select()
@@ -108,12 +127,12 @@ export class WebChatRepository {
       .get();
   }
 
-  touchSession(sessionId: string): void {
+  async touchSession(sessionId: string): Promise<void> {
     this.db.update(t.webChatSessions).set({ lastSeenAt: this.now() }).where(eq(t.webChatSessions.id, sessionId)).run();
   }
 
   /** Visitor messages stored since `since` for the shop (daily cost cap). */
-  countInboundSince(shopId: string, since: string): number {
+  async countInboundSince(shopId: string, since: string): Promise<number> {
     return this.db
       .select({ n: sql<number>`count(*)` })
       .from(t.shopMessages)
@@ -123,7 +142,7 @@ export class WebChatRepository {
   }
 
   /** Deletes sessions that expired more than a week ago. Conversations and messages stay. */
-  purgeExpiredSessions(): number {
+  async purgeExpiredSessions(): Promise<number> {
     const cutoff = new Date(this.clock().getTime() - 7 * 86_400_000).toISOString();
     return this.db.delete(t.webChatSessions).where(lt(t.webChatSessions.expiresAt, cutoff)).run().changes;
   }

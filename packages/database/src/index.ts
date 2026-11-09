@@ -20,3 +20,4 @@ export * from './notices';
 export * from './plans';
 export * from './notifications';
 export * from './photo-index';
+export * from './shop-setup';

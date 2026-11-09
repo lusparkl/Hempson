@@ -270,10 +270,10 @@ const STATUS_LABEL: Record<string, string> = {
 /** Order states reached only through a verified payment, for a prepaid order (D24). */
 const PAID_STATES = new Set(['paid', 'shipped', 'delivered', 'returning', 'returned', 'refund_requested']);
 
-const orderView = ({ draft: d }: OrderDraft, facts: RunFacts, paymentRepo?: PaymentRepository) => {
+const orderView = async ({ draft: d }: OrderDraft, facts: RunFacts, paymentRepo?: PaymentRepository) => {
   facts.prices.add(d.totalMinor);
   if (d.ttn) facts.ttns.add(d.ttn);
-  const pay = d.paymentMethod === 'prepaid' ? paymentRepo?.latestFor(d.shopId, [d.id]).get(d.id) : undefined;
+  const pay = d.paymentMethod === 'prepaid' ? (await paymentRepo?.latestFor(d.shopId, [d.id]))?.get(d.id) : undefined;
   const paid = d.paymentMethod === 'prepaid' && PAID_STATES.has(d.status);
   if (paid) facts.paidSeen = true;
   const link = d.status === 'awaiting_payment' && pay?.state === 'created' && pay.pageUrl ? pay.pageUrl : null;
@@ -292,14 +292,14 @@ const orderView = ({ draft: d }: OrderDraft, facts: RunFacts, paymentRepo?: Paym
 };
 
 /** create_order_draft in the playground: the same checks as a real draft (stock, phone, payment method), nothing stored. */
-function sandboxDraft(ctx: ToolContext, lineItems: Array<{ sku: string; quantity: number }>, phone: string, paymentMethod: PaymentMethod) {
+async function sandboxDraft(ctx: ToolContext, lineItems: Array<{ sku: string; quantity: number }>, phone: string, paymentMethod: PaymentMethod) {
   const issues: string[] = [];
   const normalized = normalizeUaPhone(phone);
   if (!normalized) issues.push('checkout.phone: not a Ukrainian phone number');
-  else if (!ctx.deliveryRepo.paymentMethods(ctx.shopId, { phone: normalized }).methods.includes(paymentMethod))
+  else if (!(await ctx.deliveryRepo.paymentMethods(ctx.shopId, { phone: normalized })).methods.includes(paymentMethod))
     issues.push(`checkout.paymentMethod: ${paymentMethod} is not offered for this customer`);
   if (issues.length) throw new OrderValidationError(issues);
-  const view = quoteView(ctx.orders.quote(ctx.shopId, lineItems), ctx.facts);
+  const view = quoteView(await ctx.orders.quote(ctx.shopId, lineItems), ctx.facts);
   return { draftId: null, status: 'pending_approval', confirmed: false, note: 'NOT a confirmed order. The shop must confirm it first; tell the customer exactly that.', ...view };
 }
 
@@ -321,7 +321,7 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         const a = searchArgs.safeParse(json);
         if (!a.success) return bad(a.error);
         ctx.facts.productLookups++;
-        let found = ctx.catalog.listProducts(ctx.shopId, { q: a.data.query, active: true, limit: a.data.limit });
+        let found = await ctx.catalog.listProducts(ctx.shopId, { q: a.data.query, active: true, limit: a.data.limit });
         // The catalog ANDs every word; a customer-style query ("худі Classic чорне") would then match nothing. Fall back to products matching any word, best match first.
         const words = [
           ...new Set(
@@ -334,7 +334,7 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         if (!found.items.length && words.length > 1) {
           const hits = new Map<string, { pw: ProductWithVariants; n: number }>();
           for (const w of words)
-            for (const pw of ctx.catalog.listProducts(ctx.shopId, { q: w, active: true, limit: 20 }).items)
+            for (const pw of (await ctx.catalog.listProducts(ctx.shopId, { q: w, active: true, limit: 20 })).items)
               hits.set(pw.product.id, { pw, n: (hits.get(pw.product.id)?.n ?? 0) + 1 });
           const items = [...hits.values()]
             .sort((x, y) => y.n - x.n)
@@ -348,7 +348,7 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
       case 'get_variant': {
         const a = skuArgs.safeParse(json);
         if (!a.success) return bad(a.error);
-        const v = ctx.catalog.findVariantBySku(ctx.shopId, a.data.sku);
+        const v = await ctx.catalog.findVariantBySku(ctx.shopId, a.data.sku);
         if (!v || !v.active || !v.product.active) return out({ error: 'no such active SKU' });
         ctx.facts.productLookups++;
         const { variants, ...p } = productView({ product: v.product, variants: [v] }, ctx.facts);
@@ -357,17 +357,17 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
       case 'suggest_products': {
         const a = suggestArgs.safeParse(json);
         if (!a.success) return bad(a.error);
-        const v = ctx.catalog.findVariantBySku(ctx.shopId, a.data.sku);
+        const v = await ctx.catalog.findVariantBySku(ctx.shopId, a.data.sku);
         if (!v) return out({ error: 'no such SKU' });
         ctx.facts.productLookups++;
         const none = { note: 'Nothing suitable in the catalog. Do not suggest anything else.' };
         if (a.data.kind === 'complements') {
-          const products = ctx.catalog.boughtTogether(ctx.shopId, v.productId, a.data.limit).map((p) => productView(p, ctx.facts));
+          const products = (await ctx.catalog.boughtTogether(ctx.shopId, v.productId, a.data.limit)).map((p) => productView(p, ctx.facts));
           return out({ products, ...(products.length ? {} : none) });
         }
-        const same = v.product.active ? ctx.catalog.getProduct(ctx.shopId, v.productId)!.variants.filter((x) => x.id !== v.id && x.active && x.stock > 0) : [];
+        const same = v.product.active ? (await ctx.catalog.getProduct(ctx.shopId, v.productId))!.variants.filter((x) => x.id !== v.id && x.active && x.stock > 0) : [];
         const sameProduct = same.length ? productView({ product: v.product, variants: same }, ctx.facts) : null;
-        const products = ctx.catalog.similarProducts(ctx.shopId, v.productId, a.data.limit).map((p) => productView(p, ctx.facts));
+        const products = (await ctx.catalog.similarProducts(ctx.shopId, v.productId, a.data.limit)).map((p) => productView(p, ctx.facts));
         return out({ sameProduct, products, ...(sameProduct || products.length ? {} : none) });
       }
       case 'search_by_photo': {
@@ -381,24 +381,25 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         if (r.status === 'unreadable') return out({ error: `The photo could not be read. ${ask}` });
         if (r.status === 'unavailable') return out({ error: `Photo search failed for now. ${ask}` });
         if (r.status === 'no_product') return out({ note: `The photo does not show a product. ${ask}` });
-        const products = r.matches.flatMap((m) => {
-          const pw = ctx.catalog.getProduct(ctx.shopId, m.productId);
-          if (!pw?.product.active) return [];
+        const products = [];
+        for (const m of r.matches) {
+          const pw = await ctx.catalog.getProduct(ctx.shopId, m.productId);
+          if (!pw?.product.active) continue;
           const view = productView(pw, ctx.facts);
-          return view.variants.length ? [{ match: m.close ? 'close' : 'possible', ...view }] : [];
-        });
+          if (view.variants.length) products.push({ match: m.close ? 'close' : 'possible', ...view });
+        }
         return out({ products, ...(products.length ? {} : { note: `Nothing similar in the catalog. Do not suggest anything else. ${ask}` }) });
       }
       case 'quote_order': {
         const a = quoteArgs.safeParse(json);
         if (!a.success) return bad(a.error);
         ctx.facts.productLookups++;
-        return out(quoteView(ctx.orders.quote(ctx.shopId, a.data.items), ctx.facts));
+        return out(quoteView(await ctx.orders.quote(ctx.shopId, a.data.items), ctx.facts));
       }
       case 'get_policy': {
         const a = policyArgs.safeParse(json);
         if (!a.success) return bad(a.error);
-        const p = ctx.policies.get(ctx.shopId, a.data.topic);
+        const p = await ctx.policies.get(ctx.shopId, a.data.topic);
         ctx.facts.policies.set(a.data.topic, p?.text ?? null);
         if (!p) return out({ topic: a.data.topic, available: false, instruction: 'The shop has no text on this. Do not answer from general knowledge: call escalate.' });
         for (const n of p.text.match(/\d+/g) ?? []) ctx.facts.policyNumbers.add(Number(n));
@@ -408,8 +409,8 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
       case 'find_np_city': {
         const a = cityArgs.safeParse(json);
         if (!a.success) return bad(a.error);
-        if (!ctx.delivery?.connected(ctx.shopId)) return out(npUnavailable);
-        const cities = await ctx.delivery.cities(ctx.shopId, a.data.query);
+        if (!(await ctx.delivery?.connected(ctx.shopId))) return out(npUnavailable);
+        const cities = await ctx.delivery!.cities(ctx.shopId, a.data.query);
         for (const c of cities) ctx.facts.npCities.set(c.ref, c.name);
         return out({
           cities: cities.map((c) => ({ cityRef: c.ref, name: c.name, area: c.area })),
@@ -420,8 +421,8 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         const a = branchArgs.safeParse(json);
         if (!a.success) return bad(a.error);
         if (!ctx.facts.npCities.has(a.data.cityRef)) return out({ error: 'unknown cityRef: call find_np_city in this turn first' });
-        if (!ctx.delivery?.connected(ctx.shopId)) return out(npUnavailable);
-        const list = await ctx.delivery.warehouses(ctx.shopId, a.data.cityRef, a.data.query);
+        if (!(await ctx.delivery?.connected(ctx.shopId))) return out(npUnavailable);
+        const list = await ctx.delivery!.warehouses(ctx.shopId, a.data.cityRef, a.data.query);
         for (const w of list) ctx.facts.npBranches.set(w.ref, { cityRef: a.data.cityRef, name: w.name });
         return out({
           branches: list.map((w) => ({ branchRef: w.ref, number: w.number, name: w.name })),
@@ -432,7 +433,7 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         const a = checkoutArgs.safeParse(json);
         if (!a.success) return bad(a.error);
         const phone = a.data.phone ? normalizeUaPhone(a.data.phone) : null;
-        const pm = ctx.deliveryRepo.paymentMethods(ctx.shopId, { phone, customerId: ctx.customerId });
+        const pm = await ctx.deliveryRepo.paymentMethods(ctx.shopId, { phone, customerId: ctx.customerId });
         ctx.facts.paymentMethods = pm.methods;
         const labels: Record<PaymentMethod, string> = {
           cod: 'cash on delivery at the Nova Poshta branch (накладений платіж)',
@@ -453,8 +454,8 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         if (!city || !branch || branch.cityRef !== a.data.cityRef)
           return out({ error: 'cityRef/branchRef were not returned by find_np_city/find_np_branch in this turn: look them up first' });
         const { items: lineItems, firstName, lastName, phone, paymentMethod, note } = a.data;
-        if (ctx.sandbox) return out(sandboxDraft(ctx, lineItems, phone, paymentMethod));
-        const created = ctx.orders.createDraft(ctx.shopId, {
+        if (ctx.sandbox) return out(await sandboxDraft(ctx, lineItems, phone, paymentMethod));
+        const created = await ctx.orders.createDraft(ctx.shopId, {
           items: lineItems,
           note,
           conversationId: ctx.conversationId,
@@ -464,8 +465,8 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         });
         const { draft, items: lines } = created;
         ctx.facts.draftId = draft.id;
-        const settings = ctx.agent.getSettings(ctx.shopId);
-        const auto = settings.autonomy === 'auto_confirm' ? ctx.orders.autoConfirm(ctx.shopId, draft.id, { maxTotalMinor: settings.autoConfirmMaxMinor }) : null;
+        const settings = await ctx.agent.getSettings(ctx.shopId);
+        const auto = settings.autonomy === 'auto_confirm' ? await ctx.orders.autoConfirm(ctx.shopId, draft.id, { maxTotalMinor: settings.autoConfirmMaxMinor }) : null;
         if (auto?.approved) {
           ctx.delivery?.afterApproval(ctx.shopId, auto.draft);
           ctx.payments?.afterApproval(ctx.shopId, auto.draft);
@@ -514,13 +515,16 @@ export async function runTool(ctx: ToolContext, name: string, rawArgs: string): 
         const a = noArgs.safeParse(json);
         if (!a.success) return bad(a.error);
         ctx.facts.orderStatusLookups++;
-        const list = ctx.sandbox ? [] : ctx.orders.listDrafts(ctx.shopId, { conversationId: ctx.conversationId, limit: 3 }).items;
-        return out({ orders: list.map((d) => orderView(d, ctx.facts, ctx.paymentRepo)), ...(list.length ? {} : { note: 'This customer has no orders in this conversation.' }) });
+        const list = ctx.sandbox ? [] : (await ctx.orders.listDrafts(ctx.shopId, { conversationId: ctx.conversationId, limit: 3 })).items;
+        return out({
+          orders: await Promise.all(list.map((d) => orderView(d, ctx.facts, ctx.paymentRepo))),
+          ...(list.length ? {} : { note: 'This customer has no orders in this conversation.' }),
+        });
       }
       case 'escalate': {
         const a = escalateArgs.safeParse(json);
         if (!a.success) return bad(a.error);
-        const e = ctx.sandbox ? { created: false } : ctx.agent.escalate(ctx.shopId, ctx.conversationId, a.data.reason, ctx.runId);
+        const e = ctx.sandbox ? { created: false } : await ctx.agent.escalate(ctx.shopId, ctx.conversationId, a.data.reason, ctx.runId);
         if (e.created) ctx.notify?.notify({ kind: 'escalation', shopId: ctx.shopId, conversationId: ctx.conversationId, reason: a.data.reason });
         ctx.facts.escalatedReason = a.data.reason;
         return out({ ok: true, note: 'A manager will take over. Do not promise a time.' });

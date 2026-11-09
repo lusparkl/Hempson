@@ -24,7 +24,7 @@ afterEach(async () => {
 
 type Graph = {
   calls: Array<{ method: string; url: string; auth: string | null; body: string | null }>;
-  send: () => Response;
+  send: () => Response | Promise<Response>;
   accounts: () => Response;
   exchange: () => Response;
   conversations: () => Response | Promise<Response>;
@@ -126,10 +126,10 @@ const asChange = (p: ReturnType<typeof inbound>) => ({
   entry: [{ id: p.entry[0]!.id, time: p.entry[0]!.time, changes: [{ field: 'messages', value: p.entry[0]!.messaging[0] }] }],
 });
 
-const conv = (s: S) => a!.conversations.findConversationByExternal(s.shopId, INSTAGRAM_CHANNEL, CUSTOMER);
-const msgs = (s: S) => a!.conversations.listMessages(s.shopId, conv(s)!.conversation.id, { limit: 100 }).items;
+const conv = async (s: S) => await a!.conversations.findConversationByExternal(s.shopId, INSTAGRAM_CHANNEL, CUSTOMER);
+const msgs = async (s: S) => (await a!.conversations.listMessages(s.shopId, (await conv(s))!.conversation.id, { limit: 100 })).items;
 const sends = (s: S) => s.meta.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/messages'));
-const runs = (s: S) => a!.agentRepo.listRuns(s.shopId, { limit: 50 }).items;
+const runs = async (s: S) => (await a!.agentRepo.listRuns(s.shopId, { limit: 50 })).items;
 
 describe('connect flow', () => {
   it('owner connects; token is stored encrypted and never returned; state is single use', async () => {
@@ -162,7 +162,7 @@ describe('connect flow', () => {
     const status = await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/instagram`);
     expect(status.body).toMatchObject({ available: true, status: 'connected', username: 'shop_ig' });
     expect(JSON.stringify(status.body)).not.toContain('IGAA');
-    expect(a!.vault.get(s.shopId, 'instagram')).toMatchObject({ status: 'active' });
+    expect(await a!.vault.get(s.shopId, 'instagram')).toMatchObject({ status: 'active' });
     expect(JSON.stringify(a!.handle.raw.prepare('select * from shop_credentials').all())).not.toContain(TOKEN_LONG);
     expect(s.meta.calls.some((c) => c.method === 'POST' && c.url.includes('/subscribed_apps?subscribed_fields=messages'))).toBe(true);
 
@@ -176,42 +176,42 @@ describe('connect flow', () => {
     s.meta.subscribe = () => (status === 200 ? json({ success: false }) : json({ error: { code: 2 } }, status));
     const r = await connect(s);
     expect(r.res.headers.location).toBe('https://dash.example/?instagram=error');
-    expect(a!.ig.status(s.shopId).status).toBe('not_connected');
-    expect(a!.vault.get(s.shopId, 'instagram')).toBeUndefined();
+    expect((await a!.ig.status(s.shopId)).status).toBe('not_connected');
+    expect(await a!.vault.get(s.shopId, 'instagram')).toBeUndefined();
 
     s.meta.subscribe = () => json({ success: true });
     await connected(s);
-    expect(a!.ig.status(s.shopId)).toMatchObject({ status: 'connected', lastError: null });
+    expect(await a!.ig.status(s.shopId)).toMatchObject({ status: 'connected', lastError: null });
   });
 
   it('preserves an existing connection when replacement webhook subscription fails', async () => {
     const s = await setup();
     await connected(s);
-    const before = a!.igRepo.getChannel(s.shopId);
+    const before = await a!.igRepo.getChannel(s.shopId);
     s.meta.exchange = () => json({ access_token: 'replacement-token' });
     s.meta.accounts = () => json({ data: [{ id: '17841400000000002', username: 'another_shop' }] });
     s.meta.subscribe = () => json({ error: { code: 200 } }, 403);
     const r = await connect(s);
     expect(r.res.headers.location).toBe('https://dash.example/?instagram=error');
-    expect(a!.igRepo.getChannel(s.shopId)).toEqual(before);
+    expect(await a!.igRepo.getChannel(s.shopId)).toEqual(before);
     expect(await a!.vault.withSecret(s.shopId, 'instagram', async (token) => token === TOKEN_LONG)).toBe(true);
   });
 
   it('rolls back channel and token changes together when saving a replacement fails', async () => {
     const s = await setup();
     await connected(s);
-    const before = a!.igRepo.getChannel(s.shopId);
+    const before = await a!.igRepo.getChannel(s.shopId);
     s.meta.exchange = () => json({ access_token: 'replacement-token' });
     s.meta.accounts = () => json({ data: [{ id: '17841400000000002', username: 'another_shop' }] });
-    const save = a!.vault.save.bind(a!.vault);
-    const failingSave = vi.spyOn(a!.vault, 'save').mockImplementationOnce((...args) => {
+    const save = a!.vault.saveTx.bind(a!.vault);
+    const failingSave = vi.spyOn(a!.vault, 'saveTx').mockImplementationOnce((...args) => {
       save(...args);
       throw new Error('simulated storage failure');
     });
     const r = await connect(s);
     failingSave.mockRestore();
     expect(r.res.headers.location).toBe('https://dash.example/?instagram=error');
-    expect(a!.igRepo.getChannel(s.shopId)).toEqual(before);
+    expect(await a!.igRepo.getChannel(s.shopId)).toEqual(before);
     expect(await a!.vault.withSecret(s.shopId, 'instagram', async (token) => token === TOKEN_LONG)).toBe(true);
   });
 
@@ -231,7 +231,7 @@ describe('connect flow', () => {
     const denied = await a!.app.inject({ method: 'GET', url: '/public/instagram/callback?error=access_denied&state=x' });
     expect(denied.headers.location).toBe('https://dash.example/?instagram=denied');
     expect(s.meta.calls.length).toBe(0);
-    expect(a!.ig.status(s.shopId).status).toBe('not_connected');
+    expect((await a!.ig.status(s.shopId)).status).toBe('not_connected');
   });
 
   it('one Instagram account cannot be linked to two shops', async () => {
@@ -243,7 +243,7 @@ describe('connect flow', () => {
     const state = new URL(start.body.authorizeUrl).searchParams.get('state')!;
     const res = await a!.app.inject({ method: 'GET', url: `/public/instagram/callback?code=c&state=${state}` });
     expect(res.headers.location).toBe('https://dash.example/?instagram=taken');
-    expect(a!.vault.get(shop2, 'instagram')).toBeUndefined();
+    expect(await a!.vault.get(shop2, 'instagram')).toBeUndefined();
     expect((await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/instagram`)).body.status).toBe('connected');
   });
 
@@ -264,10 +264,10 @@ describe('connect flow', () => {
     await connected(s);
     expect((await call(a!, s.token, 'DELETE', `/v1/shops/${s.shopId}/instagram`)).status).toBe(200);
     expect(s.meta.calls.some((c) => c.method === 'DELETE' && c.url.endsWith('/subscribed_apps'))).toBe(true);
-    expect(a!.vault.get(s.shopId, 'instagram')).toBeUndefined();
-    expect(a!.ig.status(s.shopId).status).toBe('not_connected');
+    expect(await a!.vault.get(s.shopId, 'instagram')).toBeUndefined();
+    expect((await a!.ig.status(s.shopId)).status).toBe('not_connected');
     expect((await webhook(inbound('m1', 'Привіт'))).statusCode).toBe(200);
-    expect(conv(s)).toBeUndefined();
+    expect(await conv(s)).toBeUndefined();
   });
 });
 
@@ -291,8 +291,8 @@ describe('webhook', () => {
       const r = await webhook(p, { sig, raw });
       expect(r.statusCode, String(sig)).toBe(401);
     }
-    expect(conv(s)).toBeUndefined();
-    expect(runs(s)).toHaveLength(0);
+    expect(await conv(s)).toBeUndefined();
+    expect(await runs(s)).toHaveLength(0);
     expect(sends(s)).toHaveLength(0);
   });
 
@@ -301,7 +301,7 @@ describe('webhook', () => {
     await connected(s);
     const raw = '{not json';
     expect((await webhook(null, { raw })).statusCode).toBe(400);
-    expect(conv(s)).toBeUndefined();
+    expect(await conv(s)).toBeUndefined();
   });
 
   it('one signed message gives exactly one agent run and one reply through the Send API; a replay changes nothing', async () => {
@@ -310,29 +310,29 @@ describe('webhook', () => {
     const p = inbound('mid.in1', 'Привіт, є худі?');
     expect((await webhook(p)).statusCode).toBe(200);
 
-    const c = conv(s)!;
+    const c = (await conv(s))!;
     expect(c.conversation.channel).toBe(INSTAGRAM_CHANNEL);
     expect(c.customer.externalId).toBe(CUSTOMER);
-    expect(runs(s)).toHaveLength(1);
-    expect(runs(s)[0]).toMatchObject({ status: 'replied' });
+    expect(await runs(s)).toHaveLength(1);
+    expect((await runs(s))[0]).toMatchObject({ status: 'replied' });
     expect(sends(s)).toHaveLength(1);
     const call0 = sends(s)[0]!;
     expect(call0.url).toBe(`https://graph.facebook.com/v26.0/${IG}/messages`);
     expect(call0.auth).toBe(`Bearer ${TOKEN_LONG}`);
     expect(JSON.parse(call0.body!)).toEqual({ recipient: { id: CUSTOMER }, message: { text: 'Вітаю! Чим допомогти?' } });
-    expect(msgs(s).map((m) => [m.direction, m.senderType, m.deliveryStatus, m.externalId])).toEqual([
+    expect((await msgs(s)).map((m) => [m.direction, m.senderType, m.deliveryStatus, m.externalId])).toEqual([
       ['incoming', 'customer', 'received', 'mid.in1'],
       ['outgoing', 'ai', 'sent', 'mid.out1'],
     ]);
     // customer name and username are fetched after the ack
-    expect(conv(s)!.customer).toMatchObject({ displayName: 'Іра', handle: 'ira_k' });
+    expect((await conv(s))!.customer).toMatchObject({ displayName: 'Іра', handle: 'ira_k' });
 
     // Meta retries / replays the same delivery
     expect((await webhook(p)).statusCode).toBe(200);
     expect((await webhook(p)).statusCode).toBe(200);
-    expect(runs(s)).toHaveLength(1);
+    expect(await runs(s)).toHaveLength(1);
     expect(sends(s)).toHaveLength(1);
-    expect(msgs(s)).toHaveLength(2);
+    expect(await msgs(s)).toHaveLength(2);
   });
 
   it('the `changes[]` envelope is ingested like `messaging[]`, and the same message in both is stored once', async () => {
@@ -340,11 +340,11 @@ describe('webhook', () => {
     await connected(s);
     const p = inbound('mid.in1', 'Привіт');
     expect((await webhook(asChange(p))).statusCode).toBe(200);
-    expect(msgs(s).filter((m) => m.direction === 'incoming')).toHaveLength(1);
-    expect(runs(s)).toHaveLength(1);
+    expect((await msgs(s)).filter((m) => m.direction === 'incoming')).toHaveLength(1);
+    expect(await runs(s)).toHaveLength(1);
     await webhook(p);
-    expect(msgs(s).filter((m) => m.direction === 'incoming')).toHaveLength(1);
-    expect(runs(s)).toHaveLength(1);
+    expect((await msgs(s)).filter((m) => m.direction === 'incoming')).toHaveLength(1);
+    expect(await runs(s)).toHaveLength(1);
   });
 
   it('events for unknown accounts or without a message id are acknowledged and dropped', async () => {
@@ -355,7 +355,7 @@ describe('webhook', () => {
     expect(
       (await webhook({ object: 'instagram', entry: [{ id: IG, messaging: [{ sender: { id: CUSTOMER }, recipient: { id: IG }, timestamp: 1, read: { mid: 'x' } }] }] })).statusCode,
     ).toBe(200);
-    expect(conv(s)).toBeUndefined();
+    expect(await conv(s)).toBeUndefined();
   });
 
   it('attachment-only messages are stored with kinds and wait for a person when the model has nothing to say', async () => {
@@ -377,11 +377,11 @@ describe('webhook', () => {
         },
       ],
     });
-    const first = msgs(s)[0]!;
+    const first = (await msgs(s))[0]!;
     expect(first.text).toBeNull();
     // The image URL is kept server-side only as `ref` for photo search (P9); the API never returns it.
     expect(first.attachments).toEqual([{ kind: 'image', ref: 'https://cdn.example/x.jpg' }, { kind: 'story_mention' }]);
-    const api = await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/conversations/${conv(s)!.conversation.id}/messages`);
+    const api = await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/conversations/${(await conv(s))!.conversation.id}/messages`);
     expect(api.status).toBe(200);
     expect(JSON.stringify(api.body)).not.toContain('cdn.example');
   });
@@ -390,7 +390,7 @@ describe('webhook', () => {
     const s = await setup({ script: [say('ok')] });
     await connected(s);
     await webhook(inbound('mid.f', 'hi', { ts: Date.now() + 3 * 86_400_000 }));
-    expect(Date.parse(msgs(s)[0]!.occurredAt)).toBeLessThanOrEqual(Date.now());
+    expect(Date.parse((await msgs(s))[0]!.occurredAt)).toBeLessThanOrEqual(Date.now());
   });
 });
 
@@ -399,28 +399,28 @@ describe('echoes', () => {
     const s = await setup({ script: [say('Привіт!')] });
     await connected(s);
     await webhook(inbound('mid.in1', 'Привіт'));
-    expect(msgs(s)).toHaveLength(2);
+    expect(await msgs(s)).toHaveLength(2);
     await webhook(echo('mid.out1', 'Привіт!'));
-    expect(msgs(s)).toHaveLength(2);
-    expect(runs(s)).toHaveLength(1);
+    expect(await msgs(s)).toHaveLength(2);
+    expect(await runs(s)).toHaveLength(1);
     expect(sends(s)).toHaveLength(1);
   });
 
   it('an echo that arrives before the send response is adopted and the late response does not break the row', async () => {
     const s = await setup({ script: [say('Привіт!')] });
     await connected(s);
-    s.meta.send = () => {
+    s.meta.send = async () => {
       // Meta delivers the echo webhook while our send call is still open
-      const c = conv(s)!;
-      a!.conversations.adoptPendingOutbound(s.shopId, c.conversation.id, 'Привіт!', 'mid.out1', 'sent', 'ai');
+      const c = (await conv(s))!;
+      await a!.conversations.adoptPendingOutbound(s.shopId, c.conversation.id, 'Привіт!', 'mid.out1', 'sent', 'ai');
       return json({ recipient_id: CUSTOMER, message_id: 'mid.out1' });
     };
     await webhook(inbound('mid.in1', 'Привіт'));
-    expect(msgs(s).map((m) => [m.senderType, m.deliveryStatus, m.externalId])).toEqual([
+    expect((await msgs(s)).map((m) => [m.senderType, m.deliveryStatus, m.externalId])).toEqual([
       ['customer', 'received', 'mid.in1'],
       ['ai', 'sent', 'mid.out1'],
     ]);
-    expect(runs(s)[0]).toMatchObject({ status: 'replied' });
+    expect((await runs(s))[0]).toMatchObject({ status: 'replied' });
   });
 
   it('a reply typed in the Instagram app is stored as a human message and does not trigger the AI (D16 still manual)', async () => {
@@ -428,14 +428,14 @@ describe('echoes', () => {
     await connected(s);
     await webhook(inbound('mid.in1', 'Привіт'));
     await webhook(echo('mid.person', 'Це людина пише з додатку'));
-    const m = msgs(s);
+    const m = await msgs(s);
     expect(m.map((x) => [x.senderType, x.deliveryStatus])).toEqual([
       ['customer', 'received'],
       ['ai', 'sent'],
       ['human', 'sent'],
     ]);
-    expect(runs(s)).toHaveLength(1);
-    expect(conv(s)!.conversation.aiPaused).toBe(false);
+    expect(await runs(s)).toHaveLength(1);
+    expect((await conv(s))!.conversation.aiPaused).toBe(false);
   });
 });
 
@@ -455,9 +455,9 @@ describe('sending rules', () => {
     await connected(s);
     await webhook(inbound('mid.in1', 'Привіт'));
     expect(sends(s)).toHaveLength(0);
-    expect(runs(s)[0]).toMatchObject({ status: 'failed', detail: 'OUTSIDE_MESSAGING_WINDOW' });
-    expect(msgs(s).at(-1)).toMatchObject({ senderType: 'ai', deliveryStatus: 'failed', deliveryError: 'OUTSIDE_MESSAGING_WINDOW' });
-    expect(a!.agentRepo.openEscalation(s.shopId, conv(s)!.conversation.id)).toBeTruthy();
+    expect((await runs(s))[0]).toMatchObject({ status: 'failed', detail: 'OUTSIDE_MESSAGING_WINDOW' });
+    expect((await msgs(s)).at(-1)).toMatchObject({ senderType: 'ai', deliveryStatus: 'failed', deliveryError: 'OUTSIDE_MESSAGING_WINDOW' });
+    expect(await a!.agentRepo.openEscalation(s.shopId, (await conv(s))!.conversation.id)).toBeTruthy();
     expect(notif.notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'escalation', shopId: s.shopId }));
   });
 
@@ -466,27 +466,27 @@ describe('sending rules', () => {
     await connected(s);
     await webhook(inbound('mid.in1', 'Привіт'));
     a!.handle.raw.prepare("update shop_messages set occurred_at = ? where direction = 'incoming'").run(new Date(Date.now() - 30 * 3_600_000).toISOString());
-    const id = conv(s)!.conversation.id;
+    const id = (await conv(s))!.conversation.id;
     const before = sends(s).length;
     const r = await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${id}/messages`, { text: 'Добрий день' });
     expect(r.status).toBe(409);
     expect(r.body.error.code).toBe('OUTSIDE_MESSAGING_WINDOW');
     expect(sends(s).length).toBe(before);
-    expect(msgs(s)).toHaveLength(2);
-    expect(conv(s)!.conversation.aiPaused).toBe(false);
+    expect(await msgs(s)).toHaveLength(2);
+    expect((await conv(s))!.conversation.aiPaused).toBe(false);
   });
 
   it('a human reply inside the window goes through the Send API and pauses the AI', async () => {
     const s = await setup({ script: [say('Привіт!')] });
     await connected(s);
     await webhook(inbound('mid.in1', 'Привіт'));
-    const id = conv(s)!.conversation.id;
+    const id = (await conv(s))!.conversation.id;
     const r = await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${id}/messages`, { text: 'Менеджер на зв’язку' });
     expect(r.status).toBe(201);
     expect(r.body).toMatchObject({ deliveryStatus: 'sent', aiPaused: true });
     expect(sends(s)).toHaveLength(2);
     expect(JSON.parse(sends(s)[1]!.body!).message.text).toBe('Менеджер на зв’язку');
-    expect(msgs(s).at(-1)).toMatchObject({ senderType: 'human', deliveryStatus: 'sent', externalId: 'mid.out2' });
+    expect((await msgs(s)).at(-1)).toMatchObject({ senderType: 'human', deliveryStatus: 'sent', externalId: 'mid.out2' });
   });
 
   it('an ambiguous outcome is uncertain and is never retried', async () => {
@@ -495,8 +495,8 @@ describe('sending rules', () => {
     s.meta.send = () => new Response('upstream error', { status: 502 });
     await webhook(inbound('mid.in1', 'Привіт'));
     expect(sends(s)).toHaveLength(1);
-    expect(runs(s)[0]).toMatchObject({ status: 'send_uncertain' });
-    expect(msgs(s).at(-1)).toMatchObject({ deliveryStatus: 'uncertain' });
+    expect((await runs(s))[0]).toMatchObject({ status: 'send_uncertain' });
+    expect((await msgs(s)).at(-1)).toMatchObject({ deliveryStatus: 'uncertain' });
     await a!.ig.whenIdle();
     expect(sends(s)).toHaveLength(1);
   });
@@ -509,7 +509,7 @@ describe('sending rules', () => {
     };
     await webhook(inbound('mid.in1', 'Привіт'));
     expect(sends(s)).toHaveLength(1);
-    expect(msgs(s).at(-1)).toMatchObject({ deliveryStatus: 'uncertain' });
+    expect((await msgs(s)).at(-1)).toMatchObject({ deliveryStatus: 'uncertain' });
   });
 
   it('a clear Meta rejection is failed with a code only', async () => {
@@ -517,9 +517,9 @@ describe('sending rules', () => {
     await connected(s);
     s.meta.send = () => json({ error: { message: 'Some provider text with PII', type: 'OAuthException', code: 100, error_subcode: 33 } }, 400);
     await webhook(inbound('mid.in1', 'Привіт'));
-    expect(runs(s)[0]).toMatchObject({ status: 'failed', detail: 'META_100' });
-    expect(msgs(s).at(-1)).toMatchObject({ deliveryStatus: 'failed', deliveryError: 'META_100' });
-    expect(JSON.stringify(runs(s))).not.toContain('PII');
+    expect((await runs(s))[0]).toMatchObject({ status: 'failed', detail: 'META_100' });
+    expect((await msgs(s)).at(-1)).toMatchObject({ deliveryStatus: 'failed', deliveryError: 'META_100' });
+    expect(JSON.stringify(await runs(s))).not.toContain('PII');
   });
 
   it('a window rejection from Meta itself maps to OUTSIDE_MESSAGING_WINDOW', async () => {
@@ -527,7 +527,7 @@ describe('sending rules', () => {
     await connected(s);
     s.meta.send = () => json({ error: { message: 'x', code: 10, error_subcode: 2534022 } }, 400);
     await webhook(inbound('mid.in1', 'Привіт'));
-    expect(msgs(s).at(-1)).toMatchObject({ deliveryStatus: 'failed', deliveryError: 'OUTSIDE_MESSAGING_WINDOW' });
+    expect((await msgs(s)).at(-1)).toMatchObject({ deliveryStatus: 'failed', deliveryError: 'OUTSIDE_MESSAGING_WINDOW' });
   });
 });
 
@@ -539,24 +539,24 @@ describe('token lifecycle', () => {
     s.meta.send = () => json({ error: { message: 'Invalid OAuth access token', type: 'OAuthException', code: 190 } }, 401);
     await webhook(inbound('mid.in1', 'Привіт'));
     expect(sends(s)).toHaveLength(1);
-    expect(runs(s)[0]).toMatchObject({ status: 'failed', detail: 'TOKEN_REJECTED' });
-    expect(a!.ig.status(s.shopId)).toMatchObject({ status: 'needs_reconnect', lastError: 'TOKEN_REJECTED' });
-    expect(a!.vault.get(s.shopId, 'instagram')).toMatchObject({ status: 'needs_reconnect' });
+    expect((await runs(s))[0]).toMatchObject({ status: 'failed', detail: 'TOKEN_REJECTED' });
+    expect(await a!.ig.status(s.shopId)).toMatchObject({ status: 'needs_reconnect', lastError: 'TOKEN_REJECTED' });
+    expect(await a!.vault.get(s.shopId, 'instagram')).toMatchObject({ status: 'needs_reconnect' });
     expect(notif.notify).toHaveBeenCalledWith({ kind: 'channel_issue', shopId: s.shopId, channel: 'instagram', issue: 'needs_reconnect' });
 
     // the next customer message is still stored, but nothing is sent to Meta with the dead token
     await webhook(inbound('mid.in2', 'Є хто?'));
-    expect(msgs(s).filter((m) => m.direction === 'incoming')).toHaveLength(2);
+    expect((await msgs(s)).filter((m) => m.direction === 'incoming')).toHaveLength(2);
     expect(sends(s)).toHaveLength(1);
     expect(notif.notify).toHaveBeenCalledTimes(1);
-    const human = await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${conv(s)!.conversation.id}/messages`, { text: 'hi' });
+    const human = await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${(await conv(s))!.conversation.id}/messages`, { text: 'hi' });
     expect(human.status).toBe(409);
     expect(human.body.error.code).toBe('ACCOUNT_NOT_CONNECTED');
 
     // reconnecting restores sending
     await connected(s);
-    expect(a!.ig.status(s.shopId).status).toBe('connected');
-    expect(a!.vault.get(s.shopId, 'instagram')).toMatchObject({ status: 'active' });
+    expect((await a!.ig.status(s.shopId)).status).toBe('connected');
+    expect(await a!.vault.get(s.shopId, 'instagram')).toMatchObject({ status: 'active' });
   });
 
   it('shared accounts: none or several are refused and nothing is stored or subscribed', async () => {
@@ -571,8 +571,8 @@ describe('token lifecycle', () => {
       s.meta.accounts = () => json({ data });
       const r = await connect(s);
       expect(r.res.headers.location).toBe('https://dash.example/?instagram=select_one');
-      expect(a!.ig.status(s.shopId).status).toBe('not_connected');
-      expect(a!.vault.get(s.shopId, 'instagram')).toBeUndefined();
+      expect((await a!.ig.status(s.shopId)).status).toBe('not_connected');
+      expect(await a!.vault.get(s.shopId, 'instagram')).toBeUndefined();
     }
     expect(s.meta.calls.some((c) => c.url.includes('/subscribed_apps'))).toBe(false);
   });
@@ -583,8 +583,8 @@ describe('token lifecycle', () => {
       s.meta[bad] = () => json({ error: { message: 'bad', code: 190 } }, 400);
       const r = await connect(s);
       expect(r.res.headers.location).toBe('https://dash.example/?instagram=error');
-      expect(a!.ig.status(s.shopId).status).toBe('not_connected');
-      expect(a!.vault.get(s.shopId, 'instagram')).toBeUndefined();
+      expect((await a!.ig.status(s.shopId)).status).toBe('not_connected');
+      expect(await a!.vault.get(s.shopId, 'instagram')).toBeUndefined();
     }
   });
 
@@ -595,10 +595,10 @@ describe('token lifecycle', () => {
     await a!.ig.expireDue(); // no expiry known (default configuration: never expires)
     a!.handle.raw.prepare('update instagram_channels set token_expires_at = ?').run(new Date(Date.now() + 86_400_000).toISOString());
     await a!.ig.expireDue();
-    expect(a!.ig.status(s.shopId).status).toBe('connected');
+    expect((await a!.ig.status(s.shopId)).status).toBe('connected');
     a!.handle.raw.prepare('update instagram_channels set token_expires_at = ?').run(new Date(Date.now() - 1000).toISOString());
     await a!.ig.expireDue();
-    expect(a!.ig.status(s.shopId)).toMatchObject({ status: 'needs_reconnect', lastError: 'TOKEN_EXPIRED' });
+    expect(await a!.ig.status(s.shopId)).toMatchObject({ status: 'needs_reconnect', lastError: 'TOKEN_EXPIRED' });
     expect(s.meta.calls.length).toBe(n);
   });
 
@@ -606,7 +606,7 @@ describe('token lifecycle', () => {
     const s = await setup();
     s.meta.exchange = () => json({ access_token: TOKEN_LONG, token_type: 'bearer', expires_in: 5_184_000 });
     await connected(s);
-    expect(Date.parse(a!.igRepo.getChannel(s.shopId)!.tokenExpiresAt!)).toBeGreaterThan(Date.now() + 50 * 86_400_000);
+    expect(Date.parse((await a!.igRepo.getChannel(s.shopId))!.tokenExpiresAt!)).toBeGreaterThan(Date.now() + 50 * 86_400_000);
   });
 });
 
@@ -627,14 +627,14 @@ describe('polling fallback', () => {
     const old = polled('mid.old', Date.now() - 3_600_000, 'старе');
     s.meta.conversations = () => convs(old);
     expect(await a!.ig.pollOnce()).toBe(0);
-    expect(conv(s)).toBeUndefined(); // no history import
-    expect(a!.igRepo.getChannel(s.shopId)!.polledUntil).toBeTruthy();
+    expect(await conv(s)).toBeUndefined(); // no history import
+    expect((await a!.igRepo.getChannel(s.shopId))!.polledUntil).toBeTruthy();
 
     const fresh = polled('mid.p1', Date.now() + 2000, 'Привіт, є худі?');
     s.meta.conversations = () => convs(fresh, old);
     expect(await a!.ig.pollOnce()).toBe(1);
     await a!.salesAgent?.whenIdle();
-    expect(runs(s)).toHaveLength(1);
+    expect(await runs(s)).toHaveLength(1);
     expect(sends(s)).toHaveLength(1);
 
     // the same data again changes nothing; our own reply shows up as an echo and is adopted, not duplicated
@@ -642,9 +642,9 @@ describe('polling fallback', () => {
     s.meta.conversations = () => convs(own, fresh, old);
     expect(await a!.ig.pollOnce()).toBe(0);
     expect(await a!.ig.pollOnce()).toBe(0);
-    expect(runs(s)).toHaveLength(1);
+    expect(await runs(s)).toHaveLength(1);
     expect(sends(s)).toHaveLength(1);
-    expect(msgs(s).map((m) => [m.direction, m.senderType, m.externalId])).toEqual([
+    expect((await msgs(s)).map((m) => [m.direction, m.senderType, m.externalId])).toEqual([
       ['incoming', 'customer', 'mid.p1'],
       ['outgoing', 'ai', 'mid.out1'],
     ]);
@@ -658,8 +658,8 @@ describe('polling fallback', () => {
     await webhook(inbound('mid.same', 'Привіт'));
     s.meta.conversations = () => convs(polled('mid.same', Date.now() + 2000, 'Привіт'));
     expect(await a!.ig.pollOnce()).toBe(0);
-    expect(msgs(s).filter((m) => m.direction === 'incoming')).toHaveLength(1);
-    expect(runs(s)).toHaveLength(1);
+    expect((await msgs(s)).filter((m) => m.direction === 'incoming')).toHaveLength(1);
+    expect(await runs(s)).toHaveLength(1);
   });
 
   it('a rejected token during a poll needs a reconnect; other errors change nothing', async () => {
@@ -668,10 +668,10 @@ describe('polling fallback', () => {
     await a!.ig.pollOnce(); // cursor
     s.meta.conversations = () => json({ error: { code: 2 } }, 503);
     await a!.ig.pollOnce();
-    expect(a!.ig.status(s.shopId).status).toBe('connected');
+    expect((await a!.ig.status(s.shopId)).status).toBe('connected');
     s.meta.conversations = () => json({ error: { message: 'bad', code: 190 } }, 400);
     await a!.ig.pollOnce();
-    expect(a!.ig.status(s.shopId)).toMatchObject({ status: 'needs_reconnect', lastError: 'TOKEN_REJECTED' });
+    expect(await a!.ig.status(s.shopId)).toMatchObject({ status: 'needs_reconnect', lastError: 'TOKEN_REJECTED' });
   });
 
   it.each(['disconnect', 'switch', 'reconnect'] as const)('ignores a stale poll after %s', async (change) => {
@@ -689,13 +689,13 @@ describe('polling fallback', () => {
       if (change === 'switch') s.meta.accounts = () => json({ data: [{ id: '17841400000000002', username: 'another_shop' }] });
       await connected(s);
     }
-    const channelAfterChange = a!.igRepo.getChannel(s.shopId);
+    const channelAfterChange = await a!.igRepo.getChannel(s.shopId);
     // A response from the old token must neither ingest old-account messages nor invalidate the new token.
     release(change === 'reconnect' ? json({ error: { code: 190 } }, 401) : convs(polled('mid.stale', Date.now() + 2000, 'Old account')));
     expect(await polling).toBe(0);
-    expect(conv(s)).toBeUndefined();
-    expect(a!.igRepo.getChannel(s.shopId)).toEqual(channelAfterChange);
-    if (change !== 'disconnect') expect(a!.vault.get(s.shopId, 'instagram')?.status).toBe('active');
+    expect(await conv(s)).toBeUndefined();
+    expect(await a!.igRepo.getChannel(s.shopId)).toEqual(channelAfterChange);
+    if (change !== 'disconnect') expect((await a!.vault.get(s.shopId, 'instagram'))?.status).toBe('active');
   });
 });
 
@@ -722,7 +722,7 @@ describe('secrets', () => {
     const s = await setup({ script: [say('Привіт!')] });
     await connected(s);
     await webhook(inbound('mid.in1', 'Привіт'));
-    const id = conv(s)!.conversation.id;
+    const id = (await conv(s))!.conversation.id;
     const bodies = [
       await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/instagram`),
       await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/conversations`),

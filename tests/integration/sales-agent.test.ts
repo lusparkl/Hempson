@@ -22,7 +22,7 @@ async function setup(llm: ScriptedLlm, o: { aiOn?: boolean } = {}) {
   await call(a, null, 'POST', '/v1/auth/register', { email: 'o@example.com', displayName: 'O', password: PW });
   const token = (await call(a, null, 'POST', '/v1/auth/login', { email: 'o@example.com', password: PW })).body.token as string;
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Магазин', slug: 'shop-one' })).body.shopId as string;
-  a.catalog.createProduct(shopId, {
+  await a.catalog.createProduct(shopId, {
     name: 'Худі Classic',
     description: 'Бавовна',
     priceMinor: 129_900,
@@ -34,18 +34,23 @@ async function setup(llm: ScriptedLlm, o: { aiOn?: boolean } = {}) {
   });
   if (o.aiOn !== false) await call(a, token, 'PUT', `/v1/shops/${shopId}/ai`, { enabled: true });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/key`, { apiKey: NP_KEY });
-  await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/settings`, { senderCityRef: NP.kyivRef, senderCityName: 'Київ', senderWarehouseRef: NP.branch12Ref, senderWarehouseName: 'Відділення №12' });
+  await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/settings`, {
+    senderCityRef: NP.kyivRef,
+    senderCityName: 'Київ',
+    senderWarehouseRef: NP.branch12Ref,
+    senderWarehouseName: 'Відділення №12',
+  });
   return { token, shopId, llm };
 }
 let np: FakeNp;
 const lookups = () => npLookups();
 const customerWrites = (s: { shopId: string }, text: string, channel = WEB_CHANNEL) => writes(a!, s.shopId, THREAD, text, channel);
-const shopMsgs = (shopId: string) => {
-  const c = a!.conversations.listConversations(shopId).items.find((x) => x.conversation.externalId === THREAD)!;
-  return a!.conversations.listMessages(shopId, c.conversation.id, { limit: 200 }).items;
+const shopMsgs = async (shopId: string) => {
+  const c = (await a!.conversations.listConversations(shopId)).items.find((x) => x.conversation.externalId === THREAD)!;
+  return (await a!.conversations.listMessages(shopId, c.conversation.id, { limit: 200 })).items;
 };
-const runs = (shopId: string) => a!.agentRepo.listRuns(shopId).items;
-const aiMsgs = (shopId: string) => shopMsgs(shopId).filter((m) => m.senderType === 'ai');
+const runs = async (shopId: string) => (await a!.agentRepo.listRuns(shopId)).items;
+const aiMsgs = async (shopId: string) => (await shopMsgs(shopId)).filter((m) => m.senderType === 'ai');
 
 describe('sales agent', () => {
   it('answers a new inbound message once, with price and stock taken from tools', async () => {
@@ -63,19 +68,19 @@ describe('sales agent', () => {
     expect(llm.calls).toHaveLength(2);
     expect(llm.calls[0]!.messages[0]!.content).toContain('Магазин');
     expect(llm.calls[0]!.messages.at(-1)).toMatchObject({ role: 'user', content: 'Скільки коштує худі M?' });
-    const ai = aiMsgs(s.shopId);
+    const ai = await aiMsgs(s.shopId);
     expect(ai).toHaveLength(1);
     expect(ai[0]).toMatchObject({ text: 'Худі Classic розмір M коштує 1299 грн, залишилось 3 шт.', deliveryStatus: 'sent', direction: 'outgoing' });
     expect(ai[0]!.externalId).toBeTruthy();
-    expect(runs(s.shopId)).toMatchObject([{ status: 'replied', model: 'scripted-1', modelRequests: 2, inputTokens: 20, outputTokens: 10, replyMessageId: ai[0]!.id }]);
+    expect(await runs(s.shopId)).toMatchObject([{ status: 'replied', model: 'scripted-1', modelRequests: 2, inputTokens: 20, outputTokens: 10, replyMessageId: ai[0]!.id }]);
 
     // a repeated trigger for the same message (duplicate delivery, restart) must not answer again
-    const inc = shopMsgs(s.shopId).find((m) => m.direction === 'incoming')!;
-    a!.salesAgent!.trigger(s.shopId, inc.conversationId, inc.id);
-    a!.salesAgent!.trigger(s.shopId, inc.conversationId, inc.id);
+    const inc = (await shopMsgs(s.shopId)).find((m) => m.direction === 'incoming')!;
+    await a!.salesAgent!.trigger(s.shopId, inc.conversationId, inc.id);
+    await a!.salesAgent!.trigger(s.shopId, inc.conversationId, inc.id);
     await a!.salesAgent!.whenIdle();
     expect(llm.calls).toHaveLength(2);
-    expect(shopMsgs(s.shopId).filter((m) => m.text?.startsWith('Худі Classic'))).toHaveLength(1);
+    expect((await shopMsgs(s.shopId)).filter((m) => m.text?.startsWith('Худі Classic'))).toHaveLength(1);
   });
 
   it('stays silent when the shop has not switched the AI on', async () => {
@@ -83,8 +88,8 @@ describe('sales agent', () => {
     const s = await setup(llm, { aiOn: false });
     await customerWrites(s, 'Привіт');
     expect(llm.calls).toHaveLength(0);
-    expect(runs(s.shopId)).toEqual([]);
-    expect(aiMsgs(s.shopId)).toEqual([]);
+    expect(await runs(s.shopId)).toEqual([]);
+    expect(await aiMsgs(s.shopId)).toEqual([]);
   });
 
   it('blocks an invented price: one repair attempt, then nothing is sent and a human is asked', async () => {
@@ -93,61 +98,64 @@ describe('sales agent', () => {
     await customerWrites(s, 'Скільки худі?');
     expect(llm.calls).toHaveLength(3);
     expect(llm.calls[2]!.messages.at(-1)).toMatchObject({ role: 'system', content: expect.stringContaining('price 500.00') });
-    expect(aiMsgs(s.shopId)).toEqual([]);
-    expect(runs(s.shopId)).toMatchObject([{ status: 'escalated', detail: 'GUARD_BLOCKED' }]);
-    expect(a!.agentRepo.listEscalations(s.shopId).items).toMatchObject([{ status: 'open', reason: expect.stringContaining('could not be verified') }]);
+    expect(await aiMsgs(s.shopId)).toEqual([]);
+    expect(await runs(s.shopId)).toMatchObject([{ status: 'escalated', detail: 'GUARD_BLOCKED' }]);
+    expect((await a!.agentRepo.listEscalations(s.shopId)).items).toMatchObject([{ status: 'open', reason: expect.stringContaining('could not be verified') }]);
   });
 
   it('accepts the corrected reply after one repair', async () => {
     const llm = new ScriptedLlm([useTool('get_variant', { sku: 'HOODIE-M' }), say('Це коштує 500 грн'), say('Худі M коштує 1299 грн.')]);
     const s = await setup(llm);
     await customerWrites(s, 'Скільки худі M?');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Худі M коштує 1299 грн.', deliveryStatus: 'sent' }]);
-    expect(runs(s.shopId)[0]).toMatchObject({ status: 'replied', modelRequests: 3 });
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Худі M коштує 1299 грн.', deliveryStatus: 'sent' }]);
+    expect((await runs(s.shopId))[0]).toMatchObject({ status: 'replied', modelRequests: 3 });
   });
 
   it('does not claim availability without looking at the catalog', async () => {
     const llm = new ScriptedLlm([say('Так, є в наявності!'), say('Зараз уточню в менеджера.')]);
     const s = await setup(llm);
     await customerWrites(s, 'Є худі?');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Зараз уточню в менеджера.' }]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Зараз уточню в менеджера.' }]);
   });
 
   it('escalate: opens an escalation, sends the holding message, then stays silent until resolved', async () => {
     const llm = new ScriptedLlm([useTool('escalate', { reason: 'Клієнт просить знижку' }), say('Передала питання менеджеру, він відповість.')]);
     const s = await setup(llm);
     await customerWrites(s, 'Дайте знижку 30%');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Передала питання менеджеру, він відповість.', deliveryStatus: 'sent' }]);
-    expect(runs(s.shopId)[0]).toMatchObject({ status: 'escalated', detail: null });
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Передала питання менеджеру, він відповість.', deliveryStatus: 'sent' }]);
+    expect((await runs(s.shopId))[0]).toMatchObject({ status: 'escalated', detail: null });
     const esc = (await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/escalations?status=open`)).body.items;
     expect(esc).toMatchObject([{ reason: 'Клієнт просить знижку', status: 'open' }]);
 
     await customerWrites(s, 'Ну то що?');
     expect(llm.calls).toHaveLength(2);
-    expect(runs(s.shopId).map((r) => [r.status, r.detail]).sort()).toEqual([['escalated', null], ['skipped', 'ESCALATION_OPEN']]);
+    expect((await runs(s.shopId)).map((r) => [r.status, r.detail]).sort()).toEqual([
+      ['escalated', null],
+      ['skipped', 'ESCALATION_OPEN'],
+    ]);
 
     expect((await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/escalations/${esc[0].escalationId}/resolve`)).body.status).toBe('resolved');
     llm.push(say('Вітаю знову!'));
     await customerWrites(s, 'Є ще питання');
-    expect(aiMsgs(s.shopId).at(-1)).toMatchObject({ text: 'Вітаю знову!' });
+    expect((await aiMsgs(s.shopId)).at(-1)).toMatchObject({ text: 'Вітаю знову!' });
   });
 
   it('a model failure sends nothing, records a failed run and the next message is tried again', async () => {
     const llm = new ScriptedLlm([new LlmError('OpenAI HTTP 503', true, 503), say('Вітаю!')]);
     const s = await setup(llm);
     await customerWrites(s, 'Привіт');
-    expect(aiMsgs(s.shopId)).toEqual([]);
-    expect(runs(s.shopId)).toMatchObject([{ status: 'failed', detail: 'LLM_503' }]);
+    expect(await aiMsgs(s.shopId)).toEqual([]);
+    expect(await runs(s.shopId)).toMatchObject([{ status: 'failed', detail: 'LLM_503' }]);
     await customerWrites(s, 'Ви тут?');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Вітаю!' }]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Вітаю!' }]);
   });
 
   it('records a failed reply (not a fake success) when the channel is not connected', async () => {
     const llm = new ScriptedLlm([say('Вітаю!')]);
     const s = await setup(llm);
     await customerWrites(s, 'Привіт', TELEGRAM_CHANNEL);
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Вітаю!', deliveryStatus: 'failed', deliveryError: 'ACCOUNT_NOT_CONNECTED', externalId: null }]);
-    expect(runs(s.shopId)).toMatchObject([{ status: 'failed', detail: 'ACCOUNT_NOT_CONNECTED' }]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Вітаю!', deliveryStatus: 'failed', deliveryError: 'ACCOUNT_NOT_CONNECTED', externalId: null }]);
+    expect(await runs(s.shopId)).toMatchObject([{ status: 'failed', detail: 'ACCOUNT_NOT_CONNECTED' }]);
   });
 
   it('drops a reply when a newer customer message arrived meanwhile, and the next run answers it', async () => {
@@ -161,8 +169,11 @@ describe('sales agent', () => {
     release();
     await Promise.all([first, second]);
     await a!.salesAgent!.whenIdle();
-    expect(runs(s.shopId).map((r) => [r.status, r.detail]).sort()).toEqual([['replied', null], ['superseded', 'NEWER_MESSAGE']]);
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Відповідь на обидва', deliveryStatus: 'sent' }]);
+    expect((await runs(s.shopId)).map((r) => [r.status, r.detail]).sort()).toEqual([
+      ['replied', null],
+      ['superseded', 'NEWER_MESSAGE'],
+    ]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Відповідь на обидва', deliveryStatus: 'sent' }]);
   });
 
   it('treats customer text as data: tool results and history reach the model, injected rules do not change the tool set', async () => {
@@ -189,20 +200,28 @@ describe('sales agent', () => {
     const llm = new ScriptedLlm([useTool('search_products', { query: 'secret' }), (req) => (expect(lastToolResult(req)).toEqual({ total: 0, products: [] }), say('Не знайшла.'))]);
     const s = await setup(llm);
     const other = (await a!.shops.create({ name: 'Other', slug: 'other-shop' })).id;
-    a!.catalog.createProduct(other, { name: 'Secret товар', priceMinor: 100, currency: 'UAH', sku: 'SEC-1', stock: 5 });
+    await a!.catalog.createProduct(other, { name: 'Secret товар', priceMinor: 100, currency: 'UAH', sku: 'SEC-1', stock: 5 });
     await customerWrites(s, 'secret є?');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Не знайшла.' }]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Не знайшла.' }]);
   });
 });
 
 describe('agent tools and order drafts', () => {
-  const order = { items: [{ sku: 'HOODIE-M', quantity: 2 }], firstName: 'Олена', lastName: 'Коваль', phone: '050 111 22 33', cityRef: NP.kyivRef, branchRef: NP.branch5Ref, paymentMethod: 'cod' };
+  const order = {
+    items: [{ sku: 'HOODIE-M', quantity: 2 }],
+    firstName: 'Олена',
+    lastName: 'Коваль',
+    phone: '050 111 22 33',
+    cityRef: NP.kyivRef,
+    branchRef: NP.branch5Ref,
+    paymentMethod: 'cod',
+  };
 
   it('quote_order gives server-computed totals; the reply may quote them', async () => {
     const llm = new ScriptedLlm([useTool('quote_order', { items: [{ sku: 'HOODIE-M', quantity: 2 }] }), say('Разом 2598.00 грн за 2 шт.')]);
     const s = await setup(llm);
     await customerWrites(s, 'Скільки буде 2 худі M?');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Разом 2598.00 грн за 2 шт.' }]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Разом 2598.00 грн за 2 шт.' }]);
   });
 
   it('create_order_draft creates a pending draft that is NOT confirmed and does not reduce stock', async () => {
@@ -226,10 +245,10 @@ describe('agent tools and order drafts', () => {
       contactPhone: '+380501112233',
       deliveryInfo: 'Київ, Відділення №5 (до 30 кг): вул. Федорова, 32',
       checkout: { firstName: 'Олена', lastName: 'Коваль', phone: '+380501112233', cityRef: NP.kyivRef, branchRef: NP.branch5Ref, paymentMethod: 'cod', missing: [] },
-      runId: runs(s.shopId)[0]!.id,
+      runId: (await runs(s.shopId))[0]!.id,
       items: [{ sku: 'HOODIE-M', quantity: 2, unitPriceMinor: 129_900 }],
     });
-    expect(a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M')!.stock).toBe(3);
+    expect((await a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M'))!.stock).toBe(3);
   });
 
   it('the draft tool refuses missing contact data, too many items and unknown SKUs; nothing is created', async () => {
@@ -240,7 +259,10 @@ describe('agent tools and order drafts', () => {
       useTool('create_order_draft', { ...order, items: [{ sku: 'NOPE', quantity: 1 }] }, 'c3'),
       useTool('create_order_draft', { ...order, items: [{ sku: 'HOODIE-L', quantity: 1 }] }, 'c4'),
       (req) => {
-        const results = req.messages.filter((m) => m.role === 'tool').map((m) => JSON.parse((m as any).content)).slice(3);
+        const results = req.messages
+          .filter((m) => m.role === 'tool')
+          .map((m) => JSON.parse((m as any).content))
+          .slice(3);
         expect(results[0].error).toMatch(/firstName|phone|cityRef/);
         expect(results[1].error).toEqual(['HOODIE-M: requested 9, only 3 in stock']);
         expect(results[2].error).toEqual(['NOPE: not available in the catalog']);
@@ -250,7 +272,7 @@ describe('agent tools and order drafts', () => {
     ]);
     const s = await setup(llm);
     await customerWrites(s, 'Оформіть будь ласка');
-    expect(a!.orders.listDrafts(s.shopId).total).toBe(0);
+    expect((await a!.orders.listDrafts(s.shopId)).total).toBe(0);
   });
 
   it('a model-supplied price or status is ignored (unknown tool arguments are rejected)', async () => {
@@ -260,14 +282,14 @@ describe('agent tools and order drafts', () => {
     ]);
     const s = await setup(llm);
     await customerWrites(s, 'Оформіть');
-    expect(a!.orders.listDrafts(s.shopId).total).toBe(0);
+    expect((await a!.orders.listDrafts(s.shopId)).total).toBe(0);
   });
 
   it('a seller approves a draft: stock is reduced; deciding twice is refused; a manager may decide, an outsider gets 404', async () => {
     const llm = new ScriptedLlm([lookups(), useTool('create_order_draft', order), say('Менеджер підтвердить замовлення.')]);
     const s = await setup(llm);
     await customerWrites(s, 'Беру 2 худі M');
-    const draftId = a!.orders.listDrafts(s.shopId).items[0]!.draft.id;
+    const draftId = (await a!.orders.listDrafts(s.shopId)).items[0]!.draft.id;
     const base = `/v1/shops/${s.shopId}/order-drafts/${draftId}`;
 
     await call(a!, null, 'POST', '/v1/auth/register', { email: 'x@example.com', displayName: 'X', password: PW });
@@ -280,32 +302,42 @@ describe('agent tools and order drafts', () => {
     const ok = await call(a!, outsider, 'POST', `${base}/approve`, { note: 'Підтверджено' });
     expect(ok.status).toBe(200);
     expect(ok.body).toMatchObject({ status: 'cod_confirmed', decisionNote: 'Підтверджено' });
-    expect(a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M')!.stock).toBe(1);
+    expect((await a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M'))!.stock).toBe(1);
     await a!.delivery.whenIdle();
-    expect(a!.orders.getDraft(s.shopId, draftId)!.draft).toMatchObject({ status: 'shipped', ttnState: 'created' });
+    expect((await a!.orders.getDraft(s.shopId, draftId))!.draft).toMatchObject({ status: 'shipped', ttnState: 'created' });
     expect((await call(a!, s.token, 'POST', `${base}/approve`, {})).status).toBe(400);
     expect((await call(a!, s.token, 'POST', `${base}/reject`, {})).status).toBe(400);
-    expect(a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M')!.stock).toBe(1);
+    expect((await a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M'))!.stock).toBe(1);
   });
 
   it('reject keeps stock; the list filters by status', async () => {
     const llm = new ScriptedLlm([lookups(), useTool('create_order_draft', order), say('Менеджер підтвердить замовлення.')]);
     const s = await setup(llm);
     await customerWrites(s, 'Беру 2 худі M');
-    const draftId = a!.orders.listDrafts(s.shopId).items[0]!.draft.id;
+    const draftId = (await a!.orders.listDrafts(s.shopId)).items[0]!.draft.id;
     expect((await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/order-drafts/${draftId}/reject`, { note: 'Передумав' })).body.status).toBe('rejected');
-    expect(a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M')!.stock).toBe(3);
+    expect((await a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M'))!.stock).toBe(3);
     expect((await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/order-drafts?status=pending_approval`)).body.total).toBe(0);
     expect((await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/order-drafts?status=rejected`)).body.total).toBe(1);
   });
 
   it('a newer draft in the same conversation supersedes the pending one', async () => {
-    const llm = new ScriptedLlm([lookups(), useTool('create_order_draft', order), say('Записала.'), lookups(), useTool('create_order_draft', { ...order, items: [{ sku: 'HOODIE-M', quantity: 1 }] }), say('Оновила замовлення.')]);
+    const llm = new ScriptedLlm([
+      lookups(),
+      useTool('create_order_draft', order),
+      say('Записала.'),
+      lookups(),
+      useTool('create_order_draft', { ...order, items: [{ sku: 'HOODIE-M', quantity: 1 }] }),
+      say('Оновила замовлення.'),
+    ]);
     const s = await setup(llm);
     await customerWrites(s, 'Беру 2');
     await customerWrites(s, 'Ні, беру 1');
-    const all = a!.orders.listDrafts(s.shopId).items.map((d) => [d.draft.status, d.draft.totalMinor]);
-    expect(all).toEqual([['pending_approval', 129_900], ['cancelled', 259_800]]);
+    const all = (await a!.orders.listDrafts(s.shopId)).items.map((d) => [d.draft.status, d.draft.totalMinor]);
+    expect(all).toEqual([
+      ['pending_approval', 129_900],
+      ['cancelled', 259_800],
+    ]);
   });
 });
 
@@ -369,7 +401,7 @@ describe('search_products fallback', () => {
     ]);
     const s = await setup(llm);
     await customerWrites(s, 'Є чорне худі?');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Є Худі Classic.' }]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Є Худі Classic.' }]);
   });
 });
 
@@ -389,15 +421,16 @@ describe('suggest_products (P9)', () => {
       },
     ]);
     const s = await setup(llm);
-    const add = (shopId: string, name: string, sku: string, stock: number, priceMinor = 149_900, active = true) => a!.catalog.createProduct(shopId, { name, priceMinor, currency: 'UAH', sku, stock, active });
-    add(s.shopId, 'Худі Oversize', 'OVER-M', 2);
-    add(s.shopId, 'Худі Zip', 'ZIP-M', 0);
-    add(s.shopId, 'Худі Archive', 'ARCH-M', 5, 99_900, false);
-    add(s.shopId, 'Кепка', 'CAP-1', 9);
+    const add = async (shopId: string, name: string, sku: string, stock: number, priceMinor = 149_900, active = true) =>
+      await a!.catalog.createProduct(shopId, { name, priceMinor, currency: 'UAH', sku, stock, active });
+    await add(s.shopId, 'Худі Oversize', 'OVER-M', 2);
+    await add(s.shopId, 'Худі Zip', 'ZIP-M', 0);
+    await add(s.shopId, 'Худі Archive', 'ARCH-M', 5, 99_900, false);
+    await add(s.shopId, 'Кепка', 'CAP-1', 9);
     const other = (await a!.shops.create({ name: 'Other', slug: 'other-shop' })).id;
-    add(other, 'Худі Чуже', 'ALIEN-1', 9);
+    await add(other, 'Худі Чуже', 'ALIEN-1', 9);
     await customerWrites(s, 'Худі L є?');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'L закінчився. Є M за 1299 грн або Худі Oversize за 1499 грн.' }]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'L закінчився. Є M за 1299 грн або Худі Oversize за 1499 грн.' }]);
   });
 
   it('complements: products ordered together in live drafts, most often first; rejected, cancelled and out-of-stock ones are left out', async () => {
@@ -409,33 +442,52 @@ describe('suggest_products (P9)', () => {
       },
     ]);
     const s = await setup(llm);
-    for (const [name, sku, stock] of [['Кепка', 'CAP-1', 5], ['Шкарпетки', 'SOCK-1', 5], ['Шарф', 'SCARF-1', 5], ['Рукавички', 'GLOVE-1', 5], ['Пояс', 'BELT-1', 5]] as const)
-      a!.catalog.createProduct(s.shopId, { name, priceMinor: 39_900, currency: 'UAH', sku, stock });
-    const conversationId = a!.conversations.ensureConversation(s.shopId, { channel: WEB_CHANNEL, conversationExternalId: 'w1', customer: { externalId: 'w1', displayName: 'W' } }).conversation.id;
-    const draft = (...skus: string[]) => a!.orders.createDraft(s.shopId, { conversationId, createdBy: 'user', items: skus.map((sku) => ({ sku, quantity: 1 })) }).draft.id;
+    for (const [name, sku, stock] of [
+      ['Кепка', 'CAP-1', 5],
+      ['Шкарпетки', 'SOCK-1', 5],
+      ['Шарф', 'SCARF-1', 5],
+      ['Рукавички', 'GLOVE-1', 5],
+      ['Пояс', 'BELT-1', 5],
+    ] as const)
+      await a!.catalog.createProduct(s.shopId, { name, priceMinor: 39_900, currency: 'UAH', sku, stock });
+    const conversationId = (
+      await a!.conversations.ensureConversation(s.shopId, { channel: WEB_CHANNEL, conversationExternalId: 'w1', customer: { externalId: 'w1', displayName: 'W' } })
+    ).conversation.id;
+    const draft = async (...skus: string[]) =>
+      (await a!.orders.createDraft(s.shopId, { conversationId, createdBy: 'user', items: skus.map((sku) => ({ sku, quantity: 1 })) })).draft.id;
     // an AI draft superseded by a newer one is cancelled
-    a!.orders.createDraft(s.shopId, { conversationId, createdBy: 'ai', items: [{ sku: 'HOODIE-M', quantity: 1 }, { sku: 'BELT-1', quantity: 1 }] });
-    a!.orders.createDraft(s.shopId, { conversationId, createdBy: 'ai', items: [{ sku: 'HOODIE-M', quantity: 1 }] });
-    draft('HOODIE-M', 'CAP-1');
-    draft('HOODIE-M', 'CAP-1', 'GLOVE-1');
-    draft('HOODIE-M', 'SOCK-1');
+    await a!.orders.createDraft(s.shopId, {
+      conversationId,
+      createdBy: 'ai',
+      items: [
+        { sku: 'HOODIE-M', quantity: 1 },
+        { sku: 'BELT-1', quantity: 1 },
+      ],
+    });
+    await a!.orders.createDraft(s.shopId, { conversationId, createdBy: 'ai', items: [{ sku: 'HOODIE-M', quantity: 1 }] });
+    await draft('HOODIE-M', 'CAP-1');
+    await draft('HOODIE-M', 'CAP-1', 'GLOVE-1');
+    await draft('HOODIE-M', 'SOCK-1');
     const owner = (await call(a!, s.token, 'GET', '/v1/auth/me')).body.user.id as string;
-    a!.orders.reject(s.shopId, draft('HOODIE-M', 'SCARF-1'), owner);
-    draft('SOCK-1', 'SCARF-1');
-    const glove = a!.catalog.findVariantBySku(s.shopId, 'GLOVE-1')!;
-    a!.catalog.adjustStock(s.shopId, glove.productId, glove.id, -5);
+    await a!.orders.reject(s.shopId, await draft('HOODIE-M', 'SCARF-1'), owner);
+    await draft('SOCK-1', 'SCARF-1');
+    const glove = (await a!.catalog.findVariantBySku(s.shopId, 'GLOVE-1'))!;
+    await a!.catalog.adjustStock(s.shopId, glove.productId, glove.id, -5);
     await customerWrites(s, 'Беру худі M');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'До худі часто беруть кепку за 399 грн.' }]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'До худі часто беруть кепку за 399 грн.' }]);
   });
 
   it('says there is nothing to suggest, and refuses an unknown SKU', async () => {
     const llm = new ScriptedLlm([
       ask('HOODIE-M', 'complements'),
-      (req) => (expect(lastToolResult(req)).toMatchObject({ products: [], note: expect.stringContaining('Do not suggest') }), useTool('suggest_products', { sku: 'NOPE-1', kind: 'alternatives' })),
+      (req) => (
+        expect(lastToolResult(req)).toMatchObject({ products: [], note: expect.stringContaining('Do not suggest') }),
+        useTool('suggest_products', { sku: 'NOPE-1', kind: 'alternatives' })
+      ),
       (req) => (expect(lastToolResult(req)).toEqual({ error: 'no such SKU' }), say('Гарний вибір!')),
     ]);
     const s = await setup(llm);
     await customerWrites(s, 'Беру худі M');
-    expect(aiMsgs(s.shopId)).toMatchObject([{ text: 'Гарний вибір!' }]);
+    expect(await aiMsgs(s.shopId)).toMatchObject([{ text: 'Гарний вибір!' }]);
   });
 });

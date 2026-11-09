@@ -31,7 +31,9 @@ export type DeliveryServiceDeps = {
 
 /** Kyiv calendar date as NP wants it (dd.mm.yyyy). */
 function kyivDate(d: Date): string {
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit', year: 'numeric' }).formatToParts(d).map((x) => [x.type, x.value]));
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit', year: 'numeric' }).formatToParts(d).map((x) => [x.type, x.value]),
+  );
   return `${p.day}.${p.month}.${p.year}`;
 }
 const uah = (minor: number) => (minor % 100 === 0 ? String(minor / 100) : (minor / 100).toFixed(2));
@@ -51,14 +53,14 @@ export class DeliveryService {
   get available(): boolean {
     return this.d.vault.available;
   }
-  connected(shopId: string): boolean {
-    return this.available && this.d.vault.get(shopId, 'nova_poshta')?.status === 'active';
+  async connected(shopId: string): Promise<boolean> {
+    return this.available && (await this.d.vault.get(shopId, 'nova_poshta'))?.status === 'active';
   }
 
   /** Non-secret state for the dashboard. */
-  status(shopId: string) {
-    const s = this.d.repo.getSettings(shopId);
-    const cred = this.available ? this.d.vault.get(shopId, 'nova_poshta') : undefined;
+  async status(shopId: string) {
+    const s = await this.d.repo.getSettings(shopId);
+    const cred = this.available ? await this.d.vault.get(shopId, 'nova_poshta') : undefined;
     return {
       available: this.available,
       status: cred ? (cred.status === 'active' ? ('connected' as const) : ('needs_reconnect' as const)) : ('not_connected' as const),
@@ -81,16 +83,17 @@ export class DeliveryService {
   /** Runs one NP call with the shop's key. A refused key marks the credential and tells the owner once. */
   private async withKey<T>(shopId: string, fn: (key: string) => Promise<T>): Promise<T> {
     if (!this.available) throw new ApiError('NOT_CONFIGURED', 'Credential storage is not configured on this server');
-    if (!this.connected(shopId)) throw new ApiError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
+    if (!(await this.connected(shopId))) throw new ApiError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
     try {
       return await this.d.vault.withSecret(shopId, 'nova_poshta', fn);
     } catch (e) {
       if (e instanceof NovaPoshtaError && e.kind === 'auth') {
-        this.d.vault.mark(shopId, 'nova_poshta', 'needs_reconnect');
-        this.d.repo.setLastError(shopId, 'KEY_REJECTED');
+        await this.d.vault.mark(shopId, 'nova_poshta', 'needs_reconnect');
+        await this.d.repo.setLastError(shopId, 'KEY_REJECTED');
         this.d.notifier?.notify({ kind: 'channel_issue', shopId, channel: 'nova_poshta', issue: 'needs_reconnect' });
       }
-      if (e instanceof CredentialMissingError || e instanceof CredentialsUnavailableError || e instanceof CredentialDecryptError) throw new ApiError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
+      if (e instanceof CredentialMissingError || e instanceof CredentialsUnavailableError || e instanceof CredentialDecryptError)
+        throw new ApiError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
       throw e;
     }
   }
@@ -110,20 +113,17 @@ export class DeliveryService {
     if (!KEY_RE.test(apiKey)) throw new ApiError('VALIDATION_ERROR', 'This is not a Nova Poshta API key');
     try {
       const me = await this.d.api.senderIdentity(apiKey);
-      this.d.repo.db.transaction(() => {
-        this.d.vault.save(shopId, 'nova_poshta', apiKey);
-        this.d.repo.setSender(shopId, { senderRef: me.senderRef, senderContactRef: me.contactRef, senderPhone: me.phone });
-      });
+      await this.d.repo.connect(shopId, { senderRef: me.senderRef, senderContactRef: me.contactRef, senderPhone: me.phone }, this.d.vault, apiKey);
       this.d.log.info({ shopId }, 'nova poshta connected');
-      return this.status(shopId);
+      return await this.status(shopId);
     } catch (e) {
       if (e instanceof NovaPoshtaError) this.d.log.warn({ shopId, kind: e.kind, codes: e.codes }, 'nova poshta connect failed');
       this.translate(e);
     }
   }
 
-  disconnect(shopId: string): void {
-    if (this.available) this.d.vault.delete(shopId, 'nova_poshta');
+  async disconnect(shopId: string): Promise<void> {
+    if (this.available) await this.d.vault.delete(shopId, 'nova_poshta');
   }
 
   async cities(shopId: string, q: string): Promise<NpCity[]> {
@@ -149,10 +149,10 @@ export class DeliveryService {
   }
 
   /** Fire and forget after a verified payment (P5): a prepaid order gets its TTN from `paid` (D25). */
-  afterPaid(shopId: string, draftId: string): void {
-    const d = this.d.orders.getDraft(shopId, draftId)?.draft;
+  async afterPaid(shopId: string, draftId: string): Promise<void> {
+    const d = (await this.d.orders.getDraft(shopId, draftId))?.draft;
     if (!d || d.status !== 'paid') return;
-    if (!this.connected(shopId) || !this.d.repo.senderComplete(this.d.repo.getSettings(shopId))) {
+    if (!(await this.connected(shopId)) || !this.d.repo.senderComplete(await this.d.repo.getSettings(shopId))) {
       this.d.notifier?.notify({ kind: 'order_update', shopId, conversationId: d.conversationId, draftId, event: 'ttn_failed', ttn: null });
       return;
     }
@@ -176,30 +176,36 @@ export class DeliveryService {
    */
   async createTtn(shopId: string, draftId: string): Promise<OrderDraft> {
     const { orders, repo, log } = this.d;
-    const settings = repo.getSettings(shopId);
-    if (!this.connected(shopId)) throw new ApiError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
+    const settings = await repo.getSettings(shopId);
+    if (!(await this.connected(shopId))) throw new ApiError('NOT_CONFIGURED', 'Nova Poshta is not connected for this shop');
     if (!repo.senderComplete(settings)) throw new ApiError('VALIDATION_ERROR', 'Set the sender city and branch in the Nova Poshta settings first');
     let d: OrderDraftRow;
     try {
-      d = orders.claimTtn(shopId, draftId).draft;
+      d = (await orders.claimTtn(shopId, draftId)).draft;
     } catch (e) {
       if (e instanceof OrderStateError) throw new ApiError('VALIDATION_ERROR', e.message);
       throw e;
     }
-    const fail = (state: 'failed' | 'uncertain', code: string) => {
-      orders.failTtn(shopId, draftId, state, code);
+    const fail = async (state: 'failed' | 'uncertain', code: string) => {
+      await orders.failTtn(shopId, draftId, state, code);
       log.warn({ shopId, draftId, state, code }, 'nova poshta ttn not created');
       this.d.notifier?.notify({ kind: 'order_update', shopId, conversationId: d.conversationId, draftId, event: state === 'failed' ? 'ttn_failed' : 'ttn_uncertain', ttn: null });
-      return orders.getDraft(shopId, draftId)!;
+      return (await orders.getDraft(shopId, draftId))!;
     };
-    if (d.currency !== 'UAH') return fail('failed', 'CURRENCY_NOT_UAH');
+    if (d.currency !== 'UAH') return await fail('failed', 'CURRENCY_NOT_UAH');
     let sent = false;
     try {
       const res = await this.withKey(shopId, async (key) => {
         const recipient = await this.d.api.createRecipient(key, { firstName: d.recipientFirstName!, lastName: d.recipientLastName!, phone: d.recipientPhone! });
         sent = true;
         return this.d.api.createTtn(key, recipient, {
-          sender: { ref: settings.senderRef!, contactRef: settings.senderContactRef!, phone: settings.senderPhone!, cityRef: settings.senderCityRef!, warehouseRef: settings.senderWarehouseRef! },
+          sender: {
+            ref: settings.senderRef!,
+            contactRef: settings.senderContactRef!,
+            phone: settings.senderPhone!,
+            cityRef: settings.senderCityRef!,
+            warehouseRef: settings.senderWarehouseRef!,
+          },
           recipient: { firstName: d.recipientFirstName!, lastName: d.recipientLastName!, phone: d.recipientPhone!, cityRef: d.npCityRef!, warehouseRef: d.npWarehouseRef! },
           costUah: uah(d.totalMinor),
           cod: d.paymentMethod === 'cod',
@@ -209,12 +215,15 @@ export class DeliveryService {
         });
       });
       log.info({ shopId, draftId }, 'nova poshta ttn created');
-      return orders.completeTtn(shopId, draftId, { ttn: res.ttn, documentRef: res.ref });
+      return await orders.completeTtn(shopId, draftId, { ttn: res.ttn, documentRef: res.ref });
     } catch (e) {
       // Before the document call nothing can exist at NP; after it, only a definite refusal is safe to retry.
       if (!sent || (e instanceof NovaPoshtaError && e.kind !== 'unavailable') || e instanceof EgressDeniedError || e instanceof ApiError)
-        return fail('failed', e instanceof NovaPoshtaError ? `NP_${e.kind.toUpperCase()}${e.codes[0] ? `_${e.codes[0]}` : ''}` : e instanceof EgressDeniedError ? 'EGRESS_DENIED' : 'NP_NOT_CONNECTED');
-      return fail('uncertain', e instanceof NovaPoshtaError ? `NP_NO_ANSWER${e.codes[0] ? `_${e.codes[0]}` : ''}` : 'NP_NO_ANSWER');
+        return await fail(
+          'failed',
+          e instanceof NovaPoshtaError ? `NP_${e.kind.toUpperCase()}${e.codes[0] ? `_${e.codes[0]}` : ''}` : e instanceof EgressDeniedError ? 'EGRESS_DENIED' : 'NP_NOT_CONNECTED',
+        );
+      return await fail('uncertain', e instanceof NovaPoshtaError ? `NP_NO_ANSWER${e.codes[0] ? `_${e.codes[0]}` : ''}` : 'NP_NO_ANSWER');
     }
   }
 
@@ -225,16 +234,21 @@ export class DeliveryService {
 
   private async poll(): Promise<{ checked: number; transitions: number }> {
     const byShop = new Map<string, OrderDraftRow[]>();
-    for (const o of this.d.orders.listForTracking()) byShop.set(o.shopId, [...(byShop.get(o.shopId) ?? []), o]);
+    for (const o of await this.d.orders.listForTracking()) byShop.set(o.shopId, [...(byShop.get(o.shopId) ?? []), o]);
     let checked = 0;
     let transitions = 0;
     for (const [shopId, list] of byShop) {
-      if (!this.connected(shopId)) continue;
+      if (!(await this.connected(shopId))) continue;
       for (let i = 0; i < list.length; i += 100) {
         const batch = list.slice(i, i + 100);
         let statuses;
         try {
-          statuses = await this.withKey(shopId, (k) => this.d.api.track(k, batch.map((o) => ({ ttn: o.ttn!, phone: o.recipientPhone ?? '' }))));
+          statuses = await this.withKey(shopId, (k) =>
+            this.d.api.track(
+              k,
+              batch.map((o) => ({ ttn: o.ttn!, phone: o.recipientPhone ?? '' })),
+            ),
+          );
         } catch (e) {
           this.d.log.warn({ shopId, code: e instanceof NovaPoshtaError ? e.kind : e instanceof Error ? e.name : 'ERROR' }, 'nova poshta tracking failed');
           break;
@@ -243,10 +257,11 @@ export class DeliveryService {
           const o = batch.find((x) => x.ttn === st.ttn);
           if (!o) continue;
           checked++;
-          const r = this.d.orders.applyTracking(shopId, o.id, { code: st.code, text: st.text, ...trackingOutcome(st.code) });
+          const r = await this.d.orders.applyTracking(shopId, o.id, { code: st.code, text: st.text, ...trackingOutcome(st.code) });
           if (!r.transition) continue;
           transitions++;
-          if (r.transition === 'returning') this.d.notifier?.notify({ kind: 'order_update', shopId, conversationId: o.conversationId, draftId: o.id, event: 'returning', ttn: o.ttn });
+          if (r.transition === 'returning')
+            this.d.notifier?.notify({ kind: 'order_update', shopId, conversationId: o.conversationId, draftId: o.id, event: 'returning', ttn: o.ttn });
         }
       }
     }

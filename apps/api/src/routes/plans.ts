@@ -19,9 +19,9 @@ export function registerPlanRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     tag: 'stats',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return plans.usage(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await plans.usage(params.shopId);
     },
   });
 
@@ -33,15 +33,15 @@ export function registerPlanRoutes(app: FastifyInstance, deps: { shops: ShopRepo
     auth: 'admin',
     params: shopP,
     body: z.strictObject({ plan: z.enum(PLAN_NAMES), customCap: z.number().int().min(0).max(1_000_000).nullable().optional() }),
-    handler: ({ params, body }) => {
-      if (!shops.get(params.shopId)) throw new ApiError('NOT_FOUND', 'Shop not found');
+    handler: async ({ params, body }) => {
+      if (!(await shops.get(params.shopId))) throw new ApiError('NOT_FOUND', 'Shop not found');
       try {
-        plans.set(params.shopId, body);
+        await plans.set(params.shopId, body);
       } catch (e) {
         if (e instanceof PlanValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
         throw e;
       }
-      return plans.usage(params.shopId);
+      return await plans.usage(params.shopId);
     },
   });
 }

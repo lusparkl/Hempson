@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import * as schema from './schema';
 
 export type Db = BetterSQLite3Database<typeof schema>;
-export type DbHandle = { db: Db; raw: Database.Database; close(): void };
+/** `raw` and `transaction` are for `packages/database` only; callers outside it go through repositories (D47). */
+export type DbHandle = { db: Db; raw: Database.Database; close(): void; transaction<T>(fn: () => T): T; ping(): void };
 
 export const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations');
 
@@ -19,10 +20,16 @@ export function openDb(file: string): DbHandle {
   raw.pragma('foreign_keys = ON');
   raw.pragma('busy_timeout = 5000');
   const db = drizzle(raw, { schema });
-  return { db, raw, close: () => raw.close() };
+  return {
+    db,
+    raw,
+    close: () => raw.close(),
+    transaction: (fn) => raw.transaction(fn)(),
+    ping: () => void raw.prepare('select 1').get(),
+  };
 }
 
-export function runMigrations(h: DbHandle): void {
+export async function runMigrations(h: DbHandle): Promise<void> {
   migrate(h.db, { migrationsFolder: MIGRATIONS_DIR });
 }
 

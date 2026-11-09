@@ -41,10 +41,11 @@ export function registerAuthRoutes(
       if (!opts.allowRegistration) throw new ApiError('FORBIDDEN', 'Registration is disabled');
       const email = emailSchema.safeParse(body.email);
       const name = displayNameSchema.safeParse(body.displayName);
-      if (!email.success || !name.success) throw new ApiError('VALIDATION_ERROR', [!email.success && 'email invalid', !name.success && 'displayName invalid'].filter(Boolean).join('; '));
+      if (!email.success || !name.success)
+        throw new ApiError('VALIDATION_ERROR', [!email.success && 'email invalid', !name.success && 'displayName invalid'].filter(Boolean).join('; '));
       const hash = await hashPassword(body.password);
       try {
-        return publicUser(auth.createUser({ email: email.data, displayName: name.data }, hash));
+        return publicUser(await auth.createUser({ email: email.data, displayName: name.data }, hash));
       } catch (e) {
         if (e instanceof EmailTakenError) throw new ApiError('VALIDATION_ERROR', 'Email already registered');
         if (e instanceof AuthValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
@@ -63,14 +64,14 @@ export function registerAuthRoutes(
     handler: async ({ body }) => {
       const key = body.email.trim().toLowerCase();
       if (opts.throttle.blocked(key)) throw new ApiError('RATE_LIMITED_OR_BLOCKED', 'Too many failed logins; try again later');
-      const user = auth.getUserByEmail(key);
+      const user = await auth.getUserByEmail(key);
       const ok = await verifyPassword(body.password, user?.passwordHash ?? DUMMY_HASH);
       if (!user || !ok) {
         opts.throttle.fail(key);
         throw new ApiError('UNAUTHORIZED', 'Invalid email or password');
       }
       opts.throttle.reset(key);
-      const s = auth.createSession(user.id, opts.sessionTtlMs);
+      const s = await auth.createSession(user.id, opts.sessionTtlMs);
       return { token: s.token, expiresAt: s.expiresAt, user: publicUser(user) };
     },
   });
@@ -88,11 +89,11 @@ export function registerAuthRoutes(
       if (wait) throw new RateLimitedError(wait);
       const key = body.email.trim().toLowerCase();
       // After the response, so its timing does not reveal whether the account exists; a capped address gets the same answer.
-      setImmediate(() => {
+      setImmediate(async () => {
         try {
           if (resetsPerEmail.hit(key)) return;
-          const user = auth.getUserByEmail(key);
-          if (user) mail(user.email, resetEmail.link(resetLink(opts.dashboardUrl, auth.createPasswordReset(user.id, RESET_TTL_MS))));
+          const user = await auth.getUserByEmail(key);
+          if (user) mail(user.email, resetEmail.link(resetLink(opts.dashboardUrl, await auth.createPasswordReset(user.id, RESET_TTL_MS))));
         } catch (e) {
           app.log.error({ err: (e as Error).message }, 'password reset request failed');
         }
@@ -111,8 +112,8 @@ export function registerAuthRoutes(
     handler: async ({ body }) => {
       const invalid = () => new ApiError('VALIDATION_ERROR', 'This reset link is invalid or has expired');
       // Checked first so that a bad token never costs a password hash.
-      if (!auth.isPasswordResetLive(body.token)) throw invalid();
-      const user = auth.consumePasswordReset(body.token, await hashPassword(body.password));
+      if (!(await auth.isPasswordResetLive(body.token))) throw invalid();
+      const user = await auth.consumePasswordReset(body.token, await hashPassword(body.password));
       if (!user) throw invalid();
       opts.throttle.reset(user.email);
       if (mailer) mail(user.email, resetEmail.changed());
@@ -126,8 +127,8 @@ export function registerAuthRoutes(
     summary: 'Revoke the current session',
     tag: 'auth',
     auth: 'user',
-    handler: ({ req }) => {
-      auth.revokeSession(req.user!.sessionId);
+    handler: async ({ req }) => {
+      await auth.revokeSession(req.user!.sessionId);
       return { ok: true };
     },
   });
@@ -138,9 +139,9 @@ export function registerAuthRoutes(
     summary: 'Current user and their shops',
     tag: 'auth',
     auth: 'user',
-    handler: ({ req }) => ({
+    handler: async ({ req }) => ({
       user: publicUser(req.user!.user),
-      shops: auth.listShopsForUser(req.user!.user.id).map(({ shop, role }) => ({ shopId: shop.id, name: shop.name, slug: shop.slug, role })),
+      shops: (await auth.listShopsForUser(req.user!.user.id)).map(({ shop, role }) => ({ shopId: shop.id, name: shop.name, slug: shop.slug, role })),
     }),
   });
 }

@@ -50,7 +50,25 @@ function kyivDateTime(iso: string | null): string | null {
 }
 
 const EXPORT_HEADERS = {
-  uk: ['Замовлення', 'ID', 'Створено', 'Статус', 'Створив', 'Підтверджено', 'Оплата', 'Оплачено', 'Сума', 'Валюта', 'Товари', 'Одержувач', 'Телефон', 'Місто', 'Відділення', 'ТТН', 'Статус НП'],
+  uk: [
+    'Замовлення',
+    'ID',
+    'Створено',
+    'Статус',
+    'Створив',
+    'Підтверджено',
+    'Оплата',
+    'Оплачено',
+    'Сума',
+    'Валюта',
+    'Товари',
+    'Одержувач',
+    'Телефон',
+    'Місто',
+    'Відділення',
+    'ТТН',
+    'Статус НП',
+  ],
   en: ['Order', 'ID', 'Created', 'Status', 'Created by', 'Approved', 'Payment', 'Paid', 'Total', 'Currency', 'Items', 'Recipient', 'Phone', 'City', 'Branch', 'TTN', 'NP status'],
 };
 
@@ -109,7 +127,15 @@ const draftView = ({ draft: d, items }: OrderDraft, pay?: OrderPaymentRow, notic
   customerNotices: notices.map((n) => ({ event: n.event, state: n.state, code: n.code, at: n.updatedAt })),
   createdAt: d.createdAt,
   updatedAt: d.updatedAt,
-  items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, sku: i.sku, productName: i.productName, options: i.options, quantity: i.quantity, unitPriceMinor: i.unitPriceMinor })),
+  items: items.map((i) => ({
+    productId: i.productId,
+    variantId: i.variantId,
+    sku: i.sku,
+    productName: i.productName,
+    options: i.options,
+    quantity: i.quantity,
+    unitPriceMinor: i.unitPriceMinor,
+  })),
 });
 
 const eventView = (e: OrderEventRow) => ({ from: e.fromStatus, to: e.toStatus, actor: e.actor, note: e.note, at: e.createdAt });
@@ -127,11 +153,20 @@ function translate(e: unknown): never {
  */
 export function registerOrderRoutes(
   app: FastifyInstance,
-  deps: { shops: ShopRepository; auth: AuthRepository; orders: OrderRepository; delivery: DeliveryService; payments: PaymentService; paymentRepo: PaymentRepository; noticeRepo: CustomerNoticeRepository },
+  deps: {
+    shops: ShopRepository;
+    auth: AuthRepository;
+    orders: OrderRepository;
+    delivery: DeliveryService;
+    payments: PaymentService;
+    paymentRepo: PaymentRepository;
+    noticeRepo: CustomerNoticeRepository;
+  },
 ) {
   const { shops, auth, orders, delivery, payments, paymentRepo, noticeRepo } = deps;
   const requireRole = makeRequireRole(shops, auth);
-  const view = (d: OrderDraft) => draftView(d, paymentRepo.latestFor(d.draft.shopId, [d.draft.id]).get(d.draft.id), noticeRepo.listFor(d.draft.shopId, d.draft.id));
+  const view = async (d: OrderDraft) =>
+    draftView(d, (await paymentRepo.latestFor(d.draft.shopId, [d.draft.id])).get(d.draft.id), await noticeRepo.listFor(d.draft.shopId, d.draft.id));
 
   route(app, {
     method: 'GET',
@@ -141,12 +176,12 @@ export function registerOrderRoutes(
     auth: 'user',
     params: shopP,
     query: listQuery,
-    handler: ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
-      const r = orders.listDrafts(params.shopId, query);
+    handler: async ({ req, params, query }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const r = await orders.listDrafts(params.shopId, query);
       const ids = r.items.map((d) => d.draft.id);
-      const pays = paymentRepo.latestFor(params.shopId, ids);
-      const notices = noticeRepo.listForDrafts(params.shopId, ids);
+      const pays = await paymentRepo.latestFor(params.shopId, ids);
+      const notices = await noticeRepo.listForDrafts(params.shopId, ids);
       return { total: r.total, items: r.items.map((d) => draftView(d, pays.get(d.draft.id), notices.get(d.draft.id))) };
     },
   });
@@ -159,13 +194,13 @@ export function registerOrderRoutes(
     auth: 'user',
     params: shopP,
     query: exportQuery,
-    handler: ({ req, reply, params, query }) => {
-      const { shop } = requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, reply, params, query }) => {
+      const { shop } = await requireRole(req, params.shopId, 'manager');
       const to = query.to ? new Date(query.to) : new Date();
       const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 86_400_000);
       if (from >= to) throw new ApiError('VALIDATION_ERROR', 'from must be before to');
       if (to.getTime() - from.getTime() > EXPORT_MAX_DAYS * 86_400_000) throw new ApiError('VALIDATION_ERROR', `the period is at most ${EXPORT_MAX_DAYS} days`);
-      const list = orders.listForExport(params.shopId, { from: from.toISOString(), to: to.toISOString(), status: query.status, limit: EXPORT_LIMIT + 1 });
+      const list = await orders.listForExport(params.shopId, { from: from.toISOString(), to: to.toISOString(), status: query.status, limit: EXPORT_LIMIT + 1 });
       if (list.length > EXPORT_LIMIT) throw new ApiError('VALIDATION_ERROR', `more than ${EXPORT_LIMIT} orders in this period: choose a shorter one`);
       const uk = shop.defaultLanguage.toLowerCase().startsWith('uk');
       const rows: Cell[][] = [uk ? EXPORT_HEADERS.uk : EXPORT_HEADERS.en];
@@ -202,29 +237,30 @@ export function registerOrderRoutes(
     tag: 'orders',
     auth: 'user',
     params: draftP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      const d = orders.getDraft(params.shopId, params.draftId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const d = await orders.getDraft(params.shopId, params.draftId);
       if (!d) throw new ApiError('NOT_FOUND', 'order draft not found');
-      return view(d);
+      return await view(d);
     },
   });
 
   route(app, {
     method: 'POST',
     url: '/v1/shops/:shopId/order-drafts/:draftId/approve',
-    summary: 'Approve a pending draft with complete checkout data: reduces stock for every line or fails without change; COD orders then get a TTN, prepaid ones a payment link (any member)',
+    summary:
+      'Approve a pending draft with complete checkout data: reduces stock for every line or fails without change; COD orders then get a TTN, prepaid ones a payment link (any member)',
     tag: 'orders',
     auth: 'user',
     params: draftP,
     body: decisionBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'manager');
       try {
-        const d = orders.approve(params.shopId, params.draftId, req.user!.user.id, body.note);
+        const d = await orders.approve(params.shopId, params.draftId, req.user!.user.id, body.note);
         delivery.afterApproval(params.shopId, d);
         payments.afterApproval(params.shopId, d);
-        return view(d);
+        return await view(d);
       } catch (e) {
         translate(e);
       }
@@ -239,10 +275,10 @@ export function registerOrderRoutes(
     auth: 'user',
     params: draftP,
     body: decisionBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'manager');
       try {
-        return view(orders.reject(params.shopId, params.draftId, req.user!.user.id, body.note));
+        return await view(await orders.reject(params.shopId, params.draftId, req.user!.user.id, body.note));
       } catch (e) {
         translate(e);
       }
@@ -259,35 +295,54 @@ export function registerOrderRoutes(
       params: draftP,
       body,
       handler: async ({ req, params, body: b }) => {
-        requireRole(req, params.shopId, 'manager');
+        await requireRole(req, params.shopId, 'manager');
         try {
-          return view(await fn(params.shopId, params.draftId, req.user!.user.id, b as never));
+          return await view(await fn(params.shopId, params.draftId, req.user!.user.id, b as never));
         } catch (e) {
           translate(e);
         }
       },
     });
 
-  draftAction('cancel', 'Cancel an approved order before it ships; its stock comes back once and an unpaid payment link is deactivated (any member)', decisionBody, (shopId, draftId, userId, b: { note?: string }) => {
-    const d = orders.cancel(shopId, draftId, userId, b.note);
-    payments.afterCancel(shopId, draftId);
-    return d;
-  });
-  draftAction('payment-link', 'Create the payment link of an unpaid prepaid order now, or a new one after a failed attempt or payment (any member). One active link per order', z.strictObject({}), async (shopId, draftId) => {
-    await payments.createLink(shopId, draftId);
-    return orders.getDraft(shopId, draftId)!;
-  });
-  draftAction('refund-requested', "Record that the customer asked for a refund (any member). The refund itself is made in the provider's cabinet", decisionBody, (shopId, draftId, userId, b: { note?: string }) =>
-    payments.refundRequested(shopId, draftId, userId, b.note),
+  draftAction(
+    'cancel',
+    'Cancel an approved order before it ships; its stock comes back once and an unpaid payment link is deactivated (any member)',
+    decisionBody,
+    async (shopId, draftId, userId, b: { note?: string }) => {
+      const d = await orders.cancel(shopId, draftId, userId, b.note);
+      await payments.afterCancel(shopId, draftId);
+      return d;
+    },
+  );
+  draftAction(
+    'payment-link',
+    'Create the payment link of an unpaid prepaid order now, or a new one after a failed attempt or payment (any member). One active link per order',
+    z.strictObject({}),
+    async (shopId, draftId) => {
+      await payments.createLink(shopId, draftId);
+      return (await orders.getDraft(shopId, draftId))!;
+    },
+  );
+  draftAction(
+    'refund-requested',
+    "Record that the customer asked for a refund (any member). The refund itself is made in the provider's cabinet",
+    decisionBody,
+    async (shopId, draftId, userId, b: { note?: string }) => await payments.refundRequested(shopId, draftId, userId, b.note),
   );
   draftAction('ttn', 'Create the Nova Poshta TTN now, or retry after a refused attempt (any member). At most one TTN per order', z.strictObject({}), (shopId, draftId) =>
     delivery.createTtn(shopId, draftId),
   );
-  draftAction('ttn/release', 'After checking the NP cabinet: no parcel exists for an uncertain TTN attempt, allow a retry (any member)', z.strictObject({}), (shopId, draftId) =>
-    orders.releaseUncertainTtn(shopId, draftId),
+  draftAction(
+    'ttn/release',
+    'After checking the NP cabinet: no parcel exists for an uncertain TTN attempt, allow a retry (any member)',
+    z.strictObject({}),
+    async (shopId, draftId) => await orders.releaseUncertainTtn(shopId, draftId),
   );
-  draftAction('returned', 'The returning parcel is back at the shop: stock is restored once unless restock is false (any member)', returnedBody, (shopId, draftId, userId, b: { restock?: boolean; note?: string }) =>
-    orders.markReturned(shopId, draftId, userId, b),
+  draftAction(
+    'returned',
+    'The returning parcel is back at the shop: stock is restored once unless restock is false (any member)',
+    returnedBody,
+    async (shopId, draftId, userId, b: { restock?: boolean; note?: string }) => await orders.markReturned(shopId, draftId, userId, b),
   );
 
   route(app, {
@@ -297,14 +352,22 @@ export function registerOrderRoutes(
     tag: 'orders',
     auth: 'user',
     params: draftP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      if (!orders.getDraft(params.shopId, params.draftId)) throw new ApiError('NOT_FOUND', 'order draft not found');
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      if (!(await orders.getDraft(params.shopId, params.draftId))) throw new ApiError('NOT_FOUND', 'order draft not found');
       return {
-        items: paymentRepo.listFor(params.shopId, params.draftId).map((p) => ({
-          ...paymentView(p),
-          events: paymentRepo.listEvents(params.shopId, p.id).map((e) => ({ status: e.status, providerModifiedAt: e.providerModifiedAt || null, source: e.source, verdict: e.verdict, at: e.createdAt })),
-        })),
+        items: await Promise.all(
+          (await paymentRepo.listFor(params.shopId, params.draftId)).map(async (p) => ({
+            ...paymentView(p),
+            events: (await paymentRepo.listEvents(params.shopId, p.id)).map((e) => ({
+              status: e.status,
+              providerModifiedAt: e.providerModifiedAt || null,
+              source: e.source,
+              verdict: e.verdict,
+              at: e.createdAt,
+            })),
+          })),
+        ),
       };
     },
   });
@@ -316,10 +379,10 @@ export function registerOrderRoutes(
     tag: 'orders',
     auth: 'user',
     params: draftP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      if (!orders.getDraft(params.shopId, params.draftId)) throw new ApiError('NOT_FOUND', 'order draft not found');
-      return { items: orders.listEvents(params.shopId, params.draftId).map(eventView) };
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      if (!(await orders.getDraft(params.shopId, params.draftId))) throw new ApiError('NOT_FOUND', 'order draft not found');
+      return { items: (await orders.listEvents(params.shopId, params.draftId)).map(eventView) };
     },
   });
 }

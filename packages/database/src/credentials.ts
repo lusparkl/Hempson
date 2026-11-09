@@ -180,10 +180,15 @@ export class CredentialVault {
   }
 
   /** Stores (or overwrites) the shop's credential of this kind and makes it `active`. */
-  save(shopId: string, kind: CredentialKind, secret: string): CredentialMeta {
+  async save(shopId: string, kind: CredentialKind, secret: string): Promise<CredentialMeta> {
+    return this.saveTx(shopId, kind, secret);
+  }
+
+  /** Sync body of `save`: runs inside the caller's transaction. Package-internal. */
+  saveTx(shopId: string, kind: CredentialKind, secret: string): CredentialMeta {
     if (!CREDENTIAL_KINDS.includes(kind)) throw new CredentialConfigError('unknown credential kind');
     if (!secret || secret.length > MAX_SECRET_CHARS) throw new CredentialConfigError(`secret must be 1-${MAX_SECRET_CHARS} characters`);
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       const ts = this.now();
       const existing = this.row(shopId, kind);
       const id = existing?.id ?? randomUUID();
@@ -198,12 +203,18 @@ export class CredentialVault {
             .get()!,
         );
       }
-      return toMeta(this.db.insert(t.shopCredentials).values({ id, shopId, kind, status: 'active', ...sealed, createdAt: ts, rotatedAt: null, lastUsedAt: null, revokedAt: null }).returning().get());
-    })();
+      return toMeta(
+        this.db
+          .insert(t.shopCredentials)
+          .values({ id, shopId, kind, status: 'active', ...sealed, createdAt: ts, rotatedAt: null, lastUsedAt: null, revokedAt: null })
+          .returning()
+          .get(),
+      );
+    });
   }
 
   /** Non-secret view: status and times only. Works without a master key. */
-  get(shopId: string, kind: CredentialKind): CredentialMeta | undefined {
+  async get(shopId: string, kind: CredentialKind): Promise<CredentialMeta | undefined> {
     const r = this.row(shopId, kind);
     return r && toMeta(r);
   }
@@ -232,7 +243,7 @@ export class CredentialVault {
   }
 
   /** The provider rejected the credential: stop all use until the owner reconnects. Idempotent. */
-  mark(shopId: string, kind: CredentialKind, status: 'revoked' | 'needs_reconnect'): CredentialMeta | undefined {
+  async mark(shopId: string, kind: CredentialKind, status: 'revoked' | 'needs_reconnect'): Promise<CredentialMeta | undefined> {
     const r = this.db
       .update(t.shopCredentials)
       .set({ status, revokedAt: this.now() })
@@ -243,12 +254,17 @@ export class CredentialVault {
   }
 
   /** Deletes the stored secret entirely. */
-  delete(shopId: string, kind: CredentialKind): boolean {
-    return this.db.delete(t.shopCredentials).where(and(eq(t.shopCredentials.shopId, shopId), eq(t.shopCredentials.kind, kind))).run().changes > 0;
+  async delete(shopId: string, kind: CredentialKind): Promise<boolean> {
+    return (
+      this.db
+        .delete(t.shopCredentials)
+        .where(and(eq(t.shopCredentials.shopId, shopId), eq(t.shopCredentials.kind, kind)))
+        .run().changes > 0
+    );
   }
 
   /** Number of rows still wrapped with a master key version other than the current one. */
-  countStale(): number {
+  async countStale(): Promise<number> {
     return this.db.select({ id: t.shopCredentials.id }).from(t.shopCredentials).where(ne(t.shopCredentials.keyVersion, this.ring().currentVersion)).all().length;
   }
 
@@ -257,9 +273,9 @@ export class CredentialVault {
    * the sealed secrets. Idempotent and restartable (rows already on the current version are skipped; one transaction).
    * Throws, changing nothing, if any row needs a key version missing from the keyring.
    */
-  rewrapAll(): { rewrapped: number; total: number } {
+  async rewrapAll(): Promise<{ rewrapped: number; total: number }> {
     const ring = this.ring();
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       const rows = this.db.select().from(t.shopCredentials).all();
       let rewrapped = 0;
       for (const r of rows) {
@@ -278,6 +294,6 @@ export class CredentialVault {
         rewrapped++;
       }
       return { rewrapped, total: rows.length };
-    })();
+    });
   }
 }

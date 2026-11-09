@@ -18,14 +18,14 @@ afterEach(async () => {
 
 const chat = (body: unknown = hello, origin: string | null = ORIGIN) =>
   a!.app.inject({ method: 'POST', url: '/public/demo/chat', headers: origin ? { origin } : {}, payload: body as never });
-const demoShop = () => a!.shops.getBySlug(DEMO_SLUG)!;
+const demoShop = async () => (await a!.shops.getBySlug(DEMO_SLUG))!;
 
 describe('website demo', () => {
   it('is off by default and creates no shop', async () => {
     a = await makeApp({ llm: new ScriptedLlm([]) });
     expect((await call(a, null, 'GET', '/public/demo')).body).toEqual({ available: false, products: [] });
     expect((await chat()).statusCode).toBe(503);
-    expect(a.shops.getBySlug(DEMO_SLUG)).toBeUndefined();
+    expect(await a.shops.getBySlug(DEMO_SLUG)).toBeUndefined();
   });
 
   it('stays off without a model', async () => {
@@ -44,12 +44,12 @@ describe('website demo', () => {
     expect(r.statusCode).toBe(200);
     expect(r.json()).toEqual({ outcome: 'replied', reply: 'Худі Classic коштує 1299 грн.', checks: ['search_products'] });
     expect(llm.calls[0]!.messages[0]!.content).toContain('демонстраційний магазин');
-    const id = demoShop().id;
-    expect(a.agentRepo.listRuns(id).items).toEqual([]);
-    expect(a.conversations.listConversations(id).items).toEqual([]);
-    expect(a.orders.listDrafts(id).items).toEqual([]);
-    expect(a.agentRepo.listEscalations(id).items).toEqual([]);
-    expect(a.plans.usage(id).aiReplies).toBe(0);
+    const id = (await demoShop()).id;
+    expect((await a.agentRepo.listRuns(id)).items).toEqual([]);
+    expect((await a.conversations.listConversations(id)).items).toEqual([]);
+    expect((await a.orders.listDrafts(id)).items).toEqual([]);
+    expect((await a.agentRepo.listEscalations(id)).items).toEqual([]);
+    expect((await a.plans.usage(id)).aiReplies).toBe(0);
   });
 
   it('refuses custom instructions and oversized input before calling the model', async () => {
@@ -104,14 +104,14 @@ describe('website demo', () => {
   it('seeds once across restarts and has no members', async () => {
     a = await makeApp({ ...on, llm: new ScriptedLlm([]) });
     const { dir } = a;
-    const id = demoShop().id;
-    const count = a.catalog.listProducts(id).total;
+    const id = (await demoShop()).id;
+    const count = (await a.catalog.listProducts(id)).total;
     expect(count).toBeGreaterThan(0);
-    expect(a.auth.listMembers(id)).toEqual([]);
+    expect(await a.auth.listMembers(id)).toEqual([]);
     await a.close();
     a = await makeApp({ ...on, llm: new ScriptedLlm([]), dir });
-    expect(demoShop().id).toBe(id);
-    expect(a.catalog.listProducts(id).total).toBe(count);
+    expect((await demoShop()).id).toBe(id);
+    expect((await a.catalog.listProducts(id)).total).toBe(count);
   });
 
   it('never exposes a real shop that took the slug', async () => {
@@ -120,7 +120,7 @@ describe('website demo', () => {
     await call(a, null, 'POST', '/v1/auth/register', { email: 'o@example.com', displayName: 'O', password: PW });
     const token = (await call(a, null, 'POST', '/v1/auth/login', { email: 'o@example.com', password: PW })).body.token as string;
     const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Справжній', slug: DEMO_SLUG })).body.shopId as string;
-    a.catalog.createProduct(shopId, { name: 'Секрет', priceMinor: 100, currency: 'UAH', sku: 'REAL-1', stock: 1 });
+    await a.catalog.createProduct(shopId, { name: 'Секрет', priceMinor: 100, currency: 'UAH', sku: 'REAL-1', stock: 1 });
     await a.close();
     a = await makeApp({ ...on, llm: new ScriptedLlm([]), dir });
     expect((await call(a, null, 'GET', '/public/demo')).body).toEqual({ available: false, products: [] });

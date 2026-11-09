@@ -40,31 +40,32 @@ async function setup() {
   const shop = (await call(a, owner, 'POST', '/v1/shops', { name: 'S', slug: 'shop-one' })).body.shopId as string;
   await call(a, owner, 'POST', `/v1/shops/${shop}/members`, { email: 'mgr@example.com', role: 'manager' });
   const other = (await call(a, out, 'POST', '/v1/shops', { name: 'O', slug: 'shop-two' })).body.shopId as string;
-  for (const s of [shop, other]) a.catalog.createProduct(s, { name: 'Худі', priceMinor: 100_000, currency: 'UAH', variants: [{ sku: 'H-M', options: { size: 'M' }, stock: 50 }] });
-  const ingest = (shopId: string, thread: string, ext: string, text: string, customer = 'u1') =>
-    a.conversations.ingestMessage(shopId, {
+  for (const s of [shop, other])
+    await a.catalog.createProduct(s, { name: 'Худі', priceMinor: 100_000, currency: 'UAH', variants: [{ sku: 'H-M', options: { size: 'M' }, stock: 50 }] });
+  const ingest = async (shopId: string, thread: string, ext: string, text: string, customer = 'u1') =>
+    await a.conversations.ingestMessage(shopId, {
       channel: 'instagram',
       conversationExternalId: thread,
       customer: { externalId: customer, displayName: 'Оксана' },
       externalId: ext,
       text,
     });
-  const draft = (shopId: string, conversationId: string, over: Record<string, unknown> = {}) =>
-    a.orders.createDraft(shopId, { conversationId, createdBy: 'ai', items: [{ sku: 'H-M', quantity: 1 }], checkout, ...over }).draft;
+  const draft = async (shopId: string, conversationId: string, over: Record<string, unknown> = {}) =>
+    (await a.orders.createDraft(shopId, { conversationId, createdBy: 'ai', items: [{ sku: 'H-M', quantity: 1 }], checkout, ...over })).draft;
   return { owner, mgr, out, shop, other, ingest, draft };
 }
 
 describe('P10 conversation list fields', () => {
   it('shows the newest non-system message and per-member unread state', async () => {
     const { owner, mgr, out, shop, ingest } = await setup();
-    const x = ingest(shop, 't1', 'm1', 'Привіт');
+    const x = await ingest(shop, 't1', 'm1', 'Привіт');
     const url = `/v1/shops/${shop}/conversations`;
     let list = (await call(a, owner, 'GET', url)).body;
     expect(list.items[0]).toMatchObject({ conversationId: x.conversation.id, unread: true, lastMessage: { text: 'Привіт', senderType: 'customer', attachments: 0 } });
     expect((await call(a, owner, 'GET', `${url}/unread-count`)).body).toEqual({ count: 1 });
 
-    a.conversations.recordOutbound(shop, x.conversation.id, { senderType: 'ai', text: 'Вітаю! Чим допомогти?' });
-    a.conversations.recordOutbound(shop, x.conversation.id, { senderType: 'system', text: 'ШІ створив чернетку' });
+    await a.conversations.recordOutbound(shop, x.conversation.id, { senderType: 'ai', text: 'Вітаю! Чим допомогти?' });
+    await a.conversations.recordOutbound(shop, x.conversation.id, { senderType: 'system', text: 'ШІ створив чернетку' });
     list = (await call(a, owner, 'GET', url)).body;
     // System lines are skipped; an AI reply does not make the conversation read.
     expect(list.items[0]).toMatchObject({ unread: true, lastMessage: { text: 'Вітаю! Чим допомогти?', senderType: 'ai' } });
@@ -76,13 +77,19 @@ describe('P10 conversation list fields', () => {
     expect((await call(a, mgr, 'GET', `${url}/${x.conversation.id}`)).body).toMatchObject({ unread: true, lastMessage: { senderType: 'ai' } });
 
     // A new customer message makes it unread again; the marker never moves back.
-    ingest(shop, 't1', 'm2', 'Є розмір M?');
+    await ingest(shop, 't1', 'm2', 'Є розмір M?');
     expect((await call(a, owner, 'GET', `${url}/${x.conversation.id}`)).body.unread).toBe(true);
     expect((await call(a, owner, 'PUT', `${url}/${x.conversation.id}/read`, { seq: 1 })).body).toEqual({ lastSeenSeq: 3, unread: true });
     expect((await call(a, owner, 'PUT', `${url}/${x.conversation.id}/read`, { seq: 99 })).body).toEqual({ lastSeenSeq: 4, unread: false });
 
     // Attachment-only message: no text, attachment count.
-    a.conversations.ingestMessage(shop, { channel: 'instagram', conversationExternalId: 't1', customer: { externalId: 'u1' }, externalId: 'm3', attachments: [{ kind: 'image' }] });
+    await a.conversations.ingestMessage(shop, {
+      channel: 'instagram',
+      conversationExternalId: 't1',
+      customer: { externalId: 'u1' },
+      externalId: 'm3',
+      attachments: [{ kind: 'image' }],
+    });
     expect((await call(a, owner, 'GET', `${url}/${x.conversation.id}`)).body.lastMessage).toMatchObject({ text: null, attachments: 1 });
 
     // Outsiders and other shops' ids get 404 / 400.
@@ -93,7 +100,7 @@ describe('P10 conversation list fields', () => {
 
   it('another shop cannot mark this conversation read through its own path', async () => {
     const { owner, out, shop, other, ingest } = await setup();
-    const x = ingest(shop, 't1', 'm1', 'Привіт');
+    const x = await ingest(shop, 't1', 'm1', 'Привіт');
     expect((await call(a, out, 'PUT', `/v1/shops/${other}/conversations/${x.conversation.id}/read`, {})).status).toBe(404);
     expect((await call(a, owner, 'GET', `/v1/shops/${shop}/conversations/unread-count`)).body.count).toBe(1);
   });
@@ -102,17 +109,17 @@ describe('P10 conversation list fields', () => {
 describe('P10 customer card', () => {
   it('stores a private note and shows contacts and orders across conversations', async () => {
     const { owner, mgr, out, shop, other, ingest, draft } = await setup();
-    const c1 = ingest(shop, 't1', 'm1', 'Привіт');
-    const c2 = ingest(shop, 't2', 'm2', 'Ще одне замовлення');
+    const c1 = await ingest(shop, 't1', 'm1', 'Привіт');
+    const c2 = await ingest(shop, 't2', 'm2', 'Ще одне замовлення');
     expect(c2.customer.id).toBe(c1.customer.id);
     const curl = `/v1/shops/${shop}/customers/${c1.customer.id}`;
 
     let card = (await call(a, owner, 'GET', curl)).body;
     expect(card).toMatchObject({ customerId: c1.customer.id, note: null, profile: { phone: null, city: null, orders: { count: 0, placed: 0, totals: [], lastAt: null } } });
 
-    const d1 = draft(shop, c1.conversation.id);
-    draft(shop, c2.conversation.id, { createdBy: 'user', checkout: { ...checkout, npCityName: 'Львів', phone: '067 000 11 22' } });
-    a.orders.reject(shop, d1.id, a.auth.getUserByEmail('owner@example.com')!.id);
+    const d1 = await draft(shop, c1.conversation.id);
+    await draft(shop, c2.conversation.id, { createdBy: 'user', checkout: { ...checkout, npCityName: 'Львів', phone: '067 000 11 22' } });
+    await a.orders.reject(shop, d1.id, (await a.auth.getUserByEmail('owner@example.com'))!.id);
     card = (await call(a, owner, 'GET', curl)).body;
     // Newest order with contacts wins; the rejected order counts in `count` but not in the totals.
     expect(card.profile).toMatchObject({ phone: '+380670001122', city: 'Львів', orders: { count: 2, placed: 1, totals: [{ currency: 'UAH', totalMinor: 100_000 }] } });
@@ -135,23 +142,23 @@ describe('P10 customer card', () => {
 describe('P10 order numbers', () => {
   it('numbers orders per shop in creation order and shows them in the API', async () => {
     const { owner, shop, other, ingest, draft } = await setup();
-    const x = ingest(shop, 't1', 'm1', 'Привіт');
-    const y = ingest(other, 't1', 'm1', 'Привіт');
-    const n1 = draft(shop, x.conversation.id, { createdBy: 'user' }).number;
-    const n2 = draft(shop, x.conversation.id, { createdBy: 'user' }).number;
-    const o1 = draft(other, y.conversation.id).number;
+    const x = await ingest(shop, 't1', 'm1', 'Привіт');
+    const y = await ingest(other, 't1', 'm1', 'Привіт');
+    const n1 = (await draft(shop, x.conversation.id, { createdBy: 'user' })).number;
+    const n2 = (await draft(shop, x.conversation.id, { createdBy: 'user' })).number;
+    const o1 = (await draft(other, y.conversation.id)).number;
     expect([n1, n2, o1]).toEqual([1, 2, 1]);
     const list = (await call(a, owner, 'GET', `/v1/shops/${shop}/order-drafts`)).body;
     expect(list.items.map((d: { number: number }) => d.number)).toEqual([2, 1]);
     // Customers see the same number as the shop.
-    const d2 = a.orders.listDrafts(shop).items[0]!.draft;
+    const d2 = (await a.orders.listDrafts(shop)).items[0]!.draft;
     expect(noticeText('delivered', d2, 'uk')).toBe('Замовлення №2 отримано. Дякуємо за покупку!');
     expect(paymentText('link', { language: 'uk', order: '№2', amountMinor: 100_000, url: 'https://pay.example/x', expiresAt: '2026-11-04T10:00:00Z' })).toContain(
       'Замовлення №2 підтверджено',
     );
   });
 
-  it('the migration numbers existing orders and marks existing history as seen', () => {
+  it('the migration numbers existing orders and marks existing history as seen', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'hepson-mig-'));
     try {
       // Migrations folder up to 0015, as before the upgrade.
@@ -201,7 +208,7 @@ describe('P10 order numbers', () => {
       order('d-late', 's1', 3);
       order('d-early', 's1', 2);
       order('d-other', 's2', 4);
-      runMigrations(h);
+      await runMigrations(h);
       const nums = h.raw.prepare(`select id, number from order_drafts order by id`).all();
       expect(nums).toEqual([
         { id: 'd-early', number: 1 },
@@ -220,12 +227,12 @@ describe('P10 order numbers', () => {
 describe('P10 notification feed', () => {
   it('lists hand-offs, new orders, payment and TTN problems with per-member read state', async () => {
     const { owner, mgr, out, shop, other, ingest, draft } = await setup();
-    const x = ingest(shop, 't1', 'm1', 'Привіт');
+    const x = await ingest(shop, 't1', 'm1', 'Привіт');
     const feedUrl = `/v1/shops/${shop}/notification-feed`;
     expect((await call(a, owner, 'GET', feedUrl)).body).toEqual({ seenAt: null, unread: 0, items: [] });
 
-    const esc = a.agentRepo.escalate(shop, x.conversation.id, 'Питання про знижку').escalation;
-    const d = draft(shop, x.conversation.id);
+    const esc = (await a.agentRepo.escalate(shop, x.conversation.id, 'Питання про знижку')).escalation;
+    const d = await draft(shop, x.conversation.id);
     a.handle.raw.prepare(`update order_drafts set ttn_state = 'failed', ttn_error = 'NP refused' where id = ?`).run(d.id);
     const now = new Date().toISOString();
     a.handle.raw
@@ -234,8 +241,8 @@ describe('P10 notification feed', () => {
       )
       .run(shop, d.id, now, now, now);
     // Noise in another shop must not show up.
-    const y = ingest(other, 't1', 'm1', 'Привіт');
-    a.agentRepo.escalate(other, y.conversation.id, 'Чужий запит');
+    const y = await ingest(other, 't1', 'm1', 'Привіт');
+    await a.agentRepo.escalate(other, y.conversation.id, 'Чужий запит');
 
     let f = (await call(a, owner, 'GET', feedUrl)).body;
     expect(f.unread).toBe(4);
@@ -260,8 +267,8 @@ describe('P10 notification feed', () => {
 
     // Resolving shows in the item; a later hand-off is unread again.
     await new Promise((r) => setTimeout(r, 5));
-    a.agentRepo.resolveEscalation(shop, esc.id, null);
-    a.agentRepo.escalate(shop, x.conversation.id, 'Ще питання');
+    await a.agentRepo.resolveEscalation(shop, esc.id, null);
+    await a.agentRepo.escalate(shop, x.conversation.id, 'Ще питання');
     f = (await call(a, owner, 'GET', feedUrl)).body;
     expect(f.unread).toBe(1);
     expect(f.items[0]).toMatchObject({ kind: 'handoff', reason: 'Ще питання', unread: true });

@@ -33,16 +33,16 @@ export function registerWebChatRoutes(
   /** The page's origin. Browsers omit `Origin` on same-origin GETs, so the storefront page (P9) is recognised by `Sec-Fetch-Site`. */
   const originOf = (req: FastifyRequest) => req.headers.origin ?? (req.headers['sec-fetch-site'] === 'same-origin' ? ownOrigin : undefined);
   /** A shop's allowed origins, plus this server's own origin while the shop's storefront page is on (the widget runs there). */
-  const allowed = (cfg: WebChatConfigRow, origin: string | undefined) =>
-    svc.originAllowed(cfg, origin) || (!!origin && origin.toLowerCase() === ownOrigin && shops.get(cfg.shopId)?.storefrontEnabled === true);
+  const allowed = async (cfg: WebChatConfigRow, origin: string | undefined) =>
+    svc.originAllowed(cfg, origin) || (!!origin && origin.toLowerCase() === ownOrigin && (await shops.get(cfg.shopId))?.storefrontEnabled === true);
 
   // CORS: only an allowed origin of an enabled widget gets Access-Control-Allow-Origin; everyone else is blocked by the browser and refused by the handlers.
   app.addHook('onRequest', async (req, reply) => {
     const m = CORS_PREFIX.exec(req.url);
     if (!m) return;
-    const cfg = svc.config(safeDecode(m[1]!));
+    const cfg = await svc.config(safeDecode(m[1]!));
     const origin = req.headers.origin;
-    const ok = !!cfg && allowed(cfg, origin);
+    const ok = !!cfg && (await allowed(cfg, origin));
     if (ok) {
       reply
         .header('access-control-allow-origin', origin!)
@@ -55,10 +55,10 @@ export function registerWebChatRoutes(
   });
 
   /** Unknown/disabled key = 404 (no existence leak); wrong or missing Origin = 403. */
-  const gate = (req: FastifyRequest, widgetKey: string): WebChatConfigRow => {
-    const cfg = svc.config(widgetKey);
+  const gate = async (req: FastifyRequest, widgetKey: string): Promise<WebChatConfigRow> => {
+    const cfg = await svc.config(widgetKey);
     if (!cfg) throw new ApiError('NOT_FOUND', 'Chat not found');
-    if (!allowed(cfg, originOf(req))) throw new ApiError('FORBIDDEN', 'Origin not allowed');
+    if (!(await allowed(cfg, originOf(req)))) throw new ApiError('FORBIDDEN', 'Origin not allowed');
     return cfg;
   };
   const token = (req: FastifyRequest) => {
@@ -87,7 +87,7 @@ export function registerWebChatRoutes(
     params: keyP,
     body: sessionBody,
     status: 201,
-    handler: ({ req, params, body }) => svc.openSession(gate(req, params.widgetKey), req.ip, body.name),
+    handler: async ({ req, params, body }) => await svc.openSession(await gate(req, params.widgetKey), req.ip, body.name),
   });
 
   route(app, {
@@ -99,9 +99,9 @@ export function registerWebChatRoutes(
     params: keyP,
     body: z.strictObject({ text: z.string().trim().min(1).max(1000) }),
     status: 201,
-    handler: ({ req, params, body }) => {
-      const cfg = gate(req, params.widgetKey);
-      return { message: visitorView(svc.send(cfg, svc.session(cfg, token(req)), req.ip, body.text)) };
+    handler: async ({ req, params, body }) => {
+      const cfg = await gate(req, params.widgetKey);
+      return { message: visitorView(await svc.send(cfg, await svc.session(cfg, token(req)), req.ip, body.text)) };
     },
   });
 
@@ -113,14 +113,14 @@ export function registerWebChatRoutes(
     auth: 'none',
     params: keyP,
     query: afterQ,
-    handler: ({ req, params, query }) => {
-      const cfg = gate(req, params.widgetKey);
-      return { items: svc.messages(cfg, svc.session(cfg, token(req)), query.afterSeq).map(visitorView) };
+    handler: async ({ req, params, query }) => {
+      const cfg = await gate(req, params.widgetKey);
+      return { items: (await svc.messages(cfg, await svc.session(cfg, token(req)), query.afterSeq)).map(visitorView) };
     },
   });
 
-  const configView = (shopId: string) => {
-    const c = webChat.getConfig(shopId);
+  const configView = async (shopId: string) => {
+    const c = await webChat.getConfig(shopId);
     const snippet = c ? `<script src="${publicUrl}/widget/web-chat.js" data-key="${c.widgetKey}" data-lang="uk" async></script>` : null;
     return { enabled: c?.enabled ?? false, widgetKey: c?.widgetKey ?? null, allowedOrigins: c?.allowedOrigins ?? [], snippet, updatedAt: c?.updatedAt ?? null };
   };
@@ -136,9 +136,9 @@ export function registerWebChatRoutes(
     tag: 'web-chat',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return configView(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await configView(params.shopId);
     },
   });
 
@@ -150,14 +150,14 @@ export function registerWebChatRoutes(
     auth: 'user',
     params: shopP,
     body: configBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        webChat.updateConfig(params.shopId, body);
+        await webChat.updateConfig(params.shopId, body);
       } catch (e) {
         translate(e);
       }
-      return configView(params.shopId);
+      return await configView(params.shopId);
     },
   });
 
@@ -169,10 +169,10 @@ export function registerWebChatRoutes(
     auth: 'user',
     params: shopP,
     status: 200,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'owner');
-      webChat.rotateKey(params.shopId);
-      return configView(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'owner');
+      await webChat.rotateKey(params.shopId);
+      return await configView(params.shopId);
     },
   });
 }

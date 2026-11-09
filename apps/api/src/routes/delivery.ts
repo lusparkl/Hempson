@@ -1,7 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ApiError } from '../errors';
-import { DeliveryValidationError, RefusalNotFoundError, type AuthRepository, type ConversationRepository, type DeliveryRepository, type OrderRepository, type RefusalRow, type ShopRepository } from '@hepson/database';
+import {
+  DeliveryValidationError,
+  RefusalNotFoundError,
+  type AuthRepository,
+  type ConversationRepository,
+  type DeliveryRepository,
+  type OrderRepository,
+  type RefusalRow,
+  type ShopRepository,
+} from '@hepson/database';
 import type { DeliveryService } from '../services/delivery';
 import { route } from './define';
 import { makeRequireRole } from './shops';
@@ -33,7 +42,14 @@ const refusalView = (r: RefusalRow) => ({ refusalId: r.id, source: r.source, dra
  */
 export function registerDeliveryRoutes(
   app: FastifyInstance,
-  deps: { shops: ShopRepository; auth: AuthRepository; delivery: DeliveryService; deliveryRepo: DeliveryRepository; orders: OrderRepository; conversations: ConversationRepository },
+  deps: {
+    shops: ShopRepository;
+    auth: AuthRepository;
+    delivery: DeliveryService;
+    deliveryRepo: DeliveryRepository;
+    orders: OrderRepository;
+    conversations: ConversationRepository;
+  },
 ) {
   const { shops, auth, delivery, deliveryRepo, orders, conversations } = deps;
   const requireRole = makeRequireRole(shops, auth);
@@ -50,9 +66,9 @@ export function registerDeliveryRoutes(
     tag: 'delivery',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return delivery.status(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await delivery.status(params.shopId);
     },
   });
 
@@ -65,7 +81,7 @@ export function registerDeliveryRoutes(
     params: shopP,
     body: keyBody,
     handler: async ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+      await requireRole(req, params.shopId, 'owner');
       return delivery.connect(params.shopId, body.apiKey);
     },
   });
@@ -77,10 +93,10 @@ export function registerDeliveryRoutes(
     tag: 'delivery',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'owner');
-      delivery.disconnect(params.shopId);
-      return delivery.status(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'owner');
+      await delivery.disconnect(params.shopId);
+      return await delivery.status(params.shopId);
     },
   });
 
@@ -92,14 +108,14 @@ export function registerDeliveryRoutes(
     auth: 'user',
     params: shopP,
     body: settingsBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        deliveryRepo.updateSettings(params.shopId, body);
+        await deliveryRepo.updateSettings(params.shopId, body);
       } catch (e) {
         translate(e);
       }
-      return delivery.status(params.shopId);
+      return await delivery.status(params.shopId);
     },
   });
 
@@ -112,7 +128,7 @@ export function registerDeliveryRoutes(
     params: shopP,
     query: cityQ,
     handler: async ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
+      await requireRole(req, params.shopId, 'manager');
       return { items: await delivery.cities(params.shopId, query.q) };
     },
   });
@@ -126,23 +142,28 @@ export function registerDeliveryRoutes(
     params: shopP,
     query: branchQ,
     handler: async ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
+      await requireRole(req, params.shopId, 'manager');
       return { items: await delivery.warehouses(params.shopId, query.cityRef, query.q) };
     },
   });
 
   // Refusals are counted by the phone of the customer's latest order, else by customer id (D25).
-  const latestPhone = (shopId: string, customerId: string) =>
-    orders
-      .listDrafts(shopId, { limit: 200 })
-      .items.find((d) => d.draft.customerId === customerId && d.draft.recipientPhone)?.draft.recipientPhone ?? null;
-  const refusalState = (shopId: string, customerId: string) => {
-    const phone = latestPhone(shopId, customerId);
-    const pm = deliveryRepo.paymentMethods(shopId, { phone, customerId });
-    return { customerId, phone, refusals: pm.refusals, codBlocked: pm.codBlocked, limit: deliveryRepo.getSettings(shopId).refusalLimit, items: deliveryRepo.listRefusals(shopId, { phone, customerId }).map(refusalView) };
+  const latestPhone = async (shopId: string, customerId: string) =>
+    (await orders.listDrafts(shopId, { limit: 200 })).items.find((d) => d.draft.customerId === customerId && d.draft.recipientPhone)?.draft.recipientPhone ?? null;
+  const refusalState = async (shopId: string, customerId: string) => {
+    const phone = await latestPhone(shopId, customerId);
+    const pm = await deliveryRepo.paymentMethods(shopId, { phone, customerId });
+    return {
+      customerId,
+      phone,
+      refusals: pm.refusals,
+      codBlocked: pm.codBlocked,
+      limit: (await deliveryRepo.getSettings(shopId)).refusalLimit,
+      items: (await deliveryRepo.listRefusals(shopId, { phone, customerId })).map(refusalView),
+    };
   };
-  const requireCustomer = (shopId: string, customerId: string) => {
-    if (!conversations.getCustomer(shopId, customerId)) throw new ApiError('NOT_FOUND', 'customer not found');
+  const requireCustomer = async (shopId: string, customerId: string) => {
+    if (!(await conversations.getCustomer(shopId, customerId))) throw new ApiError('NOT_FOUND', 'customer not found');
   };
 
   route(app, {
@@ -152,10 +173,10 @@ export function registerDeliveryRoutes(
     tag: 'delivery',
     auth: 'user',
     params: customerP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      requireCustomer(params.shopId, params.customerId);
-      return refusalState(params.shopId, params.customerId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      await requireCustomer(params.shopId, params.customerId);
+      return await refusalState(params.shopId, params.customerId);
     },
   });
 
@@ -168,15 +189,20 @@ export function registerDeliveryRoutes(
     params: customerP,
     body: refusalBody,
     status: 201,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'manager');
-      requireCustomer(params.shopId, params.customerId);
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'manager');
+      await requireCustomer(params.shopId, params.customerId);
       try {
-        deliveryRepo.addMemberRefusal(params.shopId, { customerId: params.customerId, note: body.note }, req.user!.user.id, latestPhone(params.shopId, params.customerId));
+        await deliveryRepo.addMemberRefusal(
+          params.shopId,
+          { customerId: params.customerId, note: body.note },
+          req.user!.user.id,
+          await latestPhone(params.shopId, params.customerId),
+        );
       } catch (e) {
         translate(e);
       }
-      return refusalState(params.shopId, params.customerId);
+      return await refusalState(params.shopId, params.customerId);
     },
   });
 
@@ -187,15 +213,15 @@ export function registerDeliveryRoutes(
     tag: 'delivery',
     auth: 'user',
     params: refusalP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      requireCustomer(params.shopId, params.customerId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      await requireCustomer(params.shopId, params.customerId);
       try {
-        deliveryRepo.removeRefusal(params.shopId, params.refusalId);
+        await deliveryRepo.removeRefusal(params.shopId, params.refusalId);
       } catch (e) {
         translate(e);
       }
-      return refusalState(params.shopId, params.customerId);
+      return await refusalState(params.shopId, params.customerId);
     },
   });
 }

@@ -52,7 +52,14 @@ const notifier = () => ({ notify: vi.fn(), whenIdle: async () => {} });
 async function setup(o: { script?: Entry[]; publicUrl?: string; keyring?: Keyring | null; notif?: ReturnType<typeof notifier> } = {}) {
   const tg = fakeTelegram();
   const llm = new ScriptedLlm(o.script ?? []);
-  a = await makeApp({ publicUrl: o.publicUrl ?? 'https://hepson.example', keyring: o.keyring !== undefined ? o.keyring : new Keyring(1, randomBytes(32)), fetchImpl: tg.fetchImpl, llm, notifier: o.notif, telegramBotToken: OPERATOR_TOKEN });
+  a = await makeApp({
+    publicUrl: o.publicUrl ?? 'https://hepson.example',
+    keyring: o.keyring !== undefined ? o.keyring : new Keyring(1, randomBytes(32)),
+    fetchImpl: tg.fetchImpl,
+    llm,
+    notifier: o.notif,
+    telegramBotToken: OPERATOR_TOKEN,
+  });
   const token = await login('o@example.com');
   const shopId = await newShop(token, 'shop-one');
   return { tg, llm, token, shopId };
@@ -74,7 +81,14 @@ async function connect(s: S, shopId = s.shopId, botToken = TOKEN_A) {
 
 const update = (messageId: number, text: string | null, over: Record<string, unknown> = {}) => ({
   update_id: 900000 + messageId,
-  message: { message_id: messageId, date: Math.floor(Date.now() / 1000), chat: { id: CHAT, type: 'private', first_name: 'Іра' }, from: { id: CHAT, is_bot: false, first_name: 'Іра', last_name: 'К', username: 'ira_k' }, ...(text === null ? {} : { text }), ...over },
+  message: {
+    message_id: messageId,
+    date: Math.floor(Date.now() / 1000),
+    chat: { id: CHAT, type: 'private', first_name: 'Іра' },
+    from: { id: CHAT, is_bot: false, first_name: 'Іра', last_name: 'К', username: 'ira_k' },
+    ...(text === null ? {} : { text }),
+    ...over,
+  },
 });
 
 async function deliver(path: string, secret: string | null, payload: unknown) {
@@ -85,10 +99,10 @@ async function deliver(path: string, secret: string | null, payload: unknown) {
   return res;
 }
 
-const conv = (shopId: string) => a!.conversations.findConversationByExternal(shopId, TELEGRAM_CHANNEL, String(CHAT));
-const msgs = (shopId: string) => a!.conversations.listMessages(shopId, conv(shopId)!.conversation.id, { limit: 100 }).items;
+const conv = async (shopId: string) => await a!.conversations.findConversationByExternal(shopId, TELEGRAM_CHANNEL, String(CHAT));
+const msgs = async (shopId: string) => (await a!.conversations.listMessages(shopId, (await conv(shopId))!.conversation.id, { limit: 100 })).items;
 const sends = (s: S) => s.tg.calls.filter((c) => c.method === 'sendMessage');
-const runs = (shopId: string) => a!.agentRepo.listRuns(shopId, { limit: 50 }).items;
+const runs = async (shopId: string) => (await a!.agentRepo.listRuns(shopId, { limit: 50 })).items;
 
 describe('connect', () => {
   it('owner connects; token is checked, webhook registered with a secret, stored encrypted and never returned', async () => {
@@ -109,9 +123,9 @@ describe('connect', () => {
     expect(reg.allowed_updates).toEqual(['message']);
     expect(reg.drop_pending_updates).toBe(true);
 
-    expect(a!.vault.get(s.shopId, 'telegram_bot')?.status).toBe('active');
+    expect((await a!.vault.get(s.shopId, 'telegram_bot'))?.status).toBe('active');
     // Neither the token nor the webhook secret is stored in plaintext anywhere in the database.
-    const dump = JSON.stringify(a!.handle.raw.prepare("select * from telegram_channels").all()) + JSON.stringify(a!.handle.raw.prepare("select * from shop_credentials").all());
+    const dump = JSON.stringify(a!.handle.raw.prepare('select * from telegram_channels').all()) + JSON.stringify(a!.handle.raw.prepare('select * from shop_credentials').all());
     expect(dump).not.toContain(TOKEN_A.split(':')[1]);
     expect(dump).not.toContain(secret);
     expect((await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/telegram`)).body).toMatchObject({ status: 'connected' });
@@ -125,7 +139,7 @@ describe('connect', () => {
     const r = await call(a!, s.token, 'PUT', `/v1/shops/${s.shopId}/telegram`, { token: TOKEN_A });
     expect(r.status).toBe(400);
     expect(JSON.stringify(r.body)).not.toContain(TOKEN_A);
-    expect(a!.vault.get(s.shopId, 'telegram_bot')).toBeUndefined();
+    expect(await a!.vault.get(s.shopId, 'telegram_bot')).toBeUndefined();
     expect((await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/telegram`)).body.status).toBe('not_connected');
   });
 
@@ -133,7 +147,7 @@ describe('connect', () => {
     const s = await setup();
     s.tg.setWebhook = () => err(400);
     expect((await connect(s)).res.status).toBe(400);
-    expect(a!.vault.get(s.shopId, 'telegram_bot')).toBeUndefined();
+    expect(await a!.vault.get(s.shopId, 'telegram_bot')).toBeUndefined();
   });
 
   it('only the owner may connect or disconnect; members may read the state', async () => {
@@ -162,7 +176,7 @@ describe('connect', () => {
     const { path, secret } = await connect(s);
     expect((await call(a!, s.token, 'DELETE', `/v1/shops/${s.shopId}/telegram`)).status).toBe(200);
     expect(s.tg.calls.at(-1)).toMatchObject({ token: TOKEN_A, method: 'deleteWebhook' });
-    expect(a!.vault.get(s.shopId, 'telegram_bot')).toBeUndefined();
+    expect(await a!.vault.get(s.shopId, 'telegram_bot')).toBeUndefined();
     expect((await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/telegram`)).body.status).toBe('not_connected');
     expect((await deliver(path, secret, update(1, 'Привіт'))).statusCode).toBe(401);
   });
@@ -185,15 +199,17 @@ describe('webhook ingest and replies', () => {
     const res = await deliver(path, secret, update(1, 'Привіт, є кросівки?'));
     expect(res.statusCode).toBe(200);
 
-    const c = conv(s.shopId)!;
+    const c = (await conv(s.shopId))!;
     expect(c.customer).toMatchObject({ externalId: String(CHAT), displayName: 'Іра К', handle: 'ira_k' });
-    const m = msgs(s.shopId);
+    const m = await msgs(s.shopId);
     expect(m.map((x) => [x.direction, x.text, x.externalId, x.deliveryStatus])).toEqual([
       ['incoming', 'Привіт, є кросівки?', `${CHAT}:1`, 'received'],
       ['outgoing', 'Вітаю! Чим допомогти?', `${CHAT}:101`, 'sent'],
     ]);
-    expect(sends(s)).toEqual([{ token: TOKEN_A, method: 'sendMessage', params: { chat_id: String(CHAT), text: 'Вітаю! Чим допомогти?', link_preview_options: { is_disabled: true } } }]);
-    expect(runs(s.shopId).map((r) => r.status)).toEqual(['replied']);
+    expect(sends(s)).toEqual([
+      { token: TOKEN_A, method: 'sendMessage', params: { chat_id: String(CHAT), text: 'Вітаю! Чим допомогти?', link_preview_options: { is_disabled: true } } },
+    ]);
+    expect((await runs(s.shopId)).map((r) => r.status)).toEqual(['replied']);
   });
 
   it('a redelivered update is stored once and answered once', async () => {
@@ -201,8 +217,8 @@ describe('webhook ingest and replies', () => {
     const { path, secret } = await connect(s);
     await deliver(path, secret, update(7, 'Привіт'));
     expect((await deliver(path, secret, update(7, 'Привіт'))).statusCode).toBe(200);
-    expect(msgs(s.shopId).filter((m) => m.direction === 'incoming')).toHaveLength(1);
-    expect(runs(s.shopId)).toHaveLength(1);
+    expect((await msgs(s.shopId)).filter((m) => m.direction === 'incoming')).toHaveLength(1);
+    expect(await runs(s.shopId)).toHaveLength(1);
     expect(sends(s)).toHaveLength(1);
   });
 
@@ -213,8 +229,8 @@ describe('webhook ingest and replies', () => {
       expect((await deliver(path, bad, update(1, 'Привіт'))).statusCode).toBe(401);
     }
     expect((await deliver('/webhooks/telegram/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', secret, update(1, 'Привіт'))).statusCode).toBe(401);
-    expect(conv(s.shopId)).toBeUndefined();
-    expect(runs(s.shopId)).toHaveLength(0);
+    expect(await conv(s.shopId)).toBeUndefined();
+    expect(await runs(s.shopId)).toHaveLength(0);
   });
 
   it('ignores groups, bots, service messages and non-message updates', async () => {
@@ -230,14 +246,14 @@ describe('webhook ingest and replies', () => {
     ]) {
       expect((await deliver(path, secret, p)).statusCode).toBe(200);
     }
-    expect(conv(s.shopId)).toBeUndefined();
+    expect(await conv(s.shopId)).toBeUndefined();
   });
 
   it('stores a photo with caption as text plus an image attachment', async () => {
     const s = await setup({ script: [say('Гарне фото!')] });
     const { path, secret } = await connect(s);
     await deliver(path, secret, update(1, null, { photo: [{ file_id: 'f', width: 1, height: 1 }], caption: 'Такі є?' }));
-    expect(msgs(s.shopId)[0]).toMatchObject({ text: 'Такі є?', attachments: [{ kind: 'image' }] });
+    expect((await msgs(s.shopId))[0]).toMatchObject({ text: 'Такі є?', attachments: [{ kind: 'image' }] });
   });
 
   it('a customer who blocked the bot: the reply is failed, not retried', async () => {
@@ -245,8 +261,8 @@ describe('webhook ingest and replies', () => {
     const { path, secret } = await connect(s);
     s.tg.sendMessage = () => err(403);
     await deliver(path, secret, update(1, 'Привіт'));
-    expect(msgs(s.shopId).at(-1)).toMatchObject({ direction: 'outgoing', deliveryStatus: 'failed', deliveryError: 'BOT_BLOCKED' });
-    expect(runs(s.shopId)[0]).toMatchObject({ status: 'failed', detail: 'BOT_BLOCKED' });
+    expect((await msgs(s.shopId)).at(-1)).toMatchObject({ direction: 'outgoing', deliveryStatus: 'failed', deliveryError: 'BOT_BLOCKED' });
+    expect((await runs(s.shopId))[0]).toMatchObject({ status: 'failed', detail: 'BOT_BLOCKED' });
     expect(sends(s)).toHaveLength(1);
     expect((await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/telegram`)).body.status).toBe('connected');
   });
@@ -256,8 +272,8 @@ describe('webhook ingest and replies', () => {
     const { path, secret } = await connect(s);
     s.tg.sendMessage = () => Promise.reject(new Error('socket hang up'));
     await deliver(path, secret, update(1, 'Привіт'));
-    expect(msgs(s.shopId).at(-1)).toMatchObject({ deliveryStatus: 'uncertain' });
-    expect(runs(s.shopId)[0]!.status).toBe('send_uncertain');
+    expect((await msgs(s.shopId)).at(-1)).toMatchObject({ deliveryStatus: 'uncertain' });
+    expect((await runs(s.shopId))[0]!.status).toBe('send_uncertain');
     expect(sends(s)).toHaveLength(1);
   });
 
@@ -268,7 +284,7 @@ describe('webhook ingest and replies', () => {
     s.tg.sendMessage = () => err(401);
     await deliver(path, secret, update(1, 'Привіт'));
     expect((await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/telegram`)).body).toMatchObject({ status: 'needs_reconnect', lastError: 'TOKEN_REJECTED' });
-    expect(a!.vault.get(s.shopId, 'telegram_bot')?.status).toBe('needs_reconnect');
+    expect((await a!.vault.get(s.shopId, 'telegram_bot'))?.status).toBe('needs_reconnect');
     expect(notif.notify).toHaveBeenCalledWith({ kind: 'channel_issue', shopId: s.shopId, channel: 'telegram', issue: 'needs_reconnect' });
   });
 
@@ -276,7 +292,7 @@ describe('webhook ingest and replies', () => {
     const s = await setup({ script: [say('Вітаю!')] });
     const { path, secret } = await connect(s);
     await deliver(path, secret, update(1, 'Привіт'));
-    const r = await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${conv(s.shopId)!.conversation.id}/messages`, { text: 'Це менеджер' });
+    const r = await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${(await conv(s.shopId))!.conversation.id}/messages`, { text: 'Це менеджер' });
     expect(r.status).toBe(201);
     expect(r.body).toMatchObject({ deliveryStatus: 'sent', aiPaused: true });
     expect(sends(s).at(-1)!.params.text).toBe('Це менеджер');
@@ -287,9 +303,9 @@ describe('webhook ingest and replies', () => {
     const { path, secret } = await connect(s);
     await deliver(path, secret, update(1, 'Привіт'));
     await call(a!, s.token, 'DELETE', `/v1/shops/${s.shopId}/telegram`);
-    const before = msgs(s.shopId).length;
-    expect((await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${conv(s.shopId)!.conversation.id}/messages`, { text: 'x' })).status).toBe(409);
-    expect(msgs(s.shopId)).toHaveLength(before);
+    const before = (await msgs(s.shopId)).length;
+    expect((await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/conversations/${(await conv(s.shopId))!.conversation.id}/messages`, { text: 'x' })).status).toBe(409);
+    expect(await msgs(s.shopId)).toHaveLength(before);
   });
 });
 
@@ -306,8 +322,8 @@ describe('isolation between shops', () => {
     expect((await deliver(a1.path, b1.secret, update(1, 'x'))).statusCode).toBe(401);
     await deliver(a1.path, a1.secret, update(1, 'для A'));
     await deliver(b1.path, b1.secret, update(1, 'для B'));
-    expect(msgs(s.shopId).map((m) => m.text)).toEqual(['для A', 'A']);
-    expect(msgs(shopB).map((m) => m.text)).toEqual(['для B', 'B']);
+    expect((await msgs(s.shopId)).map((m) => m.text)).toEqual(['для A', 'A']);
+    expect((await msgs(shopB)).map((m) => m.text)).toEqual(['для B', 'B']);
     // Each reply went through its own shop's bot; the operator notifier token was never used for customers.
     expect(sends(s).map((c) => c.token)).toEqual([TOKEN_A, TOKEN_B]);
     expect(s.tg.calls.some((c) => c.token === OPERATOR_TOKEN)).toBe(false);

@@ -24,9 +24,9 @@ export function registerTelegramRoutes(app: FastifyInstance, deps: { shops: Shop
     tag: 'telegram',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return tg.status(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await tg.status(params.shopId);
     },
   });
 
@@ -39,7 +39,7 @@ export function registerTelegramRoutes(app: FastifyInstance, deps: { shops: Shop
     params: shopP,
     body: connectBody,
     handler: async ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+      await requireRole(req, params.shopId, 'owner');
       return tg.connect(params.shopId, body.token);
     },
   });
@@ -52,7 +52,7 @@ export function registerTelegramRoutes(app: FastifyInstance, deps: { shops: Shop
     auth: 'user',
     params: shopP,
     handler: async ({ req, params }) => {
-      requireRole(req, params.shopId, 'owner');
+      await requireRole(req, params.shopId, 'owner');
       await tg.disconnect(params.shopId);
       return { ok: true };
     },
@@ -65,9 +65,9 @@ export function registerTelegramRoutes(app: FastifyInstance, deps: { shops: Shop
     tag: 'telegram',
     auth: 'none',
     params: webhookP,
-    handler: ({ req, params }) => {
+    handler: async ({ req, params }) => {
       const secret = req.headers['x-telegram-bot-api-secret-token'];
-      tg.handleUpdate(params.webhookId, typeof secret === 'string' ? secret : undefined, req.body);
+      await tg.handleUpdate(params.webhookId, typeof secret === 'string' ? secret : undefined, req.body);
       return { ok: true };
     },
   });

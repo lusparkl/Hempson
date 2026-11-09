@@ -80,8 +80,8 @@ export class CustomerNoticeService {
   }
 
   /** At startup: notices a crash left mid-send become `uncertain`, then whatever is still pending goes out. */
-  start(): void {
-    const n = this.d.repo.recoverInterrupted();
+  async start(): Promise<void> {
+    const n = await this.d.repo.recoverInterrupted();
     if (n) this.d.log.warn({ count: n }, 'customer notices interrupted mid-send marked uncertain');
     this.kick();
   }
@@ -115,34 +115,34 @@ export class CustomerNoticeService {
 
   private async drain(): Promise<void> {
     for (;;) {
-      const batch = this.d.repo.listPending();
+      const batch = await this.d.repo.listPending();
       if (!batch.length || this.stopped) return;
       for (const n of batch) {
         if (this.stopped) return;
-        if (this.d.repo.claim(n.shopId, n.id)) await this.sendOne(n);
+        if (await this.d.repo.claim(n.shopId, n.id)) await this.sendOne(n);
       }
     }
   }
 
   private async sendOne(n: CustomerNoticeRow): Promise<void> {
     const { repo, log } = this.d;
-    const d = this.d.orders.getDraft(n.shopId, n.draftId)?.draft;
-    const skip = (code: string) => {
-      repo.finish(n.shopId, n.id, 'skipped', code);
+    const d = (await this.d.orders.getDraft(n.shopId, n.draftId))?.draft;
+    const skip = async (code: string) => {
+      await repo.finish(n.shopId, n.id, 'skipped', code);
       log.info({ shopId: n.shopId, draftId: n.draftId, event: n.event, code }, 'customer notice skipped');
     };
-    if (!d) return skip('NOT_FOUND');
-    if (this.now().getTime() - Date.parse(n.createdAt) > MAX_AGE_MS) return skip('STALE');
-    if (d.status === 'cancelled' && n.event !== 'rejected') return skip('ORDER_CANCELLED');
-    const text = noticeText(n.event, d, this.d.shops.get(n.shopId)?.defaultLanguage ?? 'uk');
-    if (!text) return skip('MISSING_DATA');
+    if (!d) return await skip('NOT_FOUND');
+    if (this.now().getTime() - Date.parse(n.createdAt) > MAX_AGE_MS) return await skip('STALE');
+    if (d.status === 'cancelled' && n.event !== 'rejected') return await skip('ORDER_CANCELLED');
+    const text = noticeText(n.event, d, (await this.d.shops.get(n.shopId))?.defaultLanguage ?? 'uk');
+    if (!text) return await skip('MISSING_DATA');
     let r: { status: 'sent' | 'uncertain' | 'failed'; code: string | null };
     try {
       r = await this.d.send(n.shopId, d.conversationId, text);
     } catch {
       r = { status: 'failed', code: 'SEND_ERROR' };
     }
-    repo.finish(n.shopId, n.id, r.status, r.code);
+    await repo.finish(n.shopId, n.id, r.status, r.code);
     if (r.status === 'sent') return;
     log.warn({ shopId: n.shopId, draftId: n.draftId, event: n.event, status: r.status, code: r.code }, 'customer notice not delivered');
     // The customer did not get it (Instagram window closed, channel disconnected): the shop tells them another way.

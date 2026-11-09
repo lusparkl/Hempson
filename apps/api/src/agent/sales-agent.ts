@@ -93,10 +93,10 @@ export class SalesAgent {
   }
 
   /** A new inbound message stored in the shop tables (website chat, Instagram, Telegram). */
-  trigger(shopId: string, conversationId: string, triggerMessageId: string): void {
-    if (!this.d.agent.getSettings(shopId).enabled) return;
-    const trigger = this.d.conversations.getMessage(shopId, triggerMessageId);
-    const conv = this.d.conversations.getConversation(shopId, conversationId);
+  async trigger(shopId: string, conversationId: string, triggerMessageId: string): Promise<void> {
+    if (!(await this.d.agent.getSettings(shopId)).enabled) return;
+    const trigger = await this.d.conversations.getMessage(shopId, triggerMessageId);
+    const conv = await this.d.conversations.getConversation(shopId, conversationId);
     if (!trigger || !conv || trigger.direction !== 'incoming' || trigger.conversationId !== conversationId) return;
     const ch = conv.conversation.channel;
     const delivery: Delivery | null =
@@ -117,25 +117,25 @@ export class SalesAgent {
 
   private async process(t: Target): Promise<void> {
     const { agent, conversations, shops, log } = this.d;
-    const shop = shops.get(t.shopId);
+    const shop = await shops.get(t.shopId);
     if (!shop) return;
     // Re-check after queueing: the owner may have switched the AI off meanwhile.
-    if (!agent.getSettings(t.shopId).enabled) return;
-    const run = agent.startRun(t.shopId, t.shopConversationId, t.trigger.id);
+    if (!(await agent.getSettings(t.shopId)).enabled) return;
+    const run = await agent.startRun(t.shopId, t.shopConversationId, t.trigger.id);
     if (!run) return; // this message already has a run: never answer it twice
-    const finish = (status: AiRunStatus, detail: string | null, extra: RunPatch = {}) => agent.updateRun(t.shopId, run.id, { status, detail, ...extra });
+    const finish = async (status: AiRunStatus, detail: string | null, extra: RunPatch = {}) => await agent.updateRun(t.shopId, run.id, { status, detail, ...extra });
 
     try {
-      if (conversations.getConversation(t.shopId, t.shopConversationId)?.conversation.aiPaused) return void finish('skipped', 'AI_PAUSED');
-      if (agent.openEscalation(t.shopId, t.shopConversationId)) return void finish('skipped', 'ESCALATION_OPEN');
-      const recent = conversations.listMessages(t.shopId, t.shopConversationId, { limit: HISTORY }).items;
+      if ((await conversations.getConversation(t.shopId, t.shopConversationId))?.conversation.aiPaused) return void finish('skipped', 'AI_PAUSED');
+      if (await agent.openEscalation(t.shopId, t.shopConversationId)) return void finish('skipped', 'ESCALATION_OPEN');
+      const recent = (await conversations.listMessages(t.shopId, t.shopConversationId, { limit: HISTORY })).items;
       const newest = recent.at(-1);
       if (newest?.id !== t.trigger.id)
         return void finish(newest?.direction === 'incoming' ? 'superseded' : 'skipped', newest?.direction === 'incoming' ? 'NEWER_MESSAGE' : 'ALREADY_ANSWERED');
-      const quota = this.d.plans.usage(t.shopId, run.id);
+      const quota = await this.d.plans.usage(t.shopId, run.id);
       if (quota.capReached) return void (await this.atCap(t, run.id, quota, shop.defaultLanguage));
 
-      const conv = conversations.getConversation(t.shopId, t.shopConversationId)!;
+      const conv = (await conversations.getConversation(t.shopId, t.shopConversationId))!;
       const facts = new RunFacts();
       const ctx = {
         shopId: t.shopId,
@@ -155,14 +155,14 @@ export class SalesAgent {
         photoSearch: this.d.photos ? this.photoSearch(t.shopId, conv.conversation.channel, recent) : undefined,
       };
       const messages: ChatMessage[] = [
-        { role: 'system', content: buildSystemPrompt(shop, conv.conversation.channel, agent.getSettings(t.shopId).instructions) },
+        { role: 'system', content: buildSystemPrompt(shop, conv.conversation.channel, (await agent.getSettings(t.shopId)).instructions) },
         ...recent.map(toChat),
       ];
       const turn = await this.converse(messages, ctx, trailingCustomerText(recent));
       if (turn.silentEscalation) return void finish('escalated', 'ESCALATED', turn.usage);
       if (turn.reply === null) {
         const reason = facts.escalatedReason ?? 'AI reply could not be verified; please answer the customer';
-        const e = agent.escalate(t.shopId, t.shopConversationId, reason, run.id);
+        const e = await agent.escalate(t.shopId, t.shopConversationId, reason, run.id);
         if (e.created) this.d.notifier?.notify({ kind: 'escalation', shopId: t.shopId, conversationId: t.shopConversationId, reason });
         log.warn({ shopId: t.shopId, runId: run.id }, 'agent reply blocked');
         return void finish('escalated', turn.blocked.length ? 'GUARD_BLOCKED' : 'STEP_LIMIT', turn.usage);
@@ -171,7 +171,7 @@ export class SalesAgent {
     } catch (e) {
       const detail = e instanceof LlmError ? `LLM_${e.status ?? 'ERROR'}` : 'INTERNAL';
       log.warn({ shopId: t.shopId, runId: run.id, detail, err: e instanceof Error ? e.message : String(e) }, 'agent run failed');
-      finish('failed', detail);
+      await finish('failed', detail);
     }
   }
 
@@ -234,7 +234,7 @@ export class SalesAgent {
    * Works while the agent is switched off; `instructions` lets the owner try unsaved notes.
    */
   async playground(shopId: string, input: { messages: Array<{ role: 'customer' | 'assistant'; text: string }>; instructions?: string }): Promise<PlaygroundResult> {
-    const shop = this.d.shops.get(shopId);
+    const shop = await this.d.shops.get(shopId);
     if (!shop) throw new Error('shop not found');
     const history = input.messages.slice(-HISTORY);
     const facts = new RunFacts();
@@ -253,7 +253,7 @@ export class SalesAgent {
       sandbox: true,
     };
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildSystemPrompt(shop, WEB_CHANNEL, input.instructions ?? this.d.agent.getSettings(shopId).instructions) },
+      { role: 'system', content: buildSystemPrompt(shop, WEB_CHANNEL, input.instructions ?? (await this.d.agent.getSettings(shopId)).instructions) },
       ...history.map((m): ChatMessage => ({ role: m.role === 'customer' ? 'user' : 'assistant', content: m.text.slice(0, HISTORY_CHARS) })),
     ];
     const customerText: string[] = [];
@@ -286,43 +286,41 @@ export class SalesAgent {
     const { agent, conversations } = this.d;
     const uk = language.toLowerCase().startsWith('uk');
     const reason = uk ? 'Ліміт відповідей ШІ на цей місяць вичерпано: дайте відповідь клієнту.' : 'The monthly AI reply limit is reached: please answer the customer.';
-    const e = agent.escalate(t.shopId, t.shopConversationId, reason, runId);
+    const e = await agent.escalate(t.shopId, t.shopConversationId, reason, runId);
     if (e.created) {
       const text = uk ? 'Дякуємо за повідомлення! Менеджер відповість вам найближчим часом.' : 'Thank you for your message! A manager will reply to you shortly.';
       await sendSystemMessage({ conversations, ig: this.d.instagram, tg: this.d.telegram }, t.shopId, t.shopConversationId, text);
     }
-    if (u.aiReplyCap !== null && this.d.plans.claimCapNotice(t.shopId, u.month)) this.d.notifier?.notify({ kind: 'ai_quota', shopId: t.shopId, month: u.month, cap: u.aiReplyCap });
+    if (u.aiReplyCap !== null && (await this.d.plans.claimCapNotice(t.shopId, u.month)))
+      this.d.notifier?.notify({ kind: 'ai_quota', shopId: t.shopId, month: u.month, cap: u.aiReplyCap });
     this.d.log.info({ shopId: t.shopId, runId, month: u.month, cap: u.aiReplyCap }, 'ai reply cap reached');
-    agent.updateRun(t.shopId, runId, { status: 'escalated', detail: 'AI_REPLY_CAP' });
+    await agent.updateRun(t.shopId, runId, { status: 'escalated', detail: 'AI_REPLY_CAP' });
   }
 
   private async send(t: Target, runId: string, text: string, escalated: boolean, usage: RunUsage): Promise<void> {
     const { conversations, agent } = this.d;
-    const done = (status: 'replied' | 'send_uncertain' | 'escalated' | 'failed' | 'superseded', detail: string | null, replyMessageId: string | null = null) =>
-      agent.updateRun(t.shopId, runId, { ...usage, status, detail, replyMessageId });
+    const done = async (status: 'replied' | 'send_uncertain' | 'escalated' | 'failed' | 'superseded', detail: string | null, replyMessageId: string | null = null) =>
+      await agent.updateRun(t.shopId, runId, { ...usage, status, detail, replyMessageId });
     const ok = escalated ? 'escalated' : 'replied';
 
     // A newer customer message arrived while the model was working: drop this reply, the next run answers everything.
     // Server messages sent meanwhile (a payment link after auto-confirm) do not count.
-    const lastIncoming = conversations
-      .listMessages(t.shopId, t.shopConversationId, { limit: 20 })
-      .items.filter((m) => m.direction === 'incoming')
-      .at(-1);
+    const lastIncoming = (await conversations.listMessages(t.shopId, t.shopConversationId, { limit: 20 })).items.filter((m) => m.direction === 'incoming').at(-1);
     if (lastIncoming && lastIncoming.id !== t.trigger.id) {
-      agent.updateRun(t.shopId, runId, { ...usage, status: 'superseded', detail: 'NEWER_MESSAGE' });
+      await agent.updateRun(t.shopId, runId, { ...usage, status: 'superseded', detail: 'NEWER_MESSAGE' });
       return;
     }
-    const { message } = conversations.recordOutbound(t.shopId, t.shopConversationId, { senderType: 'ai', text, deliveryStatus: 'pending' });
+    const { message } = await conversations.recordOutbound(t.shopId, t.shopConversationId, { senderType: 'ai', text, deliveryStatus: 'pending' });
     const r = await deliverPending({ conversations, ig: this.d.instagram, tg: this.d.telegram }, { shopId: t.shopId, ...t.delivery, message });
     if (r.status === 'sent') return void done(ok, r.code, message.id);
     if (r.status === 'uncertain') return void done('send_uncertain', r.code, message.id);
     if (r.code === 'OUTSIDE_MESSAGING_WINDOW') {
       // The reply cannot reach the customer: hand the conversation to a person instead of staying silent.
       const reason = 'The Instagram 24-hour messaging window closed before the AI reply could be sent';
-      const e = agent.escalate(t.shopId, t.shopConversationId, reason, runId);
+      const e = await agent.escalate(t.shopId, t.shopConversationId, reason, runId);
       if (e.created) this.d.notifier?.notify({ kind: 'escalation', shopId: t.shopId, conversationId: t.shopConversationId, reason });
     }
-    done('failed', r.code, message.id);
+    await done('failed', r.code, message.id);
   }
 }
 

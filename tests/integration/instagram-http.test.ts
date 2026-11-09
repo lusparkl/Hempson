@@ -80,19 +80,19 @@ describe('Instagram webhook HTTP boundary', () => {
         return json({});
       }) as typeof fetch,
     });
-    const shop = a.shops.create({ name: 'Race test', slug: 'race-test' });
-    const user = a.auth.createUser({ email: 'race@example.test', displayName: 'Race test' }, 'unused');
-    const state = new URL(a.ig.startConnect(shop.id, user.id).authorizeUrl).searchParams.get('state')!;
+    const shop = await a.shops.create({ name: 'Race test', slug: 'race-test' });
+    const user = await a.auth.createUser({ email: 'race@example.test', displayName: 'Race test' }, 'unused');
+    const state = new URL((await a.ig.startConnect(shop.id, user.id)).authorizeUrl).searchParams.get('state')!;
 
     await a.ig.completeConnect('code', state);
 
     expect(earlyResponse?.statusCode).toBe(503);
     expect(JSON.parse(earlyResponse!.body).error).toMatchObject({ code: 'TEMPORARY_FAILURE', retryable: true });
-    expect(a.ig.status(shop.id).status).toBe('connected');
-    expect(a.conversations.findConversationByExternal(shop.id, INSTAGRAM_CHANNEL, customerId)).toBeUndefined();
+    expect((await a.ig.status(shop.id)).status).toBe('connected');
+    expect(await a.conversations.findConversationByExternal(shop.id, INSTAGRAM_CHANNEL, customerId)).toBeUndefined();
     expect((await a.app.inject(request)).statusCode).toBe(200);
-    const conversation = a.conversations.findConversationByExternal(shop.id, INSTAGRAM_CHANNEL, customerId)!.conversation;
-    expect(a.conversations.listMessages(shop.id, conversation.id, { limit: 10 }).items).toHaveLength(1);
+    const conversation = (await a.conversations.findConversationByExternal(shop.id, INSTAGRAM_CHANNEL, customerId))!.conversation;
+    expect((await a.conversations.listMessages(shop.id, conversation.id, { limit: 10 })).items).toHaveLength(1);
     await a.ig.whenIdle();
   });
 

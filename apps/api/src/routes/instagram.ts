@@ -35,9 +35,9 @@ export async function registerInstagramRoutes(
     tag: 'instagram',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return ig.status(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await ig.status(params.shopId);
     },
   });
 
@@ -48,9 +48,9 @@ export async function registerInstagramRoutes(
     tag: 'instagram',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'owner');
-      return ig.startConnect(params.shopId, req.user!.user.id);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'owner');
+      return await ig.startConnect(params.shopId, req.user!.user.id);
     },
   });
 
@@ -62,7 +62,7 @@ export async function registerInstagramRoutes(
     auth: 'user',
     params: shopP,
     handler: async ({ req, params }) => {
-      requireRole(req, params.shopId, 'owner');
+      await requireRole(req, params.shopId, 'owner');
       await ig.disconnect(params.shopId);
       return { ok: true };
     },
@@ -118,7 +118,7 @@ export async function registerInstagramRoutes(
       tag: 'instagram',
       auth: 'none',
       bodyLimit: 512 * 1024,
-      handler: ({ req }) => {
+      handler: async ({ req }) => {
         const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
         const sig = req.headers['x-hub-signature-256'];
         if (!verifySignature(raw, typeof sig === 'string' ? sig : undefined, appSecret)) throw new ApiError('UNAUTHORIZED', 'Invalid signature');
@@ -128,7 +128,7 @@ export async function registerInstagramRoutes(
         } catch {
           throw new ApiError('VALIDATION_ERROR', 'Body is not JSON');
         }
-        ig.handleWebhook(payload);
+        await ig.handleWebhook(payload);
         return { ok: true };
       },
     });

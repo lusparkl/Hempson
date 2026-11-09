@@ -47,11 +47,14 @@ export function registerDemoRoutes(
     summary: 'Whether the website demo is on, and its test products (public)',
     tag: 'demo',
     auth: 'none',
-    handler: () => {
+    handler: async () => {
       if (!shopId || !salesAgent) return { available: false, products: [] };
-      const products = catalog
-        .listProducts(shopId, { active: true, limit: 20 })
-        .items.map(({ product: p }) => ({ name: p.name, description: p.description, priceMinor: p.priceMinor, currency: p.currency }));
+      const products = (await catalog.listProducts(shopId, { active: true, limit: 20 })).items.map(({ product: p }) => ({
+        name: p.name,
+        description: p.description,
+        priceMinor: p.priceMinor,
+        currency: p.currency,
+      }));
       return { available: true, products };
     },
   });

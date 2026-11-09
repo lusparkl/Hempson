@@ -33,7 +33,7 @@ export type TelegramServiceDeps = {
   /** Public base URL; the webhook is `<publicUrl>/webhooks/telegram/<webhookId>`. Telegram accepts https only. */
   publicUrl: string;
   /** Called once per genuinely new inbound customer message. */
-  onInbound: (shopId: string, conversationId: string, messageId: string) => void;
+  onInbound: (shopId: string, conversationId: string, messageId: string) => Promise<void>;
   notifier?: Notifier;
   clock?: () => Date;
 };
@@ -94,8 +94,8 @@ export class TelegramService {
   }
 
   /** Non-secret state for the dashboard. */
-  status(shopId: string) {
-    const ch = this.d.repo.getChannel(shopId);
+  async status(shopId: string) {
+    const ch = await this.d.repo.getChannel(shopId);
     return {
       available: this.enabled,
       status: ch ? ch.status : ('not_connected' as const),
@@ -118,7 +118,7 @@ export class TelegramService {
     let botId: string | undefined;
     try {
       const me = await api.getMe(token);
-      const owner = repo.findByBotId(me.id);
+      const owner = await repo.findByBotId(me.id);
       if (owner && owner.shopId !== shopId) throw new TelegramBotTakenError();
       if (this.connectingBots.has(me.id)) throw new ApiError('TEMPORARY_FAILURE', 'Telegram connection is already in progress');
       botId = me.id;
@@ -128,14 +128,11 @@ export class TelegramService {
       step = 'set_webhook';
       await api.setWebhook(token, this.webhookUrl(webhookId), secret);
       // A different bot was connected before: stop it delivering to this shop. Best effort, its token is replaced next.
-      const old = repo.getChannel(shopId);
+      const old = await repo.getChannel(shopId);
       if (old && old.botId !== me.id) await this.dropWebhook(shopId);
-      repo.db.transaction(() => {
-        repo.upsertChannel(shopId, { botId: me.id, botUsername: me.username, webhookId, secret });
-        vault.save(shopId, 'telegram_bot', token);
-      });
+      await repo.connect(shopId, { botId: me.id, botUsername: me.username, webhookId, secret }, vault, token);
       log.info({ shopId }, 'telegram connected');
-      return this.status(shopId);
+      return await this.status(shopId);
     } catch (e) {
       if (e instanceof TelegramBotTakenError) throw new ApiError('VALIDATION_ERROR', e.message);
       if (e instanceof TelegramApiError) {
@@ -162,17 +159,17 @@ export class TelegramService {
     if (this.operations.has(shopId)) throw new ApiError('TEMPORARY_FAILURE', 'Telegram connection is already in progress');
     this.operations.add(shopId);
     try {
-      if (this.d.repo.getChannel(shopId)) await this.dropWebhook(shopId);
-      if (this.d.vault.available) this.d.vault.delete(shopId, 'telegram_bot');
-      this.d.repo.deleteChannel(shopId);
+      if (await this.d.repo.getChannel(shopId)) await this.dropWebhook(shopId);
+      if (this.d.vault.available) await this.d.vault.delete(shopId, 'telegram_bot');
+      await this.d.repo.deleteChannel(shopId);
     } finally {
       this.operations.delete(shopId);
     }
   }
 
-  private markNeedsReconnect(shopId: string, code: string): void {
-    this.d.vault.mark(shopId, 'telegram_bot', 'needs_reconnect');
-    if (this.d.repo.setNeedsReconnect(shopId, code)) {
+  private async markNeedsReconnect(shopId: string, code: string): Promise<void> {
+    await this.d.vault.mark(shopId, 'telegram_bot', 'needs_reconnect');
+    if (await this.d.repo.setNeedsReconnect(shopId, code)) {
       this.d.log.warn({ shopId, code }, 'telegram needs reconnect');
       this.d.notifier?.notify({ kind: 'channel_issue', shopId, channel: 'telegram', issue: 'needs_reconnect' });
     }
@@ -185,11 +182,11 @@ export class TelegramService {
    * Throws a retryable error when storing failed, so Telegram delivers the update again.
    * @returns true when a new inbound customer message was stored.
    */
-  handleUpdate(webhookId: string, secret: string | undefined, payload: unknown): boolean {
-    const ch = this.d.repo.findByWebhookId(webhookId);
+  async handleUpdate(webhookId: string, secret: string | undefined, payload: unknown): Promise<boolean> {
+    const ch = await this.d.repo.findByWebhookId(webhookId);
     if (!ch || !secret || !SECRET_RE.test(secret) || !this.d.repo.secretMatches(ch, secret)) throw new ApiError('UNAUTHORIZED', 'Invalid webhook secret');
     try {
-      return this.ingest(ch, obj(payload));
+      return await this.ingest(ch, obj(payload));
     } catch (err) {
       if (err instanceof ConversationValidationError) {
         this.d.log.warn({ shopId: ch.shopId, err: err.name }, 'telegram update skipped');
@@ -200,7 +197,7 @@ export class TelegramService {
     }
   }
 
-  private ingest(ch: TelegramChannelRow, update: Json): boolean {
+  private async ingest(ch: TelegramChannelRow, update: Json): Promise<boolean> {
     // Only private chats with people; groups, channels, edits and service messages are acknowledged and dropped.
     // Replayed updates carry the same message, and `<chat_id>:<message_id>` is unique per shop, so storage dedupes them.
     const m = obj(update.message);
@@ -216,47 +213,45 @@ export class TelegramService {
     const sec = typeof m.date === 'number' && Number.isFinite(m.date) && m.date > 0 ? m.date * 1000 : NaN;
     const occurredAt = new Date(Number.isFinite(sec) ? Math.min(sec, this.now().getTime()) : this.now().getTime()).toISOString();
     const { conversations } = this.d;
-    // Dispatch is queued for after commit; if it throws, roll the insert back so a redelivery still triggers the agent once.
-    const r = conversations.db.transaction(() => {
-      const incoming = conversations.ingestMessage(ch.shopId, {
-        channel: TELEGRAM_CHANNEL,
-        conversationExternalId: chatId,
-        customer: { externalId: chatId, displayName: name, handle: str(from.username) },
-        externalId: `${chatId}:${messageId}`,
-        text,
-        attachments,
-        occurredAt,
-      });
-      if (!incoming.duplicated) {
-        try {
-          this.d.onInbound(ch.shopId, incoming.conversation.id, incoming.message.id);
-        } catch {
-          throw new ApiError('TEMPORARY_FAILURE', 'Telegram inbound dispatch failed');
-        }
-      }
-      return incoming;
+    const r = await conversations.ingestMessage(ch.shopId, {
+      channel: TELEGRAM_CHANNEL,
+      conversationExternalId: chatId,
+      customer: { externalId: chatId, displayName: name, handle: str(from.username) },
+      externalId: `${chatId}:${messageId}`,
+      text,
+      attachments,
+      occurredAt,
     });
+    // If dispatch throws, undo the insert so a redelivery still triggers the agent once.
+    if (!r.duplicated) {
+      try {
+        await this.d.onInbound(ch.shopId, r.conversation.id, r.message.id);
+      } catch {
+        await conversations.discardIngested(ch.shopId, r.conversation.id, r.message.id);
+        throw new ApiError('TEMPORARY_FAILURE', 'Telegram inbound dispatch failed');
+      }
+    }
     return !r.duplicated;
   }
 
   // ---------- outbound ----------
 
   /** Why a reply cannot be sent right now, or null. Telegram has no messaging window. */
-  blockReason(shopId: string): 'ACCOUNT_NOT_CONNECTED' | null {
-    return this.enabled && this.isConnected(shopId) ? null : 'ACCOUNT_NOT_CONNECTED';
+  async blockReason(shopId: string): Promise<'ACCOUNT_NOT_CONNECTED' | null> {
+    return this.enabled && (await this.isConnected(shopId)) ? null : 'ACCOUNT_NOT_CONNECTED';
   }
 
-  isConnected(shopId: string): boolean {
-    return this.d.repo.getChannel(shopId)?.status === 'connected';
+  async isConnected(shopId: string): Promise<boolean> {
+    return (await this.d.repo.getChannel(shopId))?.status === 'connected';
   }
 
   /** P9: the bytes of a photo a customer sent, for one agent run; null when it cannot be fetched. Never stored. */
   async downloadImage(shopId: string, fileId: string): Promise<Buffer | null> {
-    if (this.blockReason(shopId)) return null;
+    if (await this.blockReason(shopId)) return null;
     try {
       return await this.d.vault.withSecret(shopId, 'telegram_bot', (t) => this.d.api.downloadFile(t, fileId, MAX_PHOTO_BYTES));
     } catch (e) {
-      if (e instanceof TelegramApiError && e.kind === 'auth') this.markNeedsReconnect(shopId, 'TOKEN_REJECTED');
+      if (e instanceof TelegramApiError && e.kind === 'auth') await this.markNeedsReconnect(shopId, 'TOKEN_REJECTED');
       this.d.log.warn({ shopId, err: e instanceof TelegramApiError ? e.kind : e instanceof Error ? e.name : 'ERROR' }, 'telegram photo download failed');
       return null;
     }
@@ -264,15 +259,15 @@ export class TelegramService {
 
   /** Sends one text to the conversation's chat. Never retries; never throws for provider problems. */
   async send(shopId: string, conversationId: string, text: string): Promise<TelegramSendOutcome> {
-    if (this.blockReason(shopId)) return { status: 'failed', code: 'ACCOUNT_NOT_CONNECTED' };
-    const conv = this.d.conversations.getConversation(shopId, conversationId);
+    if (await this.blockReason(shopId)) return { status: 'failed', code: 'ACCOUNT_NOT_CONNECTED' };
+    const conv = await this.d.conversations.getConversation(shopId, conversationId);
     if (!conv || conv.conversation.channel !== TELEGRAM_CHANNEL) return { status: 'failed', code: 'ACCOUNT_NOT_CONNECTED' };
     const chatId = conv.conversation.externalId;
     try {
       const r = await this.d.vault.withSecret(shopId, 'telegram_bot', (t) => this.d.api.sendMessage(t, chatId, text));
       if (r.status === 'sent') return { status: 'sent', externalId: `${chatId}:${r.messageId}` };
       if (r.status === 'uncertain') return r;
-      if (r.authFailure) this.markNeedsReconnect(shopId, r.code);
+      if (r.authFailure) await this.markNeedsReconnect(shopId, r.code);
       return { status: 'failed', code: r.code };
     } catch (e) {
       if (e instanceof CredentialMissingError) return { status: 'failed', code: 'ACCOUNT_NOT_CONNECTED' };

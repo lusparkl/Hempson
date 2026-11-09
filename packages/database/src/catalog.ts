@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, inArray, notInArray, sql } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/sqlite-core';
 import { z } from 'zod';
 import type { Db, DbHandle } from './db';
+import { alias, isUniqueViolation } from './dialect';
 import * as t from './schema';
 
 export type ProductRow = typeof t.products.$inferSelect;
@@ -46,7 +46,13 @@ const options = z.record(z.string().trim().min(1).max(40), z.string().trim().min
 const media = z.array(z.string().trim().min(1).max(2048)).max(20);
 const currency = z.string().regex(/^[A-Z]{3}$/, 'ISO 4217 code, e.g. UAH');
 
-const variantInput = z.strictObject({ sku, options: options.default({}), priceMinor: priceMinor.nullable().optional(), stock: stock.default(0), active: z.boolean().default(true) });
+const variantInput = z.strictObject({
+  sku,
+  options: options.default({}),
+  priceMinor: priceMinor.nullable().optional(),
+  stock: stock.default(0),
+  active: z.boolean().default(true),
+});
 const variantPatch = z
   .strictObject({ sku, options, priceMinor: priceMinor.nullable(), stock, active: z.boolean() })
   .partial()
@@ -65,7 +71,8 @@ const createProduct = z
     variants: z.array(variantInput).min(1).max(200).optional(),
   })
   .superRefine((v, ctx) => {
-    if (v.variants && (v.sku !== undefined || v.stock !== 0)) ctx.addIssue({ code: 'custom', message: 'sku/stock apply only to the default variant; omit them when sending variants' });
+    if (v.variants && (v.sku !== undefined || v.stock !== 0))
+      ctx.addIssue({ code: 'custom', message: 'sku/stock apply only to the default variant; omit them when sending variants' });
     if (!v.variants && !v.sku) ctx.addIssue({ code: 'custom', path: ['sku'], message: 'sku is required when no variants are given' });
   });
 const updateProduct = z
@@ -83,7 +90,6 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   if (!r.success) throw new CatalogValidationError(r.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`));
   return r.data;
 }
-const isUnique = (e: unknown) => (e as { code?: string })?.code === 'SQLITE_CONSTRAINT_UNIQUE';
 /** Effective price: variant override, else product price. */
 export const effectivePrice = (p: ProductRow, v: VariantRow) => v.priceMinor ?? p.priceMinor;
 
@@ -107,7 +113,7 @@ export class CatalogRepository {
 
   /** Runs `fn` atomically; nested calls become savepoints, so an inner throw undoes only the inner work. */
   transaction<T>(fn: () => T): T {
-    return this.handle.raw.transaction(fn)();
+    return this.handle.transaction(fn);
   }
 
   private variantsOf(shopId: string, productIds: string[]): VariantRow[] {
@@ -121,7 +127,11 @@ export class CatalogRepository {
   }
 
   private reindex(shopId: string, productId: string): void {
-    const p = this.db.select().from(t.products).where(and(eq(t.products.shopId, shopId), eq(t.products.id, productId))).get();
+    const p = this.db
+      .select()
+      .from(t.products)
+      .where(and(eq(t.products.shopId, shopId), eq(t.products.id, productId)))
+      .get();
     if (!p) return;
     const vs = this.variantsOf(shopId, [productId]);
     const text = [p.name, p.description, ...vs.flatMap((v) => [v.sku, ...Object.values(v.options)])].join(' ').toLowerCase();
@@ -130,19 +140,35 @@ export class CatalogRepository {
 
   private insertVariant(shopId: string, productId: string, v: z.output<typeof variantInput>): VariantRow {
     const ts = this.now();
-    const row: VariantRow = { id: randomUUID(), shopId, productId, sku: v.sku, options: v.options, priceMinor: v.priceMinor ?? null, stock: v.stock, active: v.active, createdAt: ts, updatedAt: ts };
+    const row: VariantRow = {
+      id: randomUUID(),
+      shopId,
+      productId,
+      sku: v.sku,
+      options: v.options,
+      priceMinor: v.priceMinor ?? null,
+      stock: v.stock,
+      active: v.active,
+      createdAt: ts,
+      updatedAt: ts,
+    };
     try {
       this.db.insert(t.productVariants).values(row).run();
     } catch (e) {
-      if (isUnique(e)) throw new SkuTakenError(v.sku);
+      if (isUniqueViolation(e)) throw new SkuTakenError(v.sku);
       throw e;
     }
     return row;
   }
 
-  createProduct(shopId: string, input: CreateProductInput): ProductWithVariants {
+  async createProduct(shopId: string, input: CreateProductInput): Promise<ProductWithVariants> {
+    return this.createProductTx(shopId, input);
+  }
+
+  /** Sync body of `createProduct`: runs inside the caller's transaction. Package-internal. */
+  createProductTx(shopId: string, input: CreateProductInput): ProductWithVariants {
     const v = parse(createProduct, input);
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       const ts = this.now();
       const product: ProductRow = {
         id: randomUUID(),
@@ -161,39 +187,67 @@ export class CatalogRepository {
       const inputs = v.variants ?? [{ sku: v.sku!, options: {}, priceMinor: null, stock: v.stock, active: true }];
       const variants = inputs.map((x) => this.insertVariant(shopId, product.id, x));
       this.reindex(shopId, product.id);
-      return { product: this.getProduct(shopId, product.id)!.product, variants };
-    })();
+      return { product: this.getProductTx(shopId, product.id)!.product, variants };
+    });
   }
 
-  getProduct(shopId: string, productId: string): ProductWithVariants | undefined {
-    const product = this.db.select().from(t.products).where(and(eq(t.products.shopId, shopId), eq(t.products.id, productId))).get();
+  async getProduct(shopId: string, productId: string): Promise<ProductWithVariants | undefined> {
+    return this.getProductTx(shopId, productId);
+  }
+
+  /** Sync body of `getProduct`: runs inside the caller's transaction. Package-internal. */
+  getProductTx(shopId: string, productId: string): ProductWithVariants | undefined {
+    const product = this.db
+      .select()
+      .from(t.products)
+      .where(and(eq(t.products.shopId, shopId), eq(t.products.id, productId)))
+      .get();
     return product && { product, variants: this.variantsOf(shopId, [productId]) };
   }
 
-  findVariantBySku(shopId: string, skuValue: string): (VariantRow & { product: ProductRow }) | undefined {
+  async findVariantBySku(shopId: string, skuValue: string): Promise<(VariantRow & { product: ProductRow }) | undefined> {
+    return this.findVariantBySkuTx(shopId, skuValue);
+  }
+
+  /** Sync body of `findVariantBySku`: runs inside the caller's transaction. Package-internal. */
+  findVariantBySkuTx(shopId: string, skuValue: string): (VariantRow & { product: ProductRow }) | undefined {
     const s = sku.safeParse(skuValue);
     if (!s.success) return undefined;
-    const v = this.db.select().from(t.productVariants).where(and(eq(t.productVariants.shopId, shopId), eq(t.productVariants.sku, s.data))).get();
+    const v = this.db
+      .select()
+      .from(t.productVariants)
+      .where(and(eq(t.productVariants.shopId, shopId), eq(t.productVariants.sku, s.data)))
+      .get();
     const product = v && this.db.select().from(t.products).where(eq(t.products.id, v.productId)).get();
     return v && product ? { ...v, product } : undefined;
   }
 
   /** `q`: whitespace-separated tokens, all must match (case-insensitive, incl. Cyrillic) in name, description, SKU or option values. */
-  listProducts(shopId: string, f: { q?: string; active?: boolean; limit?: number; offset?: number } = {}): { items: ProductWithVariants[]; total: number } {
+  async listProducts(shopId: string, f: { q?: string; active?: boolean; limit?: number; offset?: number } = {}): Promise<{ items: ProductWithVariants[]; total: number }> {
     const limit = Math.min(Math.max(Math.trunc(f.limit ?? 50), 1), 200);
     const offset = Math.max(Math.trunc(f.offset ?? 0), 0);
     const conds = [eq(t.products.shopId, shopId)];
     if (f.active !== undefined) conds.push(eq(t.products.active, f.active));
     for (const tok of (f.q ?? '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8)) conds.push(sql`${t.products.searchText} like ${`%${likeEscape(tok)}%`} escape '\\'`);
     const where = and(...conds);
-    const total = this.db.select({ n: sql<number>`count(*)` }).from(t.products).where(where).get()!.n;
+    const total = this.db
+      .select({ n: sql<number>`count(*)` })
+      .from(t.products)
+      .where(where)
+      .get()!.n;
     const rows = this.db.select().from(t.products).where(where).orderBy(desc(t.products.createdAt), asc(t.products.name)).limit(limit).offset(offset).all();
-    const vs = this.variantsOf(shopId, rows.map((r) => r.id));
+    const vs = this.variantsOf(
+      shopId,
+      rows.map((r) => r.id),
+    );
     return { total, items: rows.map((product) => ({ product, variants: vs.filter((v) => v.productId === product.id) })) };
   }
 
   private withStock(shopId: string, rows: ProductRow[]): ProductWithVariants[] {
-    const vs = this.variantsOf(shopId, rows.map((r) => r.id));
+    const vs = this.variantsOf(
+      shopId,
+      rows.map((r) => r.id),
+    );
     return rows
       .map((product) => ({ product, variants: vs.filter((v) => v.productId === product.id && v.active && v.stock > 0) }))
       .filter((pw) => pw.product.active && pw.variants.length);
@@ -203,16 +257,34 @@ export class CatalogRepository {
    * Other active, in-stock products sharing at least one name word with `productId` (P9 alternatives). Ranked by the number
    * of shared words, then by price closeness. No shared word means no suggestion: unrelated products are never offered.
    */
-  similarProducts(shopId: string, productId: string, limit = 3): ProductWithVariants[] {
-    const src = this.db.select().from(t.products).where(and(eq(t.products.shopId, shopId), eq(t.products.id, productId))).get();
+  async similarProducts(shopId: string, productId: string, limit = 3): Promise<ProductWithVariants[]> {
+    const src = this.db
+      .select()
+      .from(t.products)
+      .where(and(eq(t.products.shopId, shopId), eq(t.products.id, productId)))
+      .get();
     if (!src) return [];
-    const words = [...new Set(src.name.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3))].slice(0, 6);
+    const words = [
+      ...new Set(
+        src.name
+          .toLowerCase()
+          .split(/[^\p{L}\p{N}]+/u)
+          .filter((w) => w.length >= 3),
+      ),
+    ].slice(0, 6);
     const hits = new Map<string, { p: ProductRow; n: number }>();
     for (const w of words) {
       const rows = this.db
         .select()
         .from(t.products)
-        .where(and(eq(t.products.shopId, shopId), eq(t.products.active, true), sql`${t.products.id} <> ${productId}`, sql`${t.products.searchText} like ${`%${likeEscape(w)}%`} escape '\\'`))
+        .where(
+          and(
+            eq(t.products.shopId, shopId),
+            eq(t.products.active, true),
+            sql`${t.products.id} <> ${productId}`,
+            sql`${t.products.searchText} like ${`%${likeEscape(w)}%`} escape '\\'`,
+          ),
+        )
         .limit(50)
         .all();
       for (const p of rows) hits.set(p.id, { p, n: (hits.get(p.id)?.n ?? 0) + 1 });
@@ -228,7 +300,7 @@ export class CatalogRepository {
    * Active, in-stock products that appeared in the same order drafts as `productId` (P9 complements), most shared drafts
    * first. Rejected and cancelled drafts (including superseded ones) do not count.
    */
-  boughtTogether(shopId: string, productId: string, limit = 3): ProductWithVariants[] {
+  async boughtTogether(shopId: string, productId: string, limit = 3): Promise<ProductWithVariants[]> {
     const other = alias(t.orderDraftItems, 'other');
     const n = sql<number>`count(distinct ${other.draftId})`;
     const rows = this.db
@@ -236,7 +308,14 @@ export class CatalogRepository {
       .from(t.orderDraftItems)
       .innerJoin(other, and(eq(other.draftId, t.orderDraftItems.draftId), sql`${other.productId} <> ${t.orderDraftItems.productId}`))
       .innerJoin(t.orderDrafts, eq(t.orderDrafts.id, t.orderDraftItems.draftId))
-      .where(and(eq(t.orderDraftItems.shopId, shopId), eq(t.orderDraftItems.productId, productId), eq(t.orderDrafts.shopId, shopId), notInArray(t.orderDrafts.status, ['rejected', 'cancelled'])))
+      .where(
+        and(
+          eq(t.orderDraftItems.shopId, shopId),
+          eq(t.orderDraftItems.productId, productId),
+          eq(t.orderDrafts.shopId, shopId),
+          notInArray(t.orderDrafts.status, ['rejected', 'cancelled']),
+        ),
+      )
       .groupBy(other.productId)
       .orderBy(desc(n), asc(other.productId))
       .limit(20)
@@ -245,7 +324,15 @@ export class CatalogRepository {
     const products = this.db
       .select()
       .from(t.products)
-      .where(and(eq(t.products.shopId, shopId), inArray(t.products.id, rows.map((r) => r.productId))))
+      .where(
+        and(
+          eq(t.products.shopId, shopId),
+          inArray(
+            t.products.id,
+            rows.map((r) => r.productId),
+          ),
+        ),
+      )
       .all();
     const byId = new Map(products.map((p) => [p.id, p]));
     return this.withStock(
@@ -254,29 +341,49 @@ export class CatalogRepository {
     ).slice(0, limit);
   }
 
-  updateProduct(shopId: string, productId: string, input: UpdateProductInput): ProductWithVariants {
-    const v = parse(updateProduct, input);
-    return this.handle.raw.transaction(() => {
-      const r = this.db.update(t.products).set({ ...v, updatedAt: this.now() }).where(and(eq(t.products.shopId, shopId), eq(t.products.id, productId))).returning().get();
-      if (!r) throw new CatalogNotFoundError('product');
-      this.reindex(shopId, productId);
-      return this.getProduct(shopId, productId)!;
-    })();
+  async updateProduct(shopId: string, productId: string, input: UpdateProductInput): Promise<ProductWithVariants> {
+    return this.updateProductTx(shopId, productId, input);
   }
 
-  addVariant(shopId: string, productId: string, input: CreateVariantInput): VariantRow {
+  /** Sync body of `updateProduct`: runs inside the caller's transaction. Package-internal. */
+  updateProductTx(shopId: string, productId: string, input: UpdateProductInput): ProductWithVariants {
+    const v = parse(updateProduct, input);
+    return this.handle.transaction(() => {
+      const r = this.db
+        .update(t.products)
+        .set({ ...v, updatedAt: this.now() })
+        .where(and(eq(t.products.shopId, shopId), eq(t.products.id, productId)))
+        .returning()
+        .get();
+      if (!r) throw new CatalogNotFoundError('product');
+      this.reindex(shopId, productId);
+      return this.getProductTx(shopId, productId)!;
+    });
+  }
+
+  async addVariant(shopId: string, productId: string, input: CreateVariantInput): Promise<VariantRow> {
+    return this.addVariantTx(shopId, productId, input);
+  }
+
+  /** Sync body of `addVariant`: runs inside the caller's transaction. Package-internal. */
+  addVariantTx(shopId: string, productId: string, input: CreateVariantInput): VariantRow {
     const v = parse(variantInput, input);
-    return this.handle.raw.transaction(() => {
-      if (!this.getProduct(shopId, productId)) throw new CatalogNotFoundError('product');
+    return this.handle.transaction(() => {
+      if (!this.getProductTx(shopId, productId)) throw new CatalogNotFoundError('product');
       const row = this.insertVariant(shopId, productId, v);
       this.reindex(shopId, productId);
       return row;
-    })();
+    });
   }
 
-  updateVariant(shopId: string, productId: string, variantId: string, input: UpdateVariantInput): VariantRow {
+  async updateVariant(shopId: string, productId: string, variantId: string, input: UpdateVariantInput): Promise<VariantRow> {
+    return this.updateVariantTx(shopId, productId, variantId, input);
+  }
+
+  /** Sync body of `updateVariant`: runs inside the caller's transaction. Package-internal. */
+  updateVariantTx(shopId: string, productId: string, variantId: string, input: UpdateVariantInput): VariantRow {
     const v = parse(variantPatch, input);
-    return this.handle.raw.transaction(() => {
+    return this.handle.transaction(() => {
       try {
         const r = this.db
           .update(t.productVariants)
@@ -288,25 +395,20 @@ export class CatalogRepository {
         this.reindex(shopId, productId);
         return r;
       } catch (e) {
-        if (isUnique(e)) throw new SkuTakenError(v.sku ?? '');
+        if (isUniqueViolation(e)) throw new SkuTakenError(v.sku ?? '');
         throw e;
       }
-    })();
+    });
   }
 
   /** Atomic relative change; fails (no change) if the result would be negative. */
-  adjustStock(shopId: string, productId: string, variantId: string, delta: number): VariantRow {
+  async adjustStock(shopId: string, productId: string, variantId: string, delta: number): Promise<VariantRow> {
     if (!Number.isInteger(delta) || Math.abs(delta) > 1_000_000_000) throw new CatalogValidationError(['delta: must be an integer']);
     const r = this.db
       .update(t.productVariants)
       .set({ stock: sql`${t.productVariants.stock} + ${delta}`, updatedAt: this.now() })
       .where(
-        and(
-          eq(t.productVariants.shopId, shopId),
-          eq(t.productVariants.productId, productId),
-          eq(t.productVariants.id, variantId),
-          sql`${t.productVariants.stock} + ${delta} >= 0`,
-        ),
+        and(eq(t.productVariants.shopId, shopId), eq(t.productVariants.productId, productId), eq(t.productVariants.id, variantId), sql`${t.productVariants.stock} + ${delta} >= 0`),
       )
       .returning()
       .get();

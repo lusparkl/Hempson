@@ -27,9 +27,9 @@ export async function registerPaymentRoutes(app: FastifyInstance, deps: { shops:
     tag: 'payments',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return payments.status(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await payments.status(params.shopId);
     },
   });
 
@@ -42,7 +42,7 @@ export async function registerPaymentRoutes(app: FastifyInstance, deps: { shops:
     params: shopP,
     body: tokenBody,
     handler: async ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+      await requireRole(req, params.shopId, 'owner');
       return payments.connect(params.shopId, body.token);
     },
   });
@@ -54,10 +54,10 @@ export async function registerPaymentRoutes(app: FastifyInstance, deps: { shops:
     tag: 'payments',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'owner');
-      payments.disconnect(params.shopId);
-      return payments.status(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'owner');
+      await payments.disconnect(params.shopId);
+      return await payments.status(params.shopId);
     },
   });
 
@@ -69,15 +69,15 @@ export async function registerPaymentRoutes(app: FastifyInstance, deps: { shops:
     auth: 'user',
     params: shopP,
     body: settingsBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        paymentRepo.updateSettings(params.shopId, body);
+        await paymentRepo.updateSettings(params.shopId, body);
       } catch (e) {
         if (e instanceof PaymentValidationError) throw new ApiError('VALIDATION_ERROR', e.message);
         throw e;
       }
-      return payments.status(params.shopId);
+      return await payments.status(params.shopId);
     },
   });
 

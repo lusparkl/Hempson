@@ -145,10 +145,10 @@ export function registerCatalogRoutes(
     params: shopP,
     body: createBody,
     status: 201,
-    handler: ({ req, params, body }) => {
-      const { shop } = requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      const { shop } = await requireRole(req, params.shopId, 'owner');
       try {
-        return changed(productView(catalog.createProduct(shop.id, { currency: shop.defaultCurrency, ...body })));
+        return changed(productView(await catalog.createProduct(shop.id, { currency: shop.defaultCurrency, ...body })));
       } catch (e) {
         translate(e);
       }
@@ -163,9 +163,9 @@ export function registerCatalogRoutes(
     auth: 'user',
     params: shopP,
     query: listQuery,
-    handler: ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
-      const r = catalog.listProducts(params.shopId, {
+    handler: async ({ req, params, query }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const r = await catalog.listProducts(params.shopId, {
         q: query.q,
         active: query.active === undefined ? undefined : query.active === 'true',
         limit: query.limit,
@@ -182,9 +182,9 @@ export function registerCatalogRoutes(
     tag: 'catalog',
     auth: 'user',
     params: productP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      const p = catalog.getProduct(params.shopId, params.productId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const p = await catalog.getProduct(params.shopId, params.productId);
       if (!p) throw new ApiError('NOT_FOUND', 'product not found');
       return productView(p);
     },
@@ -198,10 +198,10 @@ export function registerCatalogRoutes(
     auth: 'user',
     params: productP,
     body: updateBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        return changed(productView(catalog.updateProduct(params.shopId, params.productId, body)));
+        return changed(productView(await catalog.updateProduct(params.shopId, params.productId, body)));
       } catch (e) {
         translate(e);
       }
@@ -217,11 +217,11 @@ export function registerCatalogRoutes(
     params: productP,
     body: variantBody,
     status: 201,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        const v = catalog.addVariant(params.shopId, params.productId, body);
-        return variantView(catalog.getProduct(params.shopId, params.productId)!.product, v);
+        const v = await catalog.addVariant(params.shopId, params.productId, body);
+        return variantView((await catalog.getProduct(params.shopId, params.productId))!.product, v);
       } catch (e) {
         translate(e);
       }
@@ -236,11 +236,11 @@ export function registerCatalogRoutes(
     auth: 'user',
     params: variantP,
     body: variantPatchBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        const v = catalog.updateVariant(params.shopId, params.productId, params.variantId, body);
-        return variantView(catalog.getProduct(params.shopId, params.productId)!.product, v);
+        const v = await catalog.updateVariant(params.shopId, params.productId, params.variantId, body);
+        return variantView((await catalog.getProduct(params.shopId, params.productId))!.product, v);
       } catch (e) {
         translate(e);
       }
@@ -255,14 +255,14 @@ export function registerCatalogRoutes(
     auth: 'user',
     params: variantP,
     body: stockBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'manager');
       try {
         const v =
           'delta' in body
-            ? catalog.adjustStock(params.shopId, params.productId, params.variantId, body.delta)
-            : catalog.updateVariant(params.shopId, params.productId, params.variantId, { stock: body.set });
-        return variantView(catalog.getProduct(params.shopId, params.productId)!.product, v);
+            ? await catalog.adjustStock(params.shopId, params.productId, params.variantId, body.delta)
+            : await catalog.updateVariant(params.shopId, params.productId, params.variantId, { stock: body.set });
+        return variantView((await catalog.getProduct(params.shopId, params.productId))!.product, v);
       } catch (e) {
         translate(e);
       }
@@ -278,10 +278,10 @@ export function registerCatalogRoutes(
     params: shopP,
     body: importBody,
     bodyLimit: 2_500_000,
-    handler: ({ req, params, body }) => {
-      const { shop } = requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      const { shop } = await requireRole(req, params.shopId, 'owner');
       try {
-        return changed(importCatalogCsv(catalog, shop.id, body.csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency }));
+        return changed(await importCatalogCsv(catalog, shop.id, body.csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency }));
       } catch (e) {
         translate(e);
       }
@@ -297,8 +297,8 @@ export function registerCatalogRoutes(
     params: shopP,
     body: xlsxBody,
     bodyLimit: 7_000_000,
-    handler: ({ req, params, body }) => {
-      const { shop } = requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      const { shop } = await requireRole(req, params.shopId, 'owner');
       const file = Buffer.from(body.file, 'base64');
       if (file.length > MAX_XLSX_BYTES) throw new ApiError('VALIDATION_ERROR', 'The file is larger than 5 MB: split it');
       let table: ReturnType<typeof readXlsxFirstSheet>;
@@ -309,7 +309,7 @@ export function registerCatalogRoutes(
         throw e;
       }
       try {
-        return changed(importCatalogTable(catalog, shop.id, table, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency }));
+        return changed(await importCatalogTable(catalog, shop.id, table, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency }));
       } catch (e) {
         translate(e);
       }
@@ -325,7 +325,7 @@ export function registerCatalogRoutes(
     params: shopP,
     body: sheetBody,
     handler: async ({ req, params, body }) => {
-      const { shop } = requireRole(req, params.shopId, 'owner');
+      const { shop } = await requireRole(req, params.shopId, 'owner');
       const ref = parseSheetUrl(body.url);
       if (!ref) throw new ApiError('VALIDATION_ERROR', 'Paste a Google Sheets link (https://docs.google.com/spreadsheets/d/...)');
       let csv: string;
@@ -337,7 +337,7 @@ export function registerCatalogRoutes(
       }
       if (!csv.trim()) throw new ApiError('VALIDATION_ERROR', 'The sheet is empty');
       try {
-        return changed(importCatalogCsv(catalog, shop.id, csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency }));
+        return changed(await importCatalogCsv(catalog, shop.id, csv, { dryRun: body.dryRun ?? true, currency: shop.defaultCurrency }));
       } catch (e) {
         translate(e);
       }

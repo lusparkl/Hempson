@@ -57,7 +57,12 @@ export class AgentRepository {
   }
 
   /** AI is off until the owner enables it. */
-  getSettings(shopId: string): AiSettingsRow {
+  async getSettings(shopId: string): Promise<AiSettingsRow> {
+    return this.getSettingsTx(shopId);
+  }
+
+  /** Sync body of `getSettings`: runs inside the caller's transaction. Package-internal. */
+  getSettingsTx(shopId: string): AiSettingsRow {
     return (
       this.db.select().from(t.shopAiSettings).where(eq(t.shopAiSettings.shopId, shopId)).get() ?? {
         shopId,
@@ -73,10 +78,15 @@ export class AgentRepository {
   }
 
   /** `userId` is recorded when the autonomy level or its cap changes (D26: owner-only and audited). */
-  updateSettings(shopId: string, input: z.input<typeof settingsInput>, userId: string | null = null): AiSettingsRow {
+  async updateSettings(shopId: string, input: z.input<typeof settingsInput>, userId: string | null = null): Promise<AiSettingsRow> {
+    return this.updateSettingsTx(shopId, input, userId);
+  }
+
+  /** Sync body of `updateSettings`: runs inside the caller's transaction. Package-internal. */
+  updateSettingsTx(shopId: string, input: z.input<typeof settingsInput>, userId: string | null = null): AiSettingsRow {
     const r = settingsInput.safeParse(input);
     if (!r.success) throw new AgentValidationError(r.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`));
-    const cur = this.getSettings(shopId);
+    const cur = this.getSettingsTx(shopId);
     const ts = this.now();
     const autonomy = r.data.autonomy ?? cur.autonomy;
     const cap = r.data.autoConfirmMaxMinor !== undefined ? r.data.autoConfirmMaxMinor : cur.autoConfirmMaxMinor;
@@ -96,11 +106,11 @@ export class AgentRepository {
     return row;
   }
 
-  getNotifySettings(shopId: string): NotifySettingsRow {
+  async getNotifySettings(shopId: string): Promise<NotifySettingsRow> {
     return this.db.select().from(t.shopNotifySettings).where(eq(t.shopNotifySettings.shopId, shopId)).get() ?? { shopId, telegramChatId: null, updatedAt: '' };
   }
 
-  updateNotifySettings(shopId: string, input: z.input<typeof notifyInput>): NotifySettingsRow {
+  async updateNotifySettings(shopId: string, input: z.input<typeof notifyInput>): Promise<NotifySettingsRow> {
     const r = notifyInput.safeParse(input);
     if (!r.success) throw new AgentValidationError(r.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`));
     const row = { shopId, telegramChatId: r.data.telegramChatId, updatedAt: this.now() };
@@ -113,7 +123,7 @@ export class AgentRepository {
   }
 
   /** Claims the trigger message. Returns undefined when a run already exists for it (never answer one message twice). */
-  startRun(shopId: string, conversationId: string, triggerMessageId: string): AiRunRow | undefined {
+  async startRun(shopId: string, conversationId: string, triggerMessageId: string): Promise<AiRunRow | undefined> {
     const row: AiRunRow = {
       id: randomUUID(),
       shopId,
@@ -133,7 +143,7 @@ export class AgentRepository {
     return r.changes ? row : undefined;
   }
 
-  updateRun(shopId: string, runId: string, patch: RunPatch): AiRunRow {
+  async updateRun(shopId: string, runId: string, patch: RunPatch): Promise<AiRunRow> {
     const finished = patch.status && patch.status !== 'running' ? { finishedAt: this.now() } : {};
     const r = this.db
       .update(t.aiRuns)
@@ -145,7 +155,7 @@ export class AgentRepository {
     return r;
   }
 
-  getRun(shopId: string, runId: string): AiRunRow | undefined {
+  async getRun(shopId: string, runId: string): Promise<AiRunRow | undefined> {
     return this.db
       .select()
       .from(t.aiRuns)
@@ -154,19 +164,19 @@ export class AgentRepository {
   }
 
   /** Runs left `running` by a crash can never finish: mark them failed at boot. */
-  failInterruptedRuns(): number {
-    return this.db
-      .update(t.aiRuns)
-      .set({ status: 'failed', detail: 'INTERRUPTED', finishedAt: this.now() })
-      .where(eq(t.aiRuns.status, 'running'))
-      .run().changes;
+  async failInterruptedRuns(): Promise<number> {
+    return this.db.update(t.aiRuns).set({ status: 'failed', detail: 'INTERRUPTED', finishedAt: this.now() }).where(eq(t.aiRuns.status, 'running')).run().changes;
   }
 
-  listRuns(shopId: string, f: { conversationId?: string; limit?: number; offset?: number } = {}): { items: AiRunRow[]; total: number } {
+  async listRuns(shopId: string, f: { conversationId?: string; limit?: number; offset?: number } = {}): Promise<{ items: AiRunRow[]; total: number }> {
     const conds = [eq(t.aiRuns.shopId, shopId)];
     if (f.conversationId) conds.push(eq(t.aiRuns.conversationId, f.conversationId));
     const where = and(...conds);
-    const total = this.db.select({ n: sql<number>`count(*)` }).from(t.aiRuns).where(where).get()!.n;
+    const total = this.db
+      .select({ n: sql<number>`count(*)` })
+      .from(t.aiRuns)
+      .where(where)
+      .get()!.n;
     const items = this.db
       .select()
       .from(t.aiRuns)
@@ -179,11 +189,11 @@ export class AgentRepository {
   }
 
   /** Opens an escalation unless one is already open for the conversation (then returns that one). */
-  escalate(shopId: string, conversationId: string, text: string, runId?: string): { escalation: EscalationRow; created: boolean } {
+  async escalate(shopId: string, conversationId: string, text: string, runId?: string): Promise<{ escalation: EscalationRow; created: boolean }> {
     const why = reason.safeParse(text);
     if (!why.success) throw new AgentValidationError(['reason: 1-500 characters required']);
-    return this.handle.raw.transaction(() => {
-      const open = this.openEscalation(shopId, conversationId);
+    return this.handle.transaction(() => {
+      const open = this.openEscalationTx(shopId, conversationId);
       if (open) return { escalation: open, created: false };
       const row: EscalationRow = {
         id: randomUUID(),
@@ -198,10 +208,15 @@ export class AgentRepository {
       };
       this.db.insert(t.escalations).values(row).run();
       return { escalation: row, created: true };
-    })();
+    });
   }
 
-  openEscalation(shopId: string, conversationId: string): EscalationRow | undefined {
+  async openEscalation(shopId: string, conversationId: string): Promise<EscalationRow | undefined> {
+    return this.openEscalationTx(shopId, conversationId);
+  }
+
+  /** Sync body of `openEscalation`: runs inside the caller's transaction. Package-internal. */
+  openEscalationTx(shopId: string, conversationId: string): EscalationRow | undefined {
     return this.db
       .select()
       .from(t.escalations)
@@ -209,11 +224,15 @@ export class AgentRepository {
       .get();
   }
 
-  listEscalations(shopId: string, f: { status?: EscalationRow['status']; limit?: number; offset?: number } = {}): { items: EscalationRow[]; total: number } {
+  async listEscalations(shopId: string, f: { status?: EscalationRow['status']; limit?: number; offset?: number } = {}): Promise<{ items: EscalationRow[]; total: number }> {
     const conds = [eq(t.escalations.shopId, shopId)];
     if (f.status) conds.push(eq(t.escalations.status, f.status));
     const where = and(...conds);
-    const total = this.db.select({ n: sql<number>`count(*)` }).from(t.escalations).where(where).get()!.n;
+    const total = this.db
+      .select({ n: sql<number>`count(*)` })
+      .from(t.escalations)
+      .where(where)
+      .get()!.n;
     const items = this.db
       .select()
       .from(t.escalations)
@@ -226,7 +245,7 @@ export class AgentRepository {
   }
 
   /** Idempotent: resolving an already resolved escalation returns it unchanged. */
-  resolveEscalation(shopId: string, escalationId: string, userId: string | null): EscalationRow {
+  async resolveEscalation(shopId: string, escalationId: string, userId: string | null): Promise<EscalationRow> {
     const cur = this.db
       .select()
       .from(t.escalations)
@@ -234,11 +253,6 @@ export class AgentRepository {
       .get();
     if (!cur) throw new AgentNotFoundError('escalation');
     if (cur.status === 'resolved') return cur;
-    return this.db
-      .update(t.escalations)
-      .set({ status: 'resolved', resolvedAt: this.now(), resolvedByUserId: userId })
-      .where(eq(t.escalations.id, cur.id))
-      .returning()
-      .get()!;
+    return this.db.update(t.escalations).set({ status: 'resolved', resolvedAt: this.now(), resolvedByUserId: userId }).where(eq(t.escalations.id, cur.id)).returning().get()!;
   }
 }

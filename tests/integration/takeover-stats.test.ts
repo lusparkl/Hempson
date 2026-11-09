@@ -35,16 +35,23 @@ async function setup(llm: ScriptedLlm, o: { channel?: string } = {}) {
   a = await makeApp({ llm, notifier, keyring: new Keyring(1, randomBytes(32)), fetchImpl: fakeNovaPoshta().fetchFor() });
   const token = await login('o@example.com');
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Магазин', slug: 'shop-one' })).body.shopId as string;
-  a.catalog.createProduct(shopId, { name: 'Худі Classic', description: 'Бавовна', priceMinor: 129_900, currency: 'UAH', variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 3 }] });
+  await a.catalog.createProduct(shopId, {
+    name: 'Худі Classic',
+    description: 'Бавовна',
+    priceMinor: 129_900,
+    currency: 'UAH',
+    variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 3 }],
+  });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/ai`, { enabled: true });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/key`, { apiKey: NP_KEY });
   const channel = o.channel ?? WEB_CHANNEL;
-  const conversationId = a.conversations.ensureConversation(shopId, { channel, conversationExternalId: THREAD, customer: { externalId: THREAD, displayName: 'Олена' } }).conversation.id;
+  const conversationId = (await a.conversations.ensureConversation(shopId, { channel, conversationExternalId: THREAD, customer: { externalId: THREAD, displayName: 'Олена' } }))
+    .conversation.id;
   return { token, shopId, channel, llm, notifier, conversationId, base: `/v1/shops/${shopId}/conversations/${conversationId}` };
 }
 type S = Awaited<ReturnType<typeof setup>>;
 const customerWrites = (s: S, text: string) => writes(a!, s.shopId, THREAD, text, s.channel);
-const msgs = (s: S) => a!.conversations.listMessages(s.shopId, s.conversationId, { limit: 200 }).items;
+const msgs = async (s: S) => (await a!.conversations.listMessages(s.shopId, s.conversationId, { limit: 200 })).items;
 
 describe('human takeover', () => {
   it('pausing mutes the agent without calling the model; resuming lets it answer again', async () => {
@@ -56,13 +63,13 @@ describe('human takeover', () => {
 
     await customerWrites(s, 'Привіт');
     expect(llm.calls).toHaveLength(0);
-    expect(a!.agentRepo.listRuns(s.shopId).items).toMatchObject([{ status: 'skipped', detail: 'AI_PAUSED' }]);
-    expect(msgs(s).filter((m) => m.senderType === 'ai')).toHaveLength(0);
+    expect((await a!.agentRepo.listRuns(s.shopId)).items).toMatchObject([{ status: 'skipped', detail: 'AI_PAUSED' }]);
+    expect((await msgs(s)).filter((m) => m.senderType === 'ai')).toHaveLength(0);
 
     expect((await call(a!, s.token, 'PUT', `${s.base}/ai`, { paused: false })).body).toMatchObject({ aiPaused: false, aiPausedAt: null, aiPausedByUserId: null });
     llm.push(say('Вітаю!'));
     await customerWrites(s, 'Є хтось?');
-    expect(msgs(s).filter((m) => m.senderType === 'ai')).toMatchObject([{ text: 'Вітаю!', deliveryStatus: 'sent' }]);
+    expect((await msgs(s)).filter((m) => m.senderType === 'ai')).toMatchObject([{ text: 'Вітаю!', deliveryStatus: 'sent' }]);
   });
 
   it('pause is idempotent and keeps the first pauser; the flag shows in list and get', async () => {
@@ -86,7 +93,7 @@ describe('human takeover', () => {
     expect(r.body).toMatchObject({ senderType: 'human', text: 'Вітаю, це менеджер.', deliveryStatus: 'sent', aiPaused: true });
     expect(r.body.senderUserId).toEqual(expect.any(String));
 
-    const human = msgs(s).filter((m) => m.direction === 'outgoing' && m.text === 'Вітаю, це менеджер.');
+    const human = (await msgs(s)).filter((m) => m.direction === 'outgoing' && m.text === 'Вітаю, це менеджер.');
     expect(human).toHaveLength(1);
     expect(human[0]).toMatchObject({ senderType: 'human', deliveryStatus: 'sent', externalId: expect.any(String) });
     expect((await call(a!, s.token, 'GET', s.base)).body.aiPaused).toBe(true);
@@ -97,11 +104,11 @@ describe('human takeover', () => {
 
   it('refuses before recording or pausing when the channel cannot send; validates text; hides other shops', async () => {
     const s = await setup(new ScriptedLlm([]), { channel: TELEGRAM_CHANNEL });
-    const before = msgs(s).length;
+    const before = (await msgs(s)).length;
     const r = await call(a!, s.token, 'POST', `${s.base}/messages`, { text: 'Привіт' });
     expect(r.status).toBe(409);
     expect(r.body.error.code).toBe('ACCOUNT_NOT_CONNECTED');
-    expect(msgs(s)).toHaveLength(before);
+    expect(await msgs(s)).toHaveLength(before);
     expect((await call(a!, s.token, 'GET', s.base)).body.aiPaused).toBe(false);
 
     expect((await call(a!, s.token, 'POST', `${s.base}/messages`, { text: '   ' })).status).toBe(400);
@@ -118,12 +125,18 @@ describe('human takeover', () => {
 
 describe('notifications', () => {
   it('announces a new escalation once and a new order draft; nothing for a repeated escalation', async () => {
-    const llm = new ScriptedLlm([useTool('escalate', { reason: 'Знижка' }), say('Передала менеджеру.'), npLookups(), useTool('create_order_draft', order), say('Менеджер підтвердить.')]);
+    const llm = new ScriptedLlm([
+      useTool('escalate', { reason: 'Знижка' }),
+      say('Передала менеджеру.'),
+      npLookups(),
+      useTool('create_order_draft', order),
+      say('Менеджер підтвердить.'),
+    ]);
     const s = await setup(llm);
     await customerWrites(s, 'Дайте знижку');
     expect(s.notifier.sent).toEqual([{ kind: 'escalation', shopId: s.shopId, conversationId: s.conversationId, reason: 'Знижка' }]);
 
-    await a!.agentRepo.resolveEscalation(s.shopId, a!.agentRepo.listEscalations(s.shopId).items[0]!.id, null);
+    await a!.agentRepo.resolveEscalation(s.shopId, (await a!.agentRepo.listEscalations(s.shopId)).items[0]!.id, null);
     await customerWrites(s, 'Беру 2 худі M');
     expect(s.notifier.sent).toHaveLength(2);
     expect(s.notifier.sent[1]).toMatchObject({ kind: 'order_draft', shopId: s.shopId, currency: 'UAH', totalMinor: 259_800, itemCount: 1 });
@@ -155,15 +168,22 @@ describe('notifications', () => {
 
 describe('statistics', () => {
   it('counts runs, tokens, replies, escalations and drafts of the shop only', async () => {
-    const llm = new ScriptedLlm([say('Вітаю!'), useTool('escalate', { reason: 'Знижка' }), say('Передала менеджеру.'), npLookups(), useTool('create_order_draft', order), say('Менеджер підтвердить.')]);
+    const llm = new ScriptedLlm([
+      say('Вітаю!'),
+      useTool('escalate', { reason: 'Знижка' }),
+      say('Передала менеджеру.'),
+      npLookups(),
+      useTool('create_order_draft', order),
+      say('Менеджер підтвердить.'),
+    ]);
     const s = await setup(llm);
     // Mirrored history counts as messages too (by ingest time): measure from the state after linking.
     const base = (await call(a!, s.token, 'GET', `/v1/shops/${s.shopId}/stats`)).body.messages;
     await customerWrites(s, 'Привіт');
     await customerWrites(s, 'Дайте знижку');
-    await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/escalations/${a!.agentRepo.listEscalations(s.shopId).items[0]!.id}/resolve`);
+    await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/escalations/${(await a!.agentRepo.listEscalations(s.shopId)).items[0]!.id}/resolve`);
     await customerWrites(s, 'Беру 2 худі M');
-    const draftId = a!.orders.listDrafts(s.shopId).items[0]!.draft.id;
+    const draftId = (await a!.orders.listDrafts(s.shopId)).items[0]!.draft.id;
     await call(a!, s.token, 'POST', `/v1/shops/${s.shopId}/order-drafts/${draftId}/approve`, {});
     await call(a!, s.token, 'POST', `${s.base}/messages`, { text: 'Дякуємо за замовлення' });
 
@@ -182,7 +202,16 @@ describe('statistics', () => {
     const days = r.body.daily as Day[];
     expect(days).toHaveLength(31);
     expect(r.body.currency).toBe('UAH');
-    expect(days.at(-1)).toMatchObject({ date: new Date().toISOString().slice(0, 10), runs: 3, replied: 2, escalated: 1, inputTokens: 60, outputTokens: 30, approved: 1, revenueMinor: 259_800 });
+    expect(days.at(-1)).toMatchObject({
+      date: new Date().toISOString().slice(0, 10),
+      runs: 3,
+      replied: 2,
+      escalated: 1,
+      inputTokens: 60,
+      outputTokens: 30,
+      approved: 1,
+      revenueMinor: 259_800,
+    });
     expect(days.at(-1)!.newCustomers).toBe(r.body.conversations.newCustomers);
     expect(days.at(-1)!.outgoingHuman).toBe(r.body.messages.outgoingHuman);
     expect(days.slice(0, -1).every((d) => d.runs + d.approved + d.revenueMinor + d.newCustomers + d.outgoingHuman === 0)).toBe(true);

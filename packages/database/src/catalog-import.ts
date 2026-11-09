@@ -211,12 +211,12 @@ class Rollback extends Error {
  * Everything runs in one transaction: any error, or `dryRun`, rolls it all back, so a dry run reports
  * exactly what a real run would do.
  */
-export function importCatalogCsv(repo: CatalogRepository, shopId: string, text: string, opts: { dryRun: boolean; currency: string }): ImportResult {
+export async function importCatalogCsv(repo: CatalogRepository, shopId: string, text: string, opts: { dryRun: boolean; currency: string }): Promise<ImportResult> {
   return applyImport(repo, shopId, readCatalogCsv(text), opts);
 }
 
 /** XLSX import (P8): the same rules as CSV, from a table read out of the first worksheet. */
-export function importCatalogTable(repo: CatalogRepository, shopId: string, table: CatalogTable, opts: { dryRun: boolean; currency: string }): ImportResult {
+export async function importCatalogTable(repo: CatalogRepository, shopId: string, table: CatalogTable, opts: { dryRun: boolean; currency: string }): Promise<ImportResult> {
   return applyImport(repo, shopId, readCatalogTable(table), opts);
 }
 
@@ -270,7 +270,7 @@ function applyGroup(repo: CatalogRepository, shopId: string, rows: Row[], curren
   const fail = (m: string): never => {
     throw new CatalogValidationError([m]);
   };
-  const existing = rows.map((r) => repo.findVariantBySku(shopId, r.sku));
+  const existing = rows.map((r) => repo.findVariantBySkuTx(shopId, r.sku));
   const productIds = new Set(existing.filter(Boolean).map((v) => v!.productId));
   if (productIds.size > 1) fail('skus of one group belong to different existing products');
 
@@ -293,9 +293,9 @@ function applyGroup(repo: CatalogRepository, shopId: string, rows: Row[], curren
     if (description !== undefined) patch.description = description;
     if (priceMinor !== undefined) patch.priceMinor = priceMinor;
     if (media !== undefined) patch.media = media;
-    const before = repo.getProduct(shopId, productId)!.product;
+    const before = repo.getProductTx(shopId, productId)!.product;
     if (Object.keys(patch).some((k) => JSON.stringify((before as Record<string, unknown>)[k]) !== JSON.stringify(patch[k]))) {
-      repo.updateProduct(shopId, productId, patch);
+      repo.updateProductTx(shopId, productId, patch);
       out.updated.products++;
     }
     rows.forEach((r, i) => {
@@ -308,11 +308,11 @@ function applyGroup(repo: CatalogRepository, shopId: string, rows: Row[], curren
         if (r.variantPriceMinor !== undefined) vp.priceMinor = r.variantPriceMinor;
         const changed = Object.keys(vp).some((k) => JSON.stringify((v as Record<string, unknown>)[k]) !== JSON.stringify(vp[k]));
         if (changed) {
-          repo.updateVariant(shopId, productId, v.id, vp);
+          repo.updateVariantTx(shopId, productId, v.id, vp);
           out.updated.variants++;
         }
       } else {
-        repo.addVariant(shopId, productId, { sku: r.sku, options: r.options ?? {}, priceMinor: r.variantPriceMinor ?? null, stock: r.stock ?? 0, active: r.active ?? true });
+        repo.addVariantTx(shopId, productId, { sku: r.sku, options: r.options ?? {}, priceMinor: r.variantPriceMinor ?? null, stock: r.stock ?? 0, active: r.active ?? true });
         out.created.variants++;
       }
     });
@@ -321,7 +321,7 @@ function applyGroup(repo: CatalogRepository, shopId: string, rows: Row[], curren
 
   if (name === undefined) fail('name is required for a new product');
   if (priceMinor === undefined) fail('price is required for a new product');
-  repo.createProduct(shopId, {
+  repo.createProductTx(shopId, {
     name: name!,
     description: description ?? '',
     priceMinor: priceMinor!,

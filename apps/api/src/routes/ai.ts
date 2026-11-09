@@ -77,8 +77,8 @@ export function registerAiRoutes(
     instructions: z.string().max(2000).optional(),
   });
   const requireRole = makeRequireRole(shops, auth);
-  const settingsView = (shopId: string) => {
-    const s = agent.getSettings(shopId);
+  const settingsView = async (shopId: string) => {
+    const s = await agent.getSettings(shopId);
     // `available` = a model is configured on this server; `enabled` = the owner switched the agent on for this shop.
     return {
       enabled: s.enabled,
@@ -99,9 +99,9 @@ export function registerAiRoutes(
     tag: 'ai',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return settingsView(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await settingsView(params.shopId);
     },
   });
 
@@ -113,14 +113,14 @@ export function registerAiRoutes(
     auth: 'user',
     params: shopP,
     body: settingsBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        agent.updateSettings(params.shopId, body, req.user!.user.id);
+        await agent.updateSettings(params.shopId, body, req.user!.user.id);
       } catch (e) {
         translate(e);
       }
-      return settingsView(params.shopId);
+      return await settingsView(params.shopId);
     },
   });
 
@@ -134,7 +134,7 @@ export function registerAiRoutes(
     params: shopP,
     body: playgroundBody,
     handler: async ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'manager');
+      await requireRole(req, params.shopId, 'manager');
       if (!salesAgent) throw new ApiError('NOT_CONFIGURED', 'No AI model is configured on this server');
       const wait = playgroundLimit.hit(params.shopId);
       if (wait) throw new RateLimitedError(wait);
@@ -155,9 +155,9 @@ export function registerAiRoutes(
     auth: 'user',
     params: shopP,
     query: runsQuery,
-    handler: ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
-      const r = agent.listRuns(params.shopId, query);
+    handler: async ({ req, params, query }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const r = await agent.listRuns(params.shopId, query);
       return { total: r.total, items: r.items.map(runView) };
     },
   });
@@ -170,9 +170,9 @@ export function registerAiRoutes(
     auth: 'user',
     params: shopP,
     query: escQuery,
-    handler: ({ req, params, query }) => {
-      requireRole(req, params.shopId, 'manager');
-      const r = agent.listEscalations(params.shopId, query);
+    handler: async ({ req, params, query }) => {
+      await requireRole(req, params.shopId, 'manager');
+      const r = await agent.listEscalations(params.shopId, query);
       return { total: r.total, items: r.items.map(escalationView) };
     },
   });
@@ -184,10 +184,10 @@ export function registerAiRoutes(
     tag: 'ai',
     auth: 'user',
     params: escP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
       try {
-        return escalationView(agent.resolveEscalation(params.shopId, params.escalationId, req.user!.user.id));
+        return escalationView(await agent.resolveEscalation(params.shopId, params.escalationId, req.user!.user.id));
       } catch (e) {
         translate(e);
       }
@@ -195,8 +195,8 @@ export function registerAiRoutes(
   });
 
   // `available` = the server has a Telegram bot token; the shop receives messages only when it also has a chat id.
-  const notifyView = (shopId: string) => {
-    const n = agent.getNotifySettings(shopId);
+  const notifyView = async (shopId: string) => {
+    const n = await agent.getNotifySettings(shopId);
     return { telegram: { available: telegramAvailable, chatId: n.telegramChatId }, updatedAt: n.updatedAt || null };
   };
 
@@ -207,9 +207,9 @@ export function registerAiRoutes(
     tag: 'ai',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return notifyView(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await notifyView(params.shopId);
     },
   });
 
@@ -221,14 +221,14 @@ export function registerAiRoutes(
     auth: 'user',
     params: shopP,
     body: notifyBody,
-    handler: ({ req, params, body }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params, body }) => {
+      await requireRole(req, params.shopId, 'owner');
       try {
-        agent.updateNotifySettings(params.shopId, body);
+        await agent.updateNotifySettings(params.shopId, body);
       } catch (e) {
         translate(e);
       }
-      return notifyView(params.shopId);
+      return await notifyView(params.shopId);
     },
   });
 }

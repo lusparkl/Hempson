@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, asc, eq, gt, isNull, lt, or } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, DbHandle } from './db';
+import { isUniqueViolation } from './dialect';
 import * as t from './schema';
 import type { ShopRow } from './shops';
 
@@ -50,7 +51,6 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   if (!r.success) throw new AuthValidationError(r.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`));
   return r.data;
 }
-const isUniqueViolation = (e: unknown) => (e as { code?: string })?.code === 'SQLITE_CONSTRAINT_UNIQUE';
 export const hashToken = (k: string) => createHash('sha256').update(k).digest('hex');
 
 export const SESSION_PREFIX = 'hsu_';
@@ -70,7 +70,7 @@ export class AuthRepository {
   }
 
   // ---- users ----
-  createUser(input: { email: string; displayName: string }, passwordHash: string): UserRow {
+  async createUser(input: { email: string; displayName: string }, passwordHash: string): Promise<UserRow> {
     const v = parse(newUserSchema, input);
     const ts = this.now();
     const row: UserRow = { id: randomUUID(), email: v.email, displayName: v.displayName, passwordHash, createdAt: ts, updatedAt: ts };
@@ -82,25 +82,28 @@ export class AuthRepository {
     }
     return row;
   }
-  getUser(id: string): UserRow | undefined {
+  async getUser(id: string): Promise<UserRow | undefined> {
     return this.db.select().from(t.users).where(eq(t.users.id, id)).get();
   }
   /** Returns undefined for malformed emails too. */
-  getUserByEmail(email: string): UserRow | undefined {
+  async getUserByEmail(email: string): Promise<UserRow | undefined> {
     const e = emailSchema.safeParse(email);
     return e.success ? this.db.select().from(t.users).where(eq(t.users.email, e.data)).get() : undefined;
   }
 
   // ---- sessions ----
-  createSession(userId: string, ttlMs: number): { token: string; id: string; expiresAt: string } {
+  async createSession(userId: string, ttlMs: number): Promise<{ token: string; id: string; expiresAt: string }> {
     const token = `${SESSION_PREFIX}${randomBytes(32).toString('base64url')}`;
     const id = randomUUID();
     const expiresAt = new Date(this.clock().getTime() + ttlMs).toISOString();
-    this.db.insert(t.userSessions).values({ id, userId, hashedToken: hashToken(token), createdAt: this.now(), expiresAt, revokedAt: null }).run();
+    this.db
+      .insert(t.userSessions)
+      .values({ id, userId, hashedToken: hashToken(token), createdAt: this.now(), expiresAt, revokedAt: null })
+      .run();
     return { token, id, expiresAt };
   }
   /** Valid = exists, not revoked, not expired. */
-  findSession(token: string): { sessionId: string; user: UserRow } | undefined {
+  async findSession(token: string): Promise<{ sessionId: string; user: UserRow } | undefined> {
     const row = this.db
       .select({ sessionId: t.userSessions.id, user: t.users })
       .from(t.userSessions)
@@ -110,23 +113,33 @@ export class AuthRepository {
     return row;
   }
   /** Deletes sessions that expired, or were revoked, more than a week ago. */
-  purgeDeadSessions(): number {
+  async purgeDeadSessions(): Promise<number> {
     const cutoff = new Date(this.clock().getTime() - 7 * 86_400_000).toISOString();
-    return this.db.delete(t.userSessions).where(or(lt(t.userSessions.expiresAt, cutoff), lt(t.userSessions.revokedAt, cutoff))).run().changes;
+    return this.db
+      .delete(t.userSessions)
+      .where(or(lt(t.userSessions.expiresAt, cutoff), lt(t.userSessions.revokedAt, cutoff)))
+      .run().changes;
   }
-  revokeSession(sessionId: string): void {
-    this.db.update(t.userSessions).set({ revokedAt: this.now() }).where(and(eq(t.userSessions.id, sessionId), isNull(t.userSessions.revokedAt))).run();
+  async revokeSession(sessionId: string): Promise<void> {
+    this.db
+      .update(t.userSessions)
+      .set({ revokedAt: this.now() })
+      .where(and(eq(t.userSessions.id, sessionId), isNull(t.userSessions.revokedAt)))
+      .run();
   }
 
   // ---- password resets ----
   /** One live link per user: a new link replaces the previous one. Returns the token, which is not stored. */
-  createPasswordReset(userId: string, ttlMs: number): string {
+  async createPasswordReset(userId: string, ttlMs: number): Promise<string> {
     const token = `${RESET_PREFIX}${randomBytes(32).toString('base64url')}`;
     const expiresAt = new Date(this.clock().getTime() + ttlMs).toISOString();
-    this.handle.raw.transaction(() => {
+    this.handle.transaction(() => {
       this.db.delete(t.passwordResets).where(eq(t.passwordResets.userId, userId)).run();
-      this.db.insert(t.passwordResets).values({ id: randomUUID(), userId, hashedToken: hashToken(token), createdAt: this.now(), expiresAt }).run();
-    })();
+      this.db
+        .insert(t.passwordResets)
+        .values({ id: randomUUID(), userId, hashedToken: hashToken(token), createdAt: this.now(), expiresAt })
+        .run();
+    });
     return token;
   }
   private livePasswordReset(token: string) {
@@ -136,12 +149,12 @@ export class AuthRepository {
       .where(and(eq(t.passwordResets.hashedToken, hashToken(token)), gt(t.passwordResets.expiresAt, this.now())))
       .get();
   }
-  isPasswordResetLive(token: string): boolean {
+  async isPasswordResetLive(token: string): Promise<boolean> {
     return this.livePasswordReset(token) !== undefined;
   }
   /** Atomic and single-use: sets the password, ends every session of the user and burns the link. Undefined = invalid, expired or already used. */
-  consumePasswordReset(token: string, passwordHash: string): UserRow | undefined {
-    return this.handle.raw.transaction(() => {
+  async consumePasswordReset(token: string, passwordHash: string): Promise<UserRow | undefined> {
+    return this.handle.transaction(() => {
       const r = this.livePasswordReset(token);
       if (!r) return undefined;
       const ts = this.now();
@@ -153,15 +166,20 @@ export class AuthRepository {
         .run();
       this.db.delete(t.passwordResets).where(eq(t.passwordResets.userId, r.userId)).run();
       return user;
-    })();
+    });
   }
-  purgeExpiredPasswordResets(): number {
+  async purgeExpiredPasswordResets(): Promise<number> {
     return this.db.delete(t.passwordResets).where(lt(t.passwordResets.expiresAt, this.now())).run().changes;
   }
 
   // ---- memberships ----
   /** Creates the shop-user link. Used with ShopRepository.create inside `createShopWithOwner`. */
-  addMember(shopId: string, userId: string, role: Role): MembershipRow {
+  async addMember(shopId: string, userId: string, role: Role): Promise<MembershipRow> {
+    return this.addMemberTx(shopId, userId, role);
+  }
+
+  /** Sync body of `addMember`: runs inside the caller's transaction. Package-internal. */
+  addMemberTx(shopId: string, userId: string, role: Role): MembershipRow {
     const row: MembershipRow = { id: randomUUID(), shopId, userId, role: roleSchema.parse(role), createdAt: this.now() };
     try {
       this.db.insert(t.memberships).values(row).run();
@@ -171,11 +189,20 @@ export class AuthRepository {
     }
     return row;
   }
-  getMembership(shopId: string, userId: string): MembershipRow | undefined {
-    return this.db.select().from(t.memberships).where(and(eq(t.memberships.shopId, shopId), eq(t.memberships.userId, userId))).get();
+  async getMembership(shopId: string, userId: string): Promise<MembershipRow | undefined> {
+    return this.getMembershipTx(shopId, userId);
+  }
+
+  /** Sync body of `getMembership`: runs inside the caller's transaction. Package-internal. */
+  getMembershipTx(shopId: string, userId: string): MembershipRow | undefined {
+    return this.db
+      .select()
+      .from(t.memberships)
+      .where(and(eq(t.memberships.shopId, shopId), eq(t.memberships.userId, userId)))
+      .get();
   }
   /** Shops the user belongs to, with their role. */
-  listShopsForUser(userId: string): Array<{ shop: ShopRow; role: Role }> {
+  async listShopsForUser(userId: string): Promise<Array<{ shop: ShopRow; role: Role }>> {
     return this.db
       .select({ shop: t.shops, role: t.memberships.role })
       .from(t.memberships)
@@ -184,7 +211,7 @@ export class AuthRepository {
       .orderBy(asc(t.shops.createdAt), asc(t.shops.slug))
       .all();
   }
-  listMembers(shopId: string): Array<{ membership: MembershipRow; user: Pick<UserRow, 'id' | 'email' | 'displayName'> }> {
+  async listMembers(shopId: string): Promise<Array<{ membership: MembershipRow; user: Pick<UserRow, 'id' | 'email' | 'displayName'> }>> {
     return this.db
       .select({ membership: t.memberships, user: { id: t.users.id, email: t.users.email, displayName: t.users.displayName } })
       .from(t.memberships)
@@ -194,25 +221,29 @@ export class AuthRepository {
       .all();
   }
   /** Atomic: refuses to demote the last owner. */
-  changeRole(shopId: string, userId: string, role: Role): MembershipRow {
+  async changeRole(shopId: string, userId: string, role: Role): Promise<MembershipRow> {
     roleSchema.parse(role);
-    return this.handle.raw.transaction(() => {
-      const m = this.getMembership(shopId, userId);
+    return this.handle.transaction(() => {
+      const m = this.getMembershipTx(shopId, userId);
       if (!m) throw new MembershipNotFoundError();
       if (m.role === 'owner' && role !== 'owner' && this.ownerCount(shopId) <= 1) throw new LastOwnerError();
       return this.db.update(t.memberships).set({ role }).where(eq(t.memberships.id, m.id)).returning().get()!;
-    })();
+    });
   }
   /** Atomic: refuses to remove the last owner. */
-  removeMember(shopId: string, userId: string): void {
-    this.handle.raw.transaction(() => {
-      const m = this.getMembership(shopId, userId);
+  async removeMember(shopId: string, userId: string): Promise<void> {
+    this.handle.transaction(() => {
+      const m = this.getMembershipTx(shopId, userId);
       if (!m) throw new MembershipNotFoundError();
       if (m.role === 'owner' && this.ownerCount(shopId) <= 1) throw new LastOwnerError();
       this.db.delete(t.memberships).where(eq(t.memberships.id, m.id)).run();
-    })();
+    });
   }
   private ownerCount(shopId: string): number {
-    return this.db.select().from(t.memberships).where(and(eq(t.memberships.shopId, shopId), eq(t.memberships.role, 'owner'))).all().length;
+    return this.db
+      .select()
+      .from(t.memberships)
+      .where(and(eq(t.memberships.shopId, shopId), eq(t.memberships.role, 'owner')))
+      .all().length;
   }
 }

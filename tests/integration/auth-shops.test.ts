@@ -52,7 +52,7 @@ describe('registration and login', () => {
     expect(r.status).toBe(201);
     expect(r.body).toMatchObject({ email: 'own@example.com', displayName: 'Own' });
     expect(JSON.stringify(r.body)).not.toMatch(/hash|scrypt/i);
-    expect(a.auth.getUserByEmail('own@example.com')!.passwordHash).toMatch(/^scrypt\$/);
+    expect((await a.auth.getUserByEmail('own@example.com'))!.passwordHash).toMatch(/^scrypt\$/);
     expect((await call(a, null, 'POST', '/v1/auth/register', { email: 'own@example.com', displayName: 'x', password: PW })).status).toBe(400);
     expect((await call(a, null, 'POST', '/v1/auth/register', { email: 'bad', displayName: 'x', password: PW })).status).toBe(400);
     expect((await call(a, null, 'POST', '/v1/auth/register', { email: 'b@example.com', displayName: 'x', password: 'short' })).status).toBe(400);
@@ -85,7 +85,7 @@ describe('registration and login', () => {
     expect((await call(a, token, 'GET', '/v1/auth/me')).body.user.userId).toBe(userId);
     expect((await call(a, token, 'POST', '/v1/auth/logout')).status).toBe(200);
     expect((await call(a, token, 'GET', '/v1/auth/me')).status).toBe(401);
-    const expired = a.auth.createSession(userId, -1000).token;
+    const expired = (await a.auth.createSession(userId, -1000)).token;
     expect((await call(a, expired, 'GET', '/v1/auth/me')).status).toBe(401);
   });
 
@@ -126,7 +126,7 @@ describe('shops and memberships', () => {
     await mkShop(u.token, 'dup');
     expect((await call(a, u.token, 'POST', '/v1/shops', { name: 'x', slug: 'dup' })).status).toBe(400);
     expect((await call(a, u.token, 'POST', '/v1/shops', { name: 'x', slug: 'BAD SLUG' })).status).toBe(400);
-    expect(a.shops.list()).toHaveLength(1);
+    expect(await a.shops.list()).toHaveLength(1);
   });
 
   it('cross-shop access is denied as 404 on every shop route', async () => {
@@ -143,8 +143,8 @@ describe('shops and memberships', () => {
       ['DELETE', `${base}/members/${u1.userId}`],
     ];
     for (const [m, url, body] of attempts) expect((await call(a, u2.token, m, url, body)).status, `${m} ${url}`).toBe(404);
-    expect(a.shops.get(s1)!.name).toBe('SHOP-ONE');
-    expect(a.auth.listMembers(s1)).toHaveLength(1);
+    expect((await a.shops.get(s1))!.name).toBe('SHOP-ONE');
+    expect(await a.auth.listMembers(s1)).toHaveLength(1);
   });
 
   it('member of shop A cannot touch shop B even with own valid shop', async () => {
@@ -170,7 +170,7 @@ describe('shops and memberships', () => {
     expect((await call(a, mgr.token, 'POST', `/v1/shops/${shop}/members`, { email: 'owner@example.com', role: 'owner' })).status).toBe(403);
     expect((await call(a, mgr.token, 'PATCH', `/v1/shops/${shop}/members/${mgr.userId}`, { role: 'owner' })).status).toBe(403);
     expect((await call(a, mgr.token, 'DELETE', `/v1/shops/${shop}/members/${owner.userId}`)).status).toBe(403);
-    expect(a.auth.getMembership(shop, mgr.userId)!.role).toBe('manager');
+    expect((await a.auth.getMembership(shop, mgr.userId))!.role).toBe('manager');
 
     expect((await call(a, owner.token, 'PATCH', `/v1/shops/${shop}`, { name: 'Renamed', defaultLanguage: 'pl' })).body).toMatchObject({ name: 'Renamed', defaultLanguage: 'pl' });
     expect((await call(a, owner.token, 'PATCH', `/v1/shops/${shop}/members/${mgr.userId}`, { role: 'owner' })).body.role).toBe('owner');
@@ -183,7 +183,7 @@ describe('shops and memberships', () => {
     await call(a, owner.token, 'POST', `/v1/shops/${shop}/members`, { email: 'mgr@example.com', role: 'manager' });
     expect((await call(a, owner.token, 'PATCH', `/v1/shops/${shop}/members/${owner.userId}`, { role: 'manager' })).status).toBe(400);
     expect((await call(a, owner.token, 'DELETE', `/v1/shops/${shop}/members/${owner.userId}`)).status).toBe(400);
-    expect(a.auth.getMembership(shop, owner.userId)!.role).toBe('owner');
+    expect((await a.auth.getMembership(shop, owner.userId))!.role).toBe('owner');
     expect((await call(a, mgr.token, 'DELETE', `/v1/shops/${shop}/members/${mgr.userId}`)).status).toBe(200);
     expect((await call(a, mgr.token, 'GET', `/v1/shops/${shop}`)).status).toBe(404);
   });

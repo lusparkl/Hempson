@@ -11,7 +11,7 @@ const shopP = z.object({ shopId: z.uuid() });
 export function registerPhotoSearchRoutes(app: FastifyInstance, deps: { shops: ShopRepository; auth: AuthRepository; photos: PhotoSearchService | null }) {
   const { shops, auth, photos } = deps;
   const requireRole = makeRequireRole(shops, auth);
-  const view = (shopId: string) => (photos ? { available: true, ...photos.status(shopId) } : { available: false, withPhoto: 0, indexed: 0, failed: 0, pending: 0 });
+  const view = async (shopId: string) => (photos ? { available: true, ...(await photos.status(shopId)) } : { available: false, withPhoto: 0, indexed: 0, failed: 0, pending: 0 });
 
   route(app, {
     method: 'GET',
@@ -20,9 +20,9 @@ export function registerPhotoSearchRoutes(app: FastifyInstance, deps: { shops: S
     tag: 'catalog',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'manager');
-      return view(params.shopId);
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'manager');
+      return await view(params.shopId);
     },
   });
 
@@ -33,13 +33,13 @@ export function registerPhotoSearchRoutes(app: FastifyInstance, deps: { shops: S
     tag: 'catalog',
     auth: 'user',
     params: shopP,
-    handler: ({ req, params }) => {
-      requireRole(req, params.shopId, 'owner');
+    handler: async ({ req, params }) => {
+      await requireRole(req, params.shopId, 'owner');
       if (photos) {
-        photos.clearFailed(params.shopId);
+        await photos.clearFailed(params.shopId);
         photos.schedule();
       }
-      return view(params.shopId);
+      return await view(params.shopId);
     },
   });
 }

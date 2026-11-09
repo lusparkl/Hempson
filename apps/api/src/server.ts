@@ -152,7 +152,7 @@ export async function buildApp(
 ): Promise<App> {
   const cfg: Config = { ...loadConfig(), ...overrides };
   const handle = openDb(cfg.dbFile);
-  runMigrations(handle);
+  await runMigrations(handle);
   const apiKeys = new ApiKeyRepository(handle);
   const shops = new ShopRepository(handle);
   const auth = new AuthRepository(handle);
@@ -228,7 +228,7 @@ export async function buildApp(
     log,
     publicUrl: cfg.publicUrl,
     appConfigured: !!(cfg.metaAppId && cfg.metaAppSecret && cfg.metaVerifyToken && cfg.metaConfigId),
-    onInbound: (shopId, conversationId, messageId) => salesAgent?.trigger(shopId, conversationId, messageId),
+    onInbound: async (shopId, conversationId, messageId) => void (await salesAgent?.trigger(shopId, conversationId, messageId)),
     notifier: notifier ?? undefined,
   });
   // Shop bots (D27) share only the API base URL with the operator notifier bot, never its token.
@@ -239,7 +239,7 @@ export async function buildApp(
     conversations,
     log,
     publicUrl: cfg.publicUrl,
-    onInbound: (shopId, conversationId, messageId) => salesAgent?.trigger(shopId, conversationId, messageId),
+    onInbound: async (shopId, conversationId, messageId) => void (await salesAgent?.trigger(shopId, conversationId, messageId)),
     notifier: notifier ?? undefined,
   });
   const delivery = new DeliveryService({ api: new NovaPoshtaApi(egress, cfg.novaPoshtaBaseUrl), vault, repo: deliveryRepo, orders, log, notifier: notifier ?? undefined });
@@ -302,7 +302,7 @@ export async function buildApp(
       sessionTtlMs: cfg.webChatSessionDays * 86_400_000,
       maxMessageLength: cfg.maxMessageLength,
     },
-    (shopId, conversationId, messageId) => salesAgent?.trigger(shopId, conversationId, messageId),
+    async (shopId, conversationId, messageId) => void (await salesAgent?.trigger(shopId, conversationId, messageId)),
   );
 
   // API and public chat answers are per-user or per-visitor: never cache them, never let a browser sniff types.
@@ -315,10 +315,10 @@ export async function buildApp(
     const h = req.headers.authorization;
     const m = h && /^Bearer\s+(\S+)$/i.exec(h);
     if (m && m[1]!.startsWith(SESSION_PREFIX)) {
-      const s = auth.findSession(m[1]!);
+      const s = await auth.findSession(m[1]!);
       if (s) req.user = s;
     } else if (m) {
-      const row = apiKeys.find(m[1]!);
+      const row = await apiKeys.find(m[1]!);
       if (row) req.principal = { keyId: row.id };
     }
   });
@@ -345,7 +345,7 @@ export async function buildApp(
     auth: 'none',
     handler: ({ reply }) => {
       try {
-        handle.raw.prepare('select 1').get();
+        handle.ping();
         return { ok: true };
       } catch {
         reply.status(503);
@@ -372,7 +372,7 @@ export async function buildApp(
   registerNotificationFeedRoutes(app, { shops, auth, feed });
   registerPlanRoutes(app, { shops, auth, plans });
   registerWebChatRoutes(app, { shops, auth, webChat, svc: webChatSvc, publicUrl: cfg.publicUrl });
-  const demoShopId = cfg.demo && salesAgent ? ensureDemoShop({ handle, shops, auth, catalog, policies, agent: agentRepo }) : null;
+  const demoShopId = cfg.demo && salesAgent ? await ensureDemoShop({ handle, shops, auth, catalog, policies, agent: agentRepo }) : null;
   if (cfg.demo && salesAgent && !demoShopId) log.warn('demo is off: the demo slug belongs to a real shop');
   registerDemoRoutes(app, { shopId: demoShopId, catalog, salesAgent, origins: cfg.demoOrigins, turnsPerIpPerHour: cfg.demoTurnsPerIpPerHour, turnsPerDay: cfg.demoTurnsPerDay });
   registerOrderRoutes(app, { shops, auth, orders, delivery, payments, paymentRepo, noticeRepo });
@@ -384,13 +384,17 @@ export async function buildApp(
   const spec = buildOpenApi(registry);
   app.get('/v1/openapi.json', async () => spec);
 
-  notices.start();
-  agentRepo.failInterruptedRuns();
-  const timer = setInterval(() => {
-    webChat.purgeExpiredSessions();
-    auth.purgeDeadSessions();
-    auth.purgeExpiredPasswordResets();
-    igRepo.purgeExpiredStates();
+  await notices.start();
+  await agentRepo.failInterruptedRuns();
+  const timer = setInterval(async () => {
+    try {
+      await webChat.purgeExpiredSessions();
+      await auth.purgeDeadSessions();
+      await auth.purgeExpiredPasswordResets();
+      await igRepo.purgeExpiredStates();
+    } catch (e) {
+      app.log.error({ err: (e as Error).message }, 'periodic purge failed');
+    }
     void ig.expireDue().catch(() => undefined);
   }, 6 * 3600_000);
   timer.unref();

@@ -1,5 +1,7 @@
+import { sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DbHandle } from './db';
+import { queryRow, queryRows, secondsBetween } from './dialect';
 
 export class StatsValidationError extends Error {
   constructor(readonly issues: string[]) {
@@ -91,75 +93,75 @@ export class StatsRepository {
     return { from: from.toISOString(), to: to.toISOString() };
   }
 
-  forShop(shopId: string, input: z.input<typeof periodInput> = {}): ShopStats {
+  async forShop(shopId: string, input: z.input<typeof periodInput> = {}): Promise<ShopStats> {
     const period = this.resolvePeriod(input);
-    const raw = this.handle.raw;
-    const p = { shop: shopId, from: period.from, to: period.to };
-    const all = <T>(sql: string) => raw.prepare(sql).all(p) as T[];
-    const one = <T>(sql: string) => raw.prepare(sql).get(p) as T;
+    const db = this.handle.db;
+    const { from, to } = period;
+    const all = <T>(q: SQL) => queryRows<T>(db, q);
+    const one = <T>(q: SQL) => queryRow<T>(db, q) as T;
 
     const msgRows = all<{ sender_type: string; delivery_status: string; n: number }>(
-      `select sender_type, delivery_status, count(*) n from shop_messages
-       where shop_id = @shop and created_at >= @from and created_at < @to group by sender_type, delivery_status`,
+      sql`select sender_type, delivery_status, count(*) n from shop_messages
+       where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to} group by sender_type, delivery_status`,
     );
     const sent = (who: string) => msgRows.filter((r) => r.sender_type === who && r.delivery_status !== 'failed').reduce((a, r) => a + r.n, 0);
     const msgActive = one<{ n: number }>(
-      `select count(distinct conversation_id) n from shop_messages where shop_id = @shop and created_at >= @from and created_at < @to`,
+      sql`select count(distinct conversation_id) n from shop_messages where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to}`,
     ).n;
 
     const runRows = all<{ status: string; n: number; req: number; inp: number; out: number }>(
-      `select status, count(*) n, sum(model_requests) req, sum(input_tokens) inp, sum(output_tokens) out from ai_runs
-       where shop_id = @shop and created_at >= @from and created_at < @to group by status`,
+      sql`select status, count(*) n, sum(model_requests) req, sum(input_tokens) inp, sum(output_tokens) as "out" from ai_runs
+       where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to} group by status`,
     );
     const byStatus = Object.fromEntries(runRows.map((r) => [r.status, r.n]));
     const verdicts = runRows.filter((r) => !['running', 'skipped', 'superseded'].includes(r.status)).reduce((a, r) => a + r.n, 0);
 
-    const esc = one<{ opened: number }>(`select count(*) opened from escalations where shop_id = @shop and created_at >= @from and created_at < @to`);
+    const esc = one<{ opened: number }>(sql`select count(*) opened from escalations where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to}`);
     const resolved = one<{ n: number; avg: number | null }>(
-      `select count(*) n, avg((julianday(resolved_at) - julianday(created_at)) * 86400) avg from escalations
-       where shop_id = @shop and status = 'resolved' and resolved_at >= @from and resolved_at < @to`,
+      sql`select count(*) n, avg(${secondsBetween(sql`created_at`, sql`resolved_at`)}) avg from escalations
+       where shop_id = ${shopId} and status = 'resolved' and resolved_at >= ${from} and resolved_at < ${to}`,
     );
-    const openNow = one<{ n: number }>(`select count(*) n from escalations where shop_id = @shop and status = 'open'`).n;
+    const openNow = one<{ n: number }>(sql`select count(*) n from escalations where shop_id = ${shopId} and status = 'open'`).n;
 
     const drafts = all<{ status: string; n: number }>(
-      `select status, count(*) n from order_drafts where shop_id = @shop and created_at >= @from and created_at < @to group by status`,
+      sql`select status, count(*) n from order_drafts where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to} group by status`,
     );
     const approved = all<{ currency: string; n: number; total: number }>(
-      `select currency, count(*) n, sum(total_minor) total from order_drafts
-       where shop_id = @shop and approved_at >= @from and approved_at < @to group by currency order by currency`,
+      sql`select currency, count(*) n, sum(total_minor) total from order_drafts
+       where shop_id = ${shopId} and approved_at >= ${from} and approved_at < ${to} group by currency order by currency`,
     );
 
-    const currency = one<{ c: string } | undefined>(`select default_currency c from shops where id = @shop`)?.c ?? 'UAH';
+    const currency = one<{ c: string } | undefined>(sql`select default_currency c from shops where id = ${shopId}`)?.c ?? 'UAH';
     const runDays = all<{ d: string; runs: number; replied: number; escalated: number; inp: number; out: number }>(
-      `select substr(created_at, 1, 10) d, count(*) runs,
-              sum(status = 'replied') replied, sum(status = 'escalated') escalated,
-              sum(input_tokens) inp, sum(output_tokens) out
-       from ai_runs where shop_id = @shop and created_at >= @from and created_at < @to group by d order by d`,
+      sql`select substr(created_at, 1, 10) d, count(*) runs,
+              sum(case when status = 'replied' then 1 else 0 end) replied, sum(case when status = 'escalated' then 1 else 0 end) escalated,
+              sum(input_tokens) inp, sum(output_tokens) as "out"
+       from ai_runs where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to} group by d order by d`,
     );
     const byDay = <T extends { d: string }>(rows: T[]) => new Map(rows.map((r) => [r.d, r]));
     const runsBy = byDay(runDays);
     const custBy = byDay(
-      all<{ d: string; n: number }>(`select substr(created_at, 1, 10) d, count(*) n from customers where shop_id = @shop and created_at >= @from and created_at < @to group by d`),
+      all<{ d: string; n: number }>(
+        sql`select substr(created_at, 1, 10) d, count(*) n from customers where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to} group by d`,
+      ),
     );
     const humanBy = byDay(
       all<{ d: string; n: number }>(
-        `select substr(created_at, 1, 10) d, count(*) n from shop_messages
-         where shop_id = @shop and sender_type = 'human' and delivery_status <> 'failed' and created_at >= @from and created_at < @to group by d`,
+        sql`select substr(created_at, 1, 10) d, count(*) n from shop_messages
+         where shop_id = ${shopId} and sender_type = 'human' and delivery_status <> 'failed' and created_at >= ${from} and created_at < ${to} group by d`,
       ),
     );
     const apprBy = byDay(
       all<{ d: string; n: number }>(
-        `select substr(created_at, 1, 10) d, count(distinct draft_id) n from order_events
-         where shop_id = @shop and to_status = 'approved' and created_at >= @from and created_at < @to group by d`,
+        sql`select substr(created_at, 1, 10) d, count(distinct draft_id) n from order_events
+         where shop_id = ${shopId} and to_status = 'approved' and created_at >= ${from} and created_at < ${to} group by d`,
       ),
     );
     const revBy = byDay(
-      raw
-        .prepare(
-          `select substr(approved_at, 1, 10) d, sum(total_minor) n from order_drafts
-           where shop_id = @shop and currency = @cur and approved_at >= @from and approved_at < @to group by d`,
-        )
-        .all({ ...p, cur: currency }) as Array<{ d: string; n: number }>,
+      all<{ d: string; n: number }>(
+        sql`select substr(approved_at, 1, 10) d, sum(total_minor) n from order_drafts
+           where shop_id = ${shopId} and currency = ${currency} and approved_at >= ${from} and approved_at < ${to} group by d`,
+      ),
     );
     const daily = utcDays(period).map((date) => {
       const r = runsBy.get(date);
@@ -179,19 +181,19 @@ export class StatsRepository {
 
     const stages = Object.fromEntries(
       all<{ to_status: string; n: number }>(
-        `select to_status, count(distinct draft_id) n from order_events
-         where shop_id = @shop and created_at >= @from and created_at < @to and to_status in ('pending_approval', 'approved', 'paid', 'shipped', 'delivered')
+        sql`select to_status, count(distinct draft_id) n from order_events
+         where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to} and to_status in ('pending_approval', 'approved', 'paid', 'shipped', 'delivered')
          group by to_status`,
       ).map((r) => [r.to_status, r.n]),
     );
     const created = all<{ actor: string; n: number }>(
-      `select actor, count(distinct draft_id) n from order_events
-       where shop_id = @shop and created_at >= @from and created_at < @to and from_status is null and to_status = 'pending_approval' group by actor`,
+      sql`select actor, count(distinct draft_id) n from order_events
+       where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to} and from_status is null and to_status = 'pending_approval' group by actor`,
     );
     const approvals = all<{ created_by: string; auto: number; n: number }>(
-      `select d.created_by, e.actor = 'system:auto_confirm' auto, count(distinct e.draft_id) n
+      sql`select d.created_by, case when e.actor = 'system:auto_confirm' then 1 else 0 end as auto, count(distinct e.draft_id) n
        from order_events e join order_drafts d on d.id = e.draft_id and d.shop_id = e.shop_id
-       where e.shop_id = @shop and e.created_at >= @from and e.created_at < @to and e.to_status = 'approved'
+       where e.shop_id = ${shopId} and e.created_at >= ${from} and e.created_at < ${to} and e.to_status = 'approved'
        group by d.created_by, auto`,
     );
     const sum = <T extends { n: number }>(rows: T[], pick: (r: T) => boolean) => rows.filter(pick).reduce((a, r) => a + r.n, 0);
@@ -207,8 +209,8 @@ export class StatsRepository {
       },
       conversations: {
         active: msgActive,
-        newCustomers: one<{ n: number }>(`select count(*) n from customers where shop_id = @shop and created_at >= @from and created_at < @to`).n,
-        aiPausedNow: one<{ n: number }>(`select count(*) n from shop_conversations where shop_id = @shop and ai_paused = 1`).n,
+        newCustomers: one<{ n: number }>(sql`select count(*) n from customers where shop_id = ${shopId} and created_at >= ${from} and created_at < ${to}`).n,
+        aiPausedNow: one<{ n: number }>(sql`select count(*) n from shop_conversations where shop_id = ${shopId} and ai_paused = true`).n,
       },
       ai: {
         runs: runRows.reduce((a, r) => a + r.n, 0),
@@ -225,7 +227,7 @@ export class StatsRepository {
       },
       funnel: {
         conversations: one<{ n: number }>(
-          `select count(distinct conversation_id) n from shop_messages where shop_id = @shop and direction = 'incoming' and created_at >= @from and created_at < @to`,
+          sql`select count(distinct conversation_id) n from shop_messages where shop_id = ${shopId} and direction = 'incoming' and created_at >= ${from} and created_at < ${to}`,
         ).n,
         drafts: stages.pending_approval ?? 0,
         approved: stages.approved ?? 0,

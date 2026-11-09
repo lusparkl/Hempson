@@ -31,13 +31,13 @@ export class PolicyRepository {
     this.db = handle.db;
   }
 
-  list(shopId: string): PolicyRow[] {
+  async list(shopId: string): Promise<PolicyRow[]> {
     const rows = this.db.select().from(t.shopPolicies).where(eq(t.shopPolicies.shopId, shopId)).all();
     return POLICY_TOPICS.map((topic) => rows.find((r) => r.topic === topic) ?? { shopId, topic, text: '', version: 0, updatedByUserId: null, updatedAt: '' });
   }
 
   /** The stored text, or undefined when the shop has no text for this topic. */
-  get(shopId: string, topic: PolicyTopic): PolicyRow | undefined {
+  async get(shopId: string, topic: PolicyTopic): Promise<PolicyRow | undefined> {
     const r = this.db
       .select()
       .from(t.shopPolicies)
@@ -47,7 +47,12 @@ export class PolicyRepository {
   }
 
   /** Saves a new version (an empty text clears the policy; the version still grows). */
-  save(shopId: string, topic: PolicyTopic, text: string, userId: string | null): PolicyRow {
+  async save(shopId: string, topic: PolicyTopic, text: string, userId: string | null): Promise<PolicyRow> {
+    return this.saveTx(shopId, topic, text, userId);
+  }
+
+  /** Sync body of `save`: runs inside the caller's transaction. Package-internal. */
+  saveTx(shopId: string, topic: PolicyTopic, text: string, userId: string | null): PolicyRow {
     const r = policyText.safeParse(text);
     if (!r.success) throw new PolicyValidationError(['text: at most 4000 characters']);
     const cur = this.db
@@ -59,7 +64,10 @@ export class PolicyRepository {
     this.db
       .insert(t.shopPolicies)
       .values(row)
-      .onConflictDoUpdate({ target: [t.shopPolicies.shopId, t.shopPolicies.topic], set: { text: row.text, version: row.version, updatedByUserId: userId, updatedAt: row.updatedAt } })
+      .onConflictDoUpdate({
+        target: [t.shopPolicies.shopId, t.shopPolicies.topic],
+        set: { text: row.text, version: row.version, updatedByUserId: userId, updatedAt: row.updatedAt },
+      })
       .run();
     return row;
   }

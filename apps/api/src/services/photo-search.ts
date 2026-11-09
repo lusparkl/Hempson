@@ -55,12 +55,12 @@ export class PhotoSearchService {
     return (this.d.now ?? Date.now)();
   }
 
-  status(shopId: string): PhotoIndexStatus {
-    return this.d.repo.status(shopId, this.d.vision.indexModel);
+  async status(shopId: string): Promise<PhotoIndexStatus> {
+    return await this.d.repo.status(shopId, this.d.vision.indexModel);
   }
 
-  clearFailed(shopId: string): number {
-    return this.d.repo.clearFailed(shopId);
+  async clearFailed(shopId: string): Promise<number> {
+    return await this.d.repo.clearFailed(shopId);
   }
 
   /** Starts indexing in the background (after a catalog change); a call while it runs makes it go round once more. */
@@ -89,7 +89,7 @@ export class PhotoSearchService {
   /** Indexes up to `limit` products whose main image has no current entry. @returns how many were processed. */
   async indexBatch(limit: number, shopId?: string): Promise<number> {
     const model = this.d.vision.indexModel;
-    const tasks = this.d.repo.pending(model, limit, shopId);
+    const tasks = await this.d.repo.pending(model, limit, shopId);
     let done = 0;
     for (const task of tasks) {
       const r = await this.indexOne(task, model);
@@ -107,10 +107,10 @@ export class PhotoSearchService {
     try {
       const d = await vision.describe({ url: task.imageUrl });
       if (d.text.trim() === NO_PRODUCT) {
-        repo.saveFailed(task, model, 'NO_PRODUCT');
+        await repo.saveFailed(task, model, 'NO_PRODUCT');
         return 'failed';
       }
-      repo.saveReady(task, model, d.text, await vision.embed(d.text));
+      await repo.saveReady(task, model, d.text, await vision.embed(d.text));
       return 'ok';
     } catch (e) {
       if (e instanceof LlmError && e.retryable) {
@@ -120,7 +120,7 @@ export class PhotoSearchService {
       // 400 from the provider: the image could not be downloaded or decoded. Logged by product only, never by URL.
       const code = e instanceof LlmError ? (e.status === 400 ? 'IMAGE_UNREADABLE' : `LLM_${e.status ?? 'ERROR'}`) : 'INTERNAL';
       log.warn({ shopId: task.shopId, productId: task.productId, code }, 'photo indexing failed');
-      repo.saveFailed(task, model, code);
+      await repo.saveFailed(task, model, code);
       return 'failed';
     }
   }
@@ -162,8 +162,7 @@ export class PhotoSearchService {
       const d = await this.d.vision.describe(image);
       if (d.text.trim() === NO_PRODUCT) return { status: 'no_product' };
       const q = await this.d.vision.embed(d.text);
-      const matches = this.d.repo
-        .entries(shopId, this.d.vision.indexModel)
+      const matches = (await this.d.repo.entries(shopId, this.d.vision.indexModel))
         .map((e) => ({ productId: e.productId, score: cosine(q, e.vector) }))
         .filter((m) => m.score >= MIN_SCORE)
         .sort((a, b) => b.score - a.score)

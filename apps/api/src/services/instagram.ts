@@ -49,7 +49,7 @@ export type InstagramServiceDeps = {
   publicUrl: string;
   appConfigured: boolean;
   /** Called once per genuinely new inbound customer message. */
-  onInbound: (shopId: string, conversationId: string, messageId: string) => void;
+  onInbound: (shopId: string, conversationId: string, messageId: string) => Promise<void>;
   notifier?: Notifier;
   clock?: () => Date;
 };
@@ -119,8 +119,8 @@ export class InstagramService {
   // ---------- connect ----------
 
   /** Non-secret state for the dashboard. */
-  status(shopId: string) {
-    const ch = this.d.repo.getChannel(shopId);
+  async status(shopId: string) {
+    const ch = await this.d.repo.getChannel(shopId);
     return {
       available: this.enabled,
       redirectUri: this.redirectUri,
@@ -136,15 +136,15 @@ export class InstagramService {
     if (!this.enabled) throw new ApiError('NOT_CONFIGURED', 'Instagram connection is not configured on this server');
   }
 
-  startConnect(shopId: string, userId: string): { authorizeUrl: string } {
+  async startConnect(shopId: string, userId: string): Promise<{ authorizeUrl: string }> {
     this.requireEnabled();
-    return { authorizeUrl: this.d.graph.authorizeUrl(this.d.repo.createState(shopId, userId, STATE_TTL_MS), this.redirectUri) };
+    return { authorizeUrl: this.d.graph.authorizeUrl(await this.d.repo.createState(shopId, userId, STATE_TTL_MS), this.redirectUri) };
   }
 
   /** Callback: validates the single-use `state`, exchanges the code, stores the token encrypted and links the shared account. */
   async completeConnect(code: string, state: string): Promise<{ shopId: string }> {
     this.requireEnabled();
-    const st = this.d.repo.consumeState(state);
+    const st = await this.d.repo.consumeState(state);
     if (!st) throw new ApiError('FORBIDDEN', 'Connect link expired or already used');
     const { graph, vault, repo, log } = this.d;
     if (this.connectionOperations.has(st.shopId)) throw new ApiError('TEMPORARY_FAILURE', 'Instagram connection is already in progress');
@@ -163,7 +163,7 @@ export class InstagramService {
       // One shop = one account. Never guess which of several to use.
       if (accounts.length !== 1) throw new InstagramAccountSelectionError(accounts.length);
       const me = accounts[0]!;
-      const existing = repo.findByIgUserId(me.userId);
+      const existing = await repo.findByIgUserId(me.userId);
       if (existing && existing.shopId !== st.shopId) throw new InstagramAccountTakenError();
       const expiresAt = tok.expiresInSec > 0 ? new Date(this.now().getTime() + tok.expiresInSec * 1000).toISOString() : null;
       step = 'subscribe';
@@ -173,11 +173,7 @@ export class InstagramService {
         await graph.subscribe(tok.accessToken, me.userId);
         requireCurrent();
         // A connection is usable only after Meta confirms the subscription. Preserve an existing connection on failure.
-        // Save both rows atomically: an account claimed while subscription was in flight must not replace its token.
-        repo.db.transaction(() => {
-          repo.upsertChannel(st.shopId, { igUserId: me.userId, username: me.username, tokenExpiresAt: expiresAt });
-          vault.save(st.shopId, 'instagram', tok.accessToken);
-        });
+        await repo.connect(st.shopId, { igUserId: me.userId, username: me.username, tokenExpiresAt: expiresAt }, vault, tok.accessToken);
         this.connectionVersion++;
       } finally {
         // A canceled attempt may already be subscribed remotely. Keep the account reserved until cleanup finishes.
@@ -207,23 +203,23 @@ export class InstagramService {
     const operation = { kind: 'disconnect' as const };
     this.connectionOperations.set(shopId, operation);
     try {
-      const ch = this.d.repo.getChannel(shopId);
+      const ch = await this.d.repo.getChannel(shopId);
       if (ch && this.d.vault.available) {
         await this.d.vault
           .withSecret(shopId, 'instagram', (t) => this.d.graph.unsubscribe(t, ch.igUserId))
           .catch((e) => this.d.log.warn({ shopId, code: e instanceof GraphError ? e.graphCode : null }, 'instagram unsubscribe failed'));
       }
-      if (this.d.vault.available) this.d.vault.delete(shopId, 'instagram');
-      this.d.repo.deleteChannel(shopId);
+      if (this.d.vault.available) await this.d.vault.delete(shopId, 'instagram');
+      await this.d.repo.deleteChannel(shopId);
       this.connectionVersion++;
     } finally {
       if (this.connectionOperations.get(shopId) === operation) this.connectionOperations.delete(shopId);
     }
   }
 
-  private markNeedsReconnect(shopId: string, code: string): void {
-    this.d.vault.mark(shopId, 'instagram', 'needs_reconnect');
-    if (this.d.repo.setNeedsReconnect(shopId, code)) {
+  private async markNeedsReconnect(shopId: string, code: string): Promise<void> {
+    await this.d.vault.mark(shopId, 'instagram', 'needs_reconnect');
+    if (await this.d.repo.setNeedsReconnect(shopId, code)) {
       this.connectionVersion++;
       this.d.log.warn({ shopId, code }, 'instagram needs reconnect');
       this.d.notifier?.notify({ kind: 'channel_issue', shopId, channel: 'instagram', issue: 'needs_reconnect' });
@@ -233,7 +229,7 @@ export class InstagramService {
   // ---------- inbound ----------
 
   /** Ingests an already signature-checked webhook payload. One bad event never blocks the others. Returns how many new customer messages were stored. */
-  handleWebhook(payload: unknown): number {
+  async handleWebhook(payload: unknown): Promise<number> {
     const root = obj(payload);
     if (root.object !== 'instagram' || !Array.isArray(root.entry)) {
       this.d.log.info({ object: typeof root.object === 'string' ? root.object : null }, 'instagram webhook ignored: unexpected shape');
@@ -244,7 +240,7 @@ export class InstagramService {
     for (const e of root.entry) {
       const entry = obj(e);
       const igId = str(entry.id);
-      const ch = igId && this.d.repo.findByIgUserId(igId);
+      const ch = igId && (await this.d.repo.findByIgUserId(igId));
       // Two envelopes are documented: `messaging[]` (Instagram messaging) and `changes[]` of `{field:'messages', value:<event>}` (webhook fields / dashboard test).
       const changes = Array.isArray(entry.changes) ? entry.changes.map(obj) : [];
       const messaging = [...(Array.isArray(entry.messaging) ? entry.messaging : []), ...changes.filter((c) => c.field === 'messages').map((c) => c.value)];
@@ -266,7 +262,7 @@ export class InstagramService {
       }
       for (const ev of messaging) {
         try {
-          if (this.ingestEvent(ch, obj(ev))) stored++;
+          if (await this.ingestEvent(ch, obj(ev))) stored++;
         } catch (err) {
           const retryable = !(err instanceof ConversationValidationError);
           retryableFailure ||= retryable;
@@ -279,7 +275,7 @@ export class InstagramService {
   }
 
   /** @returns true when a new inbound customer message was stored. */
-  private ingestEvent(ch: InstagramChannelRow, ev: Json): boolean {
+  private async ingestEvent(ch: InstagramChannelRow, ev: Json): Promise<boolean> {
     const m = obj(ev.message);
     const mid = str(m.mid);
     if (!mid || m.is_deleted === true) return false;
@@ -296,38 +292,35 @@ export class InstagramService {
 
     if (echo) {
       // Sent from this account: by Hepson (adopt our pending row) or by a person in the Instagram app (record as human).
-      const { conversation } = conversations.ensureConversation(ch.shopId, {
+      const { conversation } = await conversations.ensureConversation(ch.shopId, {
         channel: INSTAGRAM_CHANNEL,
         conversationExternalId: customerId,
         customer: { externalId: customerId },
       });
-      if (text && conversations.adoptPendingOutbound(ch.shopId, conversation.id, text, mid, 'sent', 'ai')) return false;
-      if (text && conversations.adoptPendingOutbound(ch.shopId, conversation.id, text, mid, 'sent', 'human')) return false;
-      conversations.recordOutbound(ch.shopId, conversation.id, { senderType: 'human', text, attachments, externalId: mid, deliveryStatus: 'sent', occurredAt });
+      if (text && (await conversations.adoptPendingOutbound(ch.shopId, conversation.id, text, mid, 'sent', 'ai'))) return false;
+      if (text && (await conversations.adoptPendingOutbound(ch.shopId, conversation.id, text, mid, 'sent', 'human'))) return false;
+      await conversations.recordOutbound(ch.shopId, conversation.id, { senderType: 'human', text, attachments, externalId: mid, deliveryStatus: 'sent', occurredAt });
       return false;
     }
 
-    // Dispatch reads the newly stored message synchronously and queues its work for after this transaction commits.
-    // If dispatch throws, roll the insert back so a retried delivery can still trigger the agent exactly once.
-    const r = conversations.db.transaction(() => {
-      const incoming = conversations.ingestMessage(ch.shopId, {
-        channel: INSTAGRAM_CHANNEL,
-        conversationExternalId: customerId,
-        customer: { externalId: customerId },
-        externalId: mid,
-        text,
-        attachments,
-        occurredAt,
-      });
-      if (!incoming.duplicated) {
-        try {
-          this.d.onInbound(ch.shopId, incoming.conversation.id, incoming.message.id);
-        } catch {
-          throw new ApiError('TEMPORARY_FAILURE', 'Instagram inbound dispatch failed');
-        }
-      }
-      return incoming;
+    const r = await conversations.ingestMessage(ch.shopId, {
+      channel: INSTAGRAM_CHANNEL,
+      conversationExternalId: customerId,
+      customer: { externalId: customerId },
+      externalId: mid,
+      text,
+      attachments,
+      occurredAt,
     });
+    // If dispatch throws, undo the insert so a retried delivery can still trigger the agent exactly once.
+    if (!r.duplicated) {
+      try {
+        await this.d.onInbound(ch.shopId, r.conversation.id, r.message.id);
+      } catch {
+        await conversations.discardIngested(ch.shopId, r.conversation.id, r.message.id);
+        throw new ApiError('TEMPORARY_FAILURE', 'Instagram inbound dispatch failed');
+      }
+    }
     if (r.duplicated) return false;
     if (!r.customer.displayName && !r.customer.handle) this.track(this.enrichProfile(ch.shopId, customerId));
     return true;
@@ -340,7 +333,7 @@ export class InstagramService {
     try {
       const p = await this.d.vault.withSecret(shopId, 'instagram', (t) => this.d.graph.profile(t, igsid));
       if (!p.name && !p.username) return;
-      this.d.conversations.ensureConversation(shopId, {
+      await this.d.conversations.ensureConversation(shopId, {
         channel: INSTAGRAM_CHANNEL,
         conversationExternalId: igsid,
         customer: { externalId: igsid, displayName: p.name ?? p.username, handle: p.username },
@@ -353,31 +346,31 @@ export class InstagramService {
   // ---------- outbound ----------
 
   /** Why a reply cannot be sent right now, or null. Checked before anything is recorded or called. */
-  blockReason(shopId: string, conversationId: string): 'ACCOUNT_NOT_CONNECTED' | 'OUTSIDE_MESSAGING_WINDOW' | null {
-    const ch = this.d.repo.getChannel(shopId);
+  async blockReason(shopId: string, conversationId: string): Promise<'ACCOUNT_NOT_CONNECTED' | 'OUTSIDE_MESSAGING_WINDOW' | null> {
+    const ch = await this.d.repo.getChannel(shopId);
     if (!this.enabled || !ch || ch.status !== 'connected') return 'ACCOUNT_NOT_CONNECTED';
-    const last = this.d.conversations.lastInboundAt(shopId, conversationId);
+    const last = await this.d.conversations.lastInboundAt(shopId, conversationId);
     if (!last || this.now().getTime() - Date.parse(last) > MESSAGING_WINDOW_MS) return 'OUTSIDE_MESSAGING_WINDOW';
     return null;
   }
 
   /** True when this shop has a connected channel (used to route replies). */
-  isConnected(shopId: string): boolean {
-    return this.d.repo.getChannel(shopId)?.status === 'connected';
+  async isConnected(shopId: string): Promise<boolean> {
+    return (await this.d.repo.getChannel(shopId))?.status === 'connected';
   }
 
   /** Sends one text to the conversation's customer. Never retries; never throws for provider problems. */
   async send(shopId: string, conversationId: string, text: string): Promise<InstagramSendOutcome> {
-    const blocked = this.blockReason(shopId, conversationId);
+    const blocked = await this.blockReason(shopId, conversationId);
     if (blocked) return { status: 'failed', code: blocked };
-    const ch = this.d.repo.getChannel(shopId)!;
-    const conv = this.d.conversations.getConversation(shopId, conversationId);
+    const ch = (await this.d.repo.getChannel(shopId))!;
+    const conv = await this.d.conversations.getConversation(shopId, conversationId);
     if (!conv || conv.conversation.channel !== INSTAGRAM_CHANNEL) return { status: 'failed', code: 'ACCOUNT_NOT_CONNECTED' };
     try {
       const r = await this.d.vault.withSecret(shopId, 'instagram', (t) => this.d.graph.sendText(t, ch.igUserId, conv.conversation.externalId, text));
       if (r.status === 'sent') return { status: 'sent', externalId: r.messageId };
       if (r.status === 'uncertain') return { status: 'uncertain', code: r.code };
-      if (r.authFailure) this.markNeedsReconnect(shopId, r.code);
+      if (r.authFailure) await this.markNeedsReconnect(shopId, r.code);
       return { status: 'failed', code: r.code };
     } catch (e) {
       if (e instanceof CredentialMissingError) return { status: 'failed', code: 'ACCOUNT_NOT_CONNECTED' };
@@ -402,8 +395,8 @@ export class InstagramService {
     this.polling = true;
     let stored = 0;
     try {
-      for (const { shopId } of this.d.repo.listConnected()) {
-        const ch = this.d.repo.getChannel(shopId);
+      for (const { shopId } of await this.d.repo.listConnected()) {
+        const ch = await this.d.repo.getChannel(shopId);
         if (!ch || ch.status !== 'connected') continue;
         const connectionVersion = this.connectionVersion;
         try {
@@ -426,7 +419,7 @@ export class InstagramService {
                 timestamp: m.createdAtMs,
                 message: { mid: m.id, text: m.text ?? undefined, is_echo: own },
               };
-              if (this.ingestEvent(ch, ev)) {
+              if (await this.ingestEvent(ch, ev)) {
                 stored++;
                 shopStored++;
               }
@@ -437,11 +430,11 @@ export class InstagramService {
             }
           }
           // Keep the batch available for retry when storage or dispatch failed; successful messages are idempotent.
-          if (!retryableFailure && (!ch.polledUntil || newest > since)) this.d.repo.setPolledUntil(ch.shopId, new Date(newest).toISOString());
+          if (!retryableFailure && (!ch.polledUntil || newest > since)) await this.d.repo.setPolledUntil(ch.shopId, new Date(newest).toISOString());
           if (newest > since || shopStored) this.d.log.info({ shopId: ch.shopId, fetched: msgs.length, stored: shopStored }, 'instagram poll');
         } catch (e) {
           if (connectionVersion !== this.connectionVersion) continue;
-          if (e instanceof GraphError && e.kind === 'auth') this.markNeedsReconnect(ch.shopId, 'TOKEN_REJECTED');
+          if (e instanceof GraphError && e.kind === 'auth') await this.markNeedsReconnect(ch.shopId, 'TOKEN_REJECTED');
           else this.d.log.warn({ shopId: ch.shopId, code: e instanceof GraphError ? e.graphCode : e instanceof Error ? e.name : 'ERROR' }, 'instagram poll failed');
         }
       }
@@ -459,8 +452,8 @@ export class InstagramService {
    * and Meta may report `expires_in`. A token known to be expired needs a reconnect; a revoked one is caught on the next send.
    */
   async expireDue(): Promise<void> {
-    for (const ch of this.d.repo.listConnected()) {
-      if (ch.tokenExpiresAt && Date.parse(ch.tokenExpiresAt) <= this.now().getTime()) this.markNeedsReconnect(ch.shopId, 'TOKEN_EXPIRED');
+    for (const ch of await this.d.repo.listConnected()) {
+      if (ch.tokenExpiresAt && Date.parse(ch.tokenExpiresAt) <= this.now().getTime()) await this.markNeedsReconnect(ch.shopId, 'TOKEN_EXPIRED');
     }
   }
 }

@@ -36,11 +36,16 @@ async function setup(script: Entry[] = [], o: { connect?: boolean; sender?: bool
   a = await makeApp({ llm, notifier, keyring: new Keyring(1, randomBytes(32)), fetchImpl: np.fetchFor() });
   const token = await login('o@example.com');
   const shopId = (await call(a, token, 'POST', '/v1/shops', { name: 'Магазин', slug: 'shop-one' })).body.shopId as string;
-  a.catalog.createProduct(shopId, { name: 'Худі Classic', priceMinor: 129_900, currency: 'UAH', variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 3 }] });
+  await a.catalog.createProduct(shopId, { name: 'Худі Classic', priceMinor: 129_900, currency: 'UAH', variants: [{ sku: 'HOODIE-M', options: { size: 'M' }, stock: 3 }] });
   await call(a, token, 'PUT', `/v1/shops/${shopId}/ai`, { enabled: true });
   if (o.connect !== false) expect((await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/key`, { apiKey: NP_KEY })).status).toBe(200);
   if (o.sender !== false && o.connect !== false)
-    await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/settings`, { senderCityRef: NP.kyivRef, senderCityName: 'Київ', senderWarehouseRef: NP.branch12Ref, senderWarehouseName: 'Відділення №12' });
+    await call(a, token, 'PUT', `/v1/shops/${shopId}/nova-poshta/settings`, {
+      senderCityRef: NP.kyivRef,
+      senderCityName: 'Київ',
+      senderWarehouseRef: NP.branch12Ref,
+      senderWarehouseName: 'Відділення №12',
+    });
   return { np, llm, notifier, token, shopId, base: `/v1/shops/${shopId}` };
 }
 type S = Awaited<ReturnType<typeof setup>>;
@@ -48,9 +53,9 @@ const customerWrites = async (s: S, text: string, thread = THREAD) => {
   await writes(a!, s.shopId, thread, text);
   await a!.delivery.whenIdle();
 };
-const lastRun = (s: S) => a!.agentRepo.listRuns(s.shopId).items[0]!;
-const draft = (s: S) => a!.orders.listDrafts(s.shopId).items[0]!.draft;
-const stock = (s: S) => a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M')!.stock;
+const lastRun = async (s: S) => (await a!.agentRepo.listRuns(s.shopId)).items[0]!;
+const draft = async (s: S) => (await a!.orders.listDrafts(s.shopId)).items[0]!.draft;
+const stock = async (s: S) => (await a!.catalog.findVariantBySku(s.shopId, 'HOODIE-M'))!.stock;
 const saves = (np: FakeNp) => np.calls.filter((c) => c.modelName === 'InternetDocument' && c.calledMethod === 'save');
 const ORDER = npOrder([{ sku: 'HOODIE-M', quantity: 2 }]);
 const orderScript = (): Entry[] => [npLookups(), useTool('create_order_draft', ORDER), say('Записала замовлення, магазин його підтвердить.')];
@@ -59,10 +64,17 @@ describe('Nova Poshta connection and settings', () => {
   it('owner connects the key (checked with NP, never returned); managers read only; bad keys are refused', async () => {
     const s = await setup([], { connect: false });
     const url = `${s.base}/nova-poshta`;
-    expect((await call(a!, s.token, 'GET', url)).body).toMatchObject({ available: true, status: 'not_connected', senderReady: false, codEnabled: true, prepaidEnabled: false, refusalLimit: 1 });
+    expect((await call(a!, s.token, 'GET', url)).body).toMatchObject({
+      available: true,
+      status: 'not_connected',
+      senderReady: false,
+      codEnabled: true,
+      prepaidEnabled: false,
+      refusalLimit: 1,
+    });
     expect((await call(a!, s.token, 'PUT', `${url}/key`, { apiKey: 'not-a-key' })).status).toBe(400);
     expect((await call(a!, s.token, 'PUT', `${url}/key`, { apiKey: 'f'.repeat(32) })).status).toBe(400);
-    expect(a!.vault.get(s.shopId, 'nova_poshta')).toBeUndefined();
+    expect(await a!.vault.get(s.shopId, 'nova_poshta')).toBeUndefined();
 
     const ok = await call(a!, s.token, 'PUT', `${url}/key`, { apiKey: NP_KEY });
     expect(ok.body).toMatchObject({ status: 'connected', senderPhone: '+380671234567', senderReady: false });
@@ -71,7 +83,14 @@ describe('Nova Poshta connection and settings', () => {
 
     const branches = await call(a!, s.token, 'GET', `${url}/branches?cityRef=${NP.kyivRef}&q=12`);
     expect(branches.body.items).toEqual([expect.objectContaining({ ref: NP.branch12Ref, number: '12' })]);
-    const set = await call(a!, s.token, 'PUT', `${url}/settings`, { senderCityRef: NP.kyivRef, senderCityName: 'Київ', senderWarehouseRef: NP.branch12Ref, senderWarehouseName: '№12', refusalLimit: 2, parcelWeightKg: '0,5' });
+    const set = await call(a!, s.token, 'PUT', `${url}/settings`, {
+      senderCityRef: NP.kyivRef,
+      senderCityName: 'Київ',
+      senderWarehouseRef: NP.branch12Ref,
+      senderWarehouseName: '№12',
+      refusalLimit: 2,
+      parcelWeightKg: '0,5',
+    });
     expect(set.body).toMatchObject({ senderReady: true, refusalLimit: 2, parcelWeightKg: '0.5' });
     expect((await call(a!, s.token, 'PUT', `${url}/settings`, { refusalLimit: 5 })).status).toBe(400);
 
@@ -110,9 +129,9 @@ describe('checkout tools', () => {
       (req) => (expect(lastToolResult(req)).toMatchObject({ status: 'pending_approval', confirmed: false }), say('Записала, магазин підтвердить.')),
     ]);
     await customerWrites(s, 'Беру 2 худі M. Олена Коваль, 050 111 22 33, Київ, відділення 5, оплата при отриманні');
-    expect(lastRun(s).status).toBe('replied');
-    expect(draft(s)).toMatchObject({ recipientPhone: '+380501112233', npCityRef: NP.kyivRef, npCityName: 'Київ', npWarehouseRef: NP.branch5Ref, paymentMethod: 'cod' });
-    expect(stock(s)).toBe(3);
+    expect((await lastRun(s)).status).toBe('replied');
+    expect(await draft(s)).toMatchObject({ recipientPhone: '+380501112233', npCityRef: NP.kyivRef, npCityName: 'Київ', npWarehouseRef: NP.branch5Ref, paymentMethod: 'cod' });
+    expect(await stock(s)).toBe(3);
   });
 
   it('refs that no lookup returned in this run are refused; a branch needs its city', async () => {
@@ -132,13 +151,20 @@ describe('checkout tools', () => {
       say('Передам менеджеру.'),
     ]);
     await customerWrites(s, 'Оформіть');
-    expect(a!.orders.listDrafts(s.shopId).total).toBe(0);
+    expect((await a!.orders.listDrafts(s.shopId)).total).toBe(0);
   });
 
   it('a shop without Nova Poshta cannot get AI drafts: the lookup tells the model to escalate', async () => {
-    const s = await setup([useTool('find_np_city', { query: 'Київ' }), (req) => (expect(lastToolResult(req).error).toMatch(/escalate/), useTool('escalate', { reason: 'НП не підключена' })), say('Передам менеджеру.')], { connect: false });
+    const s = await setup(
+      [
+        useTool('find_np_city', { query: 'Київ' }),
+        (req) => (expect(lastToolResult(req).error).toMatch(/escalate/), useTool('escalate', { reason: 'НП не підключена' })),
+        say('Передам менеджеру.'),
+      ],
+      { connect: false },
+    );
     await customerWrites(s, 'Хочу замовити, Київ');
-    expect(lastRun(s).status).toBe('escalated');
+    expect((await lastRun(s)).status).toBe('escalated');
   });
 });
 
@@ -146,27 +172,38 @@ describe('approval, TTN and tracking', () => {
   it('approving a COD order creates exactly one TTN with NP data; retries are refused', async () => {
     const s = await setup(orderScript());
     await customerWrites(s, 'Беру');
-    const id = draft(s).id;
+    const id = (await draft(s)).id;
     const r = await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/approve`, {});
     expect(r.body).toMatchObject({ status: 'cod_confirmed', checkout: { missing: [] } });
     await a!.delivery.whenIdle();
-    const d = draft(s);
+    const d = await draft(s);
     expect(d).toMatchObject({ status: 'shipped', ttnState: 'created', ttn: expect.stringMatching(/^2045\d{10}$/) });
     expect(saves(s.np)).toHaveLength(1);
-    expect(saves(s.np)[0]!.props).toMatchObject({ Cost: '2598', RecipientsPhone: '380501112233', RecipientAddress: NP.branch5Ref, SenderAddress: NP.branch12Ref, BackwardDeliveryData: [{ RedeliveryString: '2598' }] });
-    expect(stock(s)).toBe(1);
+    expect(saves(s.np)[0]!.props).toMatchObject({
+      Cost: '2598',
+      RecipientsPhone: '380501112233',
+      RecipientAddress: NP.branch5Ref,
+      SenderAddress: NP.branch12Ref,
+      BackwardDeliveryData: [{ RedeliveryString: '2598' }],
+    });
+    expect(await stock(s)).toBe(1);
     expect((await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/ttn`, {})).status).toBe(400);
     expect((await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/cancel`, {})).status).toBe(400);
     expect(saves(s.np)).toHaveLength(1);
     const events = (await call(a!, s.token, 'GET', `${s.base}/order-drafts/${id}/events`)).body.items.map((e: any) => [e.to, e.actor.split(':')[0]]);
-    expect(events).toEqual([['pending_approval', 'ai'], ['approved', 'user'], ['cod_confirmed', 'user'], ['shipped', 'provider']]);
+    expect(events).toEqual([
+      ['pending_approval', 'ai'],
+      ['approved', 'user'],
+      ['cod_confirmed', 'user'],
+      ['shipped', 'provider'],
+    ]);
   });
 
   it('two TTN requests at once create one parcel', async () => {
     const s = await setup(orderScript(), { sender: true });
     await customerWrites(s, 'Беру');
-    const id = draft(s).id;
-    a!.orders.approve(s.shopId, id, a!.auth.listMembers(s.shopId)[0]!.user.id);
+    const id = (await draft(s)).id;
+    await a!.orders.approve(s.shopId, id, (await a!.auth.listMembers(s.shopId))[0]!.user.id);
     const both = await Promise.allSettled([a!.delivery.createTtn(s.shopId, id), a!.delivery.createTtn(s.shopId, id)]);
     expect(both.map((x) => x.status).sort()).toEqual(['fulfilled', 'rejected']);
     expect(saves(s.np)).toHaveLength(1);
@@ -175,12 +212,12 @@ describe('approval, TTN and tracking', () => {
   it('no answer from NP while creating the TTN: uncertain, never retried, the shop is told; release allows a retry', async () => {
     const s = await setup(orderScript());
     await customerWrites(s, 'Беру');
-    const id = draft(s).id;
+    const id = (await draft(s)).id;
     const real = s.np.handlers.save!;
     s.np.handlers.save = (p, model) => (model === 'InternetDocument' ? Promise.reject(new TypeError('socket hang up')) : real(p, model));
     await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/approve`, {});
     await a!.delivery.whenIdle();
-    expect(draft(s)).toMatchObject({ status: 'cod_confirmed', ttnState: 'uncertain', ttn: null });
+    expect(await draft(s)).toMatchObject({ status: 'cod_confirmed', ttnState: 'uncertain', ttn: null });
     expect(s.notifier.sent.filter((n) => n.kind === 'order_update')).toMatchObject([{ event: 'ttn_uncertain', draftId: id }]);
     expect((await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/ttn`, {})).status).toBe(400);
     expect((await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/cancel`, {})).status).toBe(400);
@@ -192,52 +229,70 @@ describe('approval, TTN and tracking', () => {
   it('NP refuses the document: failed, retryable after fixing; nothing shipped meanwhile', async () => {
     const s = await setup(orderScript());
     await customerWrites(s, 'Беру');
-    const id = draft(s).id;
+    const id = (await draft(s)).id;
     const real = s.np.handlers.save!;
-    s.np.handlers.save = (p, model) => (model === 'InternetDocument' ? new Response(JSON.stringify({ success: false, data: [], errors: ['SenderAddress is invalid'], errorCodes: ['20000200112'] })) : real(p, model));
+    s.np.handlers.save = (p, model) =>
+      model === 'InternetDocument' ? new Response(JSON.stringify({ success: false, data: [], errors: ['SenderAddress is invalid'], errorCodes: ['20000200112'] })) : real(p, model);
     await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/approve`, {});
     await a!.delivery.whenIdle();
-    expect(draft(s)).toMatchObject({ status: 'cod_confirmed', ttnState: 'failed', ttnError: 'NP_REJECTED_20000200112' });
+    expect(await draft(s)).toMatchObject({ status: 'cod_confirmed', ttnState: 'failed', ttnError: 'NP_REJECTED_20000200112' });
     s.np.handlers.save = real;
     expect((await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/ttn`, {})).body.status).toBe('shipped');
   });
 
   it('tracking: delivered; a refusal moves to returning (no restock), notifies, counts; returned restocks once', async () => {
-    const s = await setup([...orderScript(), npLookups(), (req) => (expect(lastToolResult(req).paymentMethods).toEqual([]), useTool('escalate', { reason: 'Немає способів оплати' })), say('Передам менеджеру.')]);
+    const s = await setup([
+      ...orderScript(),
+      npLookups(),
+      (req) => (expect(lastToolResult(req).paymentMethods).toEqual([]), useTool('escalate', { reason: 'Немає способів оплати' })),
+      say('Передам менеджеру.'),
+    ]);
     await customerWrites(s, 'Беру');
-    const id = draft(s).id;
+    const id = (await draft(s)).id;
     await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/approve`, {});
     await a!.delivery.whenIdle();
-    const ttn = draft(s).ttn!;
+    const ttn = (await draft(s)).ttn!;
     s.np.statuses.set(ttn, { code: '5', text: 'Відправлення прямує до міста Київ' });
     expect(await a!.delivery.pollOnce()).toEqual({ checked: 1, transitions: 0 });
-    expect(draft(s)).toMatchObject({ status: 'shipped', npStatusText: 'Відправлення прямує до міста Київ' });
+    expect(await draft(s)).toMatchObject({ status: 'shipped', npStatusText: 'Відправлення прямує до міста Київ' });
 
     s.np.statuses.set(ttn, { code: '103', text: 'Відмова одержувача' });
     expect(await a!.delivery.pollOnce()).toEqual({ checked: 1, transitions: 1 });
     expect(await a!.delivery.pollOnce()).toEqual({ checked: 0, transitions: 0 });
-    expect(draft(s).status).toBe('returning');
-    expect(stock(s)).toBe(1);
+    expect((await draft(s)).status).toBe('returning');
+    expect(await stock(s)).toBe(1);
     expect(s.notifier.sent.filter((n) => n.kind === 'order_update')).toMatchObject([{ event: 'returning', ttn }]);
-    const customerId = draft(s).customerId;
+    const customerId = (await draft(s)).customerId;
     expect((await call(a!, s.token, 'GET', `${s.base}/customers/${customerId}/refusals`)).body).toMatchObject({ refusals: 1, codBlocked: true, limit: 1, phone: '+380501112233' });
 
     expect((await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/returned`, {})).body.status).toBe('returned');
-    expect(stock(s)).toBe(3);
+    expect(await stock(s)).toBe(3);
     expect((await call(a!, s.token, 'POST', `${s.base}/order-drafts/${id}/returned`, {})).status).toBe(400);
-    expect(stock(s)).toBe(3);
+    expect(await stock(s)).toBe(3);
 
     // The same customer asks again: no COD is offered, and the agent escalates.
     await customerWrites(s, 'Хочу ще раз замовити');
-    expect(lastRun(s).status).toBe('escalated');
+    expect((await lastRun(s)).status).toBe('escalated');
   });
 
   it('at the refusal limit the server refuses a COD draft whatever the model says', async () => {
-    const s = await setup([npLookups(), useTool('create_order_draft', ORDER), (req) => (expect(lastToolResult(req).error).toEqual(['checkout.paymentMethod: cash on delivery is not available for this customer']), useTool('escalate', { reason: 'COD недоступний' })), say('Передам менеджеру.')]);
-    const conv = a!.conversations.ensureConversation(s.shopId, { channel: WEB_CHANNEL, conversationExternalId: THREAD, customer: { externalId: THREAD, displayName: 'Олена' } });
+    const s = await setup([
+      npLookups(),
+      useTool('create_order_draft', ORDER),
+      (req) => (
+        expect(lastToolResult(req).error).toEqual(['checkout.paymentMethod: cash on delivery is not available for this customer']),
+        useTool('escalate', { reason: 'COD недоступний' })
+      ),
+      say('Передам менеджеру.'),
+    ]);
+    const conv = await a!.conversations.ensureConversation(s.shopId, {
+      channel: WEB_CHANNEL,
+      conversationExternalId: THREAD,
+      customer: { externalId: THREAD, displayName: 'Олена' },
+    });
     await call(a!, s.token, 'POST', `${s.base}/customers/${conv.customer.id}/refusals`, { note: 'відмова в минулому' });
     await customerWrites(s, 'Беру, накладений платіж');
-    expect(a!.orders.listDrafts(s.shopId).total).toBe(0);
+    expect((await a!.orders.listDrafts(s.shopId)).total).toBe(0);
   });
 });
 
@@ -255,36 +310,40 @@ describe('auto_confirm (D26) and order status', () => {
     expect(set.body).toMatchObject({ autonomy: 'auto_confirm', autoConfirmMaxMinor: 500_000, autonomyChangedBy: expect.any(String), autonomyChangedAt: expect.any(String) });
 
     await customerWrites(s, 'Беру');
-    expect(lastRun(s).status).toBe('replied');
-    expect(draft(s)).toMatchObject({ status: 'shipped', decidedByUserId: null });
-    expect(a!.orders.listEvents(s.shopId, draft(s).id).find((e) => e.toStatus === 'approved')!.actor).toBe('system:auto_confirm');
+    expect((await lastRun(s)).status).toBe('replied');
+    expect(await draft(s)).toMatchObject({ status: 'shipped', decidedByUserId: null });
+    expect((await a!.orders.listEvents(s.shopId, (await draft(s)).id)).find((e) => e.toStatus === 'approved')!.actor).toBe('system:auto_confirm');
     expect(s.notifier.sent.filter((n) => n.kind === 'order_update')).toMatchObject([{ event: 'auto_confirmed' }]);
   });
 
   it('over the cap the order waits for a person', async () => {
-    const s = await setup([npLookups(), useTool('create_order_draft', ORDER), (req) => (expect(lastToolResult(req)).toMatchObject({ confirmed: false, status: 'pending_approval' }), say('Магазин підтвердить замовлення.'))]);
+    const s = await setup([
+      npLookups(),
+      useTool('create_order_draft', ORDER),
+      (req) => (expect(lastToolResult(req)).toMatchObject({ confirmed: false, status: 'pending_approval' }), say('Магазин підтвердить замовлення.')),
+    ]);
     await call(a!, s.token, 'PUT', `${s.base}/ai`, { autonomy: 'auto_confirm', autoConfirmMaxMinor: 100_000 });
     await customerWrites(s, 'Беру');
-    expect(draft(s).status).toBe('pending_approval');
-    expect(stock(s)).toBe(3);
+    expect((await draft(s)).status).toBe('pending_approval');
+    expect(await stock(s)).toBe(3);
   });
 
   it('a delivery status reply must come from get_order_status; the TTN is quoted from it', async () => {
     const s = await setup(orderScript());
     await customerWrites(s, 'Беру');
-    await call(a!, s.token, 'POST', `${s.base}/order-drafts/${draft(s).id}/approve`, {});
+    await call(a!, s.token, 'POST', `${s.base}/order-drafts/${(await draft(s)).id}/approve`, {});
     await a!.delivery.whenIdle();
-    const ttn = draft(s).ttn!;
+    const ttn = (await draft(s)).ttn!;
     s.llm.push(say('Ваше замовлення вже відправлено!'), say('Посилка вже в дорозі.'));
     await customerWrites(s, 'Де моє замовлення?');
-    expect(lastRun(s)).toMatchObject({ status: 'escalated', detail: 'GUARD_BLOCKED' });
+    expect(await lastRun(s)).toMatchObject({ status: 'escalated', detail: 'GUARD_BLOCKED' });
 
-    await a!.agentRepo.resolveEscalation(s.shopId, a!.agentRepo.listEscalations(s.shopId).items[0]!.id, null);
+    await a!.agentRepo.resolveEscalation(s.shopId, (await a!.agentRepo.listEscalations(s.shopId)).items[0]!.id, null);
     s.llm.push(useTool('get_order_status', {}), (req) => {
       expect(lastToolResult(req).orders[0]).toMatchObject({ status: 'shipped', novaPoshta: { ttn } });
       return say(`Замовлення відправлено Новою Поштою, ТТН ${ttn}.`);
     });
     await customerWrites(s, 'То де посилка?');
-    expect(lastRun(s).status).toBe('replied');
+    expect((await lastRun(s)).status).toBe('replied');
   });
 });

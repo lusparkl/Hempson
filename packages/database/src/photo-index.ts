@@ -1,5 +1,6 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { Db, DbHandle } from './db';
+import { jsonFirst, queryRow, queryRows } from './dialect';
 import * as t from './schema';
 
 export type PhotoIndexRow = typeof t.productPhotoIndex.$inferSelect;
@@ -10,6 +11,7 @@ export type PhotoIndexStatus = { withPhoto: number; indexed: number; failed: num
 
 /** Only web images are indexed: the vision provider fetches them itself, so Hepson never requests an owner-supplied URL. */
 const WEB_IMAGE = /^https?:\/\/[^\s]+$/i;
+const MAIN_IMAGE = jsonFirst(sql`p.media`);
 
 export function encodeVector(v: Float32Array): Buffer {
   return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
@@ -34,25 +36,24 @@ export class PhotoIndexRepository {
   }
 
   /** Active products with a web main image and no current entry (failed entries for the same image and model are not retried). */
-  pending(model: string, limit: number, shopId?: string): PhotoIndexTask[] {
-    const rows = this.handle.raw
-      .prepare(
-        `select p.shop_id shopId, p.id productId, json_extract(p.media, '$[0]') imageUrl
+  async pending(model: string, limit: number, shopId?: string): Promise<PhotoIndexTask[]> {
+    const rows = queryRows<PhotoIndexTask>(
+      this.db,
+      sql`select p.shop_id as "shopId", p.id as "productId", ${MAIN_IMAGE} as "imageUrl"
            from products p
-           left join product_photo_index i on i.product_id = p.id and i.image_url = json_extract(p.media, '$[0]') and i.model = ?
-          where p.active = 1 and json_extract(p.media, '$[0]') is not null and i.product_id is null ${shopId ? 'and p.shop_id = ?' : ''}
+           left join product_photo_index i on i.product_id = p.id and i.image_url = ${MAIN_IMAGE} and i.model = ${model}
+          where p.active = true and ${MAIN_IMAGE} is not null and i.product_id is null ${shopId ? sql`and p.shop_id = ${shopId}` : sql``}
           order by p.updated_at
-          limit ?`,
-      )
-      .all(...(shopId ? [model, shopId, limit] : [model, limit])) as PhotoIndexTask[];
+          limit ${limit}`,
+    );
     return rows.filter((r) => typeof r.imageUrl === 'string' && WEB_IMAGE.test(r.imageUrl) && r.imageUrl.length <= 2048);
   }
 
-  saveReady(task: PhotoIndexTask, model: string, description: string, vector: Float32Array): void {
+  async saveReady(task: PhotoIndexTask, model: string, description: string, vector: Float32Array): Promise<void> {
     this.upsert({ ...task, model, status: 'ready', description: description.slice(0, 2000), embedding: encodeVector(vector), error: null, indexedAt: this.clock().toISOString() });
   }
 
-  saveFailed(task: PhotoIndexTask, model: string, error: string): void {
+  async saveFailed(task: PhotoIndexTask, model: string, error: string): Promise<void> {
     this.upsert({ ...task, model, status: 'failed', description: '', embedding: null, error: error.slice(0, 64), indexedAt: this.clock().toISOString() });
   }
 
@@ -62,40 +63,38 @@ export class PhotoIndexRepository {
   }
 
   /** Current ready entries of active products in this shop. */
-  entries(shopId: string, model: string): PhotoIndexEntry[] {
-    const rows = this.handle.raw
-      .prepare(
-        `select i.product_id productId, i.embedding embedding
+  async entries(shopId: string, model: string): Promise<PhotoIndexEntry[]> {
+    const rows = queryRows<{ productId: string; embedding: Buffer }>(
+      this.db,
+      sql`select i.product_id as "productId", i.embedding as "embedding"
            from product_photo_index i join products p on p.id = i.product_id and p.shop_id = i.shop_id
-          where i.shop_id = ? and i.status = 'ready' and i.model = ? and p.active = 1 and i.image_url = json_extract(p.media, '$[0]')`,
-      )
-      .all(shopId, model) as Array<{ productId: string; embedding: Buffer }>;
+          where i.shop_id = ${shopId} and i.status = 'ready' and i.model = ${model} and p.active = true and i.image_url = ${MAIN_IMAGE}`,
+    );
     return rows.map((r) => ({ productId: r.productId, vector: decodeVector(r.embedding) }));
   }
 
-  status(shopId: string, model: string): PhotoIndexStatus {
-    const r = this.handle.raw
-      .prepare(
-        `select count(*) as "withPhoto",
-                coalesce(sum(i.status = 'ready'), 0) as "indexed",
-                coalesce(sum(i.status = 'failed'), 0) as "failed"
+  async status(shopId: string, model: string): Promise<PhotoIndexStatus> {
+    const r = queryRow<{ withPhoto: number; indexed: number; failed: number }>(
+      this.db,
+      sql`select count(*) as "withPhoto",
+                coalesce(sum(case when i.status = 'ready' then 1 else 0 end), 0) as "indexed",
+                coalesce(sum(case when i.status = 'failed' then 1 else 0 end), 0) as "failed"
            from products p
-           left join product_photo_index i on i.product_id = p.id and i.image_url = json_extract(p.media, '$[0]') and i.model = ?
-          where p.shop_id = ? and p.active = 1 and json_extract(p.media, '$[0]') is not null`,
-      )
-      .get(model, shopId) as { withPhoto: number; indexed: number; failed: number };
+           left join product_photo_index i on i.product_id = p.id and i.image_url = ${MAIN_IMAGE} and i.model = ${model}
+          where p.shop_id = ${shopId} and p.active = true and ${MAIN_IMAGE} is not null`,
+    )!;
     return { ...r, pending: r.withPhoto - r.indexed - r.failed };
   }
 
   /** Lets failed images be tried again (owner action after fixing a link). */
-  clearFailed(shopId: string): number {
+  async clearFailed(shopId: string): Promise<number> {
     return this.db
       .delete(t.productPhotoIndex)
       .where(and(eq(t.productPhotoIndex.shopId, shopId), eq(t.productPhotoIndex.status, 'failed')))
       .run().changes;
   }
 
-  get(shopId: string, productId: string): PhotoIndexRow | undefined {
+  async get(shopId: string, productId: string): Promise<PhotoIndexRow | undefined> {
     return this.db
       .select()
       .from(t.productPhotoIndex)

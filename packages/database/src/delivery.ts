@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
+import type { CredentialVault } from './credentials';
 import type { Db, DbHandle } from './db';
 import type { PAYMENT_METHODS } from './order-kinds';
 import * as t from './schema';
@@ -61,7 +62,7 @@ const issues = (e: z.ZodError) => e.issues.map((i) => `${i.path.join('.') || 'in
 export class DeliveryRepository {
   readonly db: Db;
   constructor(
-    handle: DbHandle,
+    private readonly handle: DbHandle,
     private readonly clock: () => Date = () => new Date(),
   ) {
     this.db = handle.db;
@@ -70,7 +71,12 @@ export class DeliveryRepository {
     return this.clock().toISOString();
   }
 
-  getSettings(shopId: string): DeliverySettingsRow {
+  async getSettings(shopId: string): Promise<DeliverySettingsRow> {
+    return this.getSettingsTx(shopId);
+  }
+
+  /** Sync body of `getSettings`: runs inside the caller's transaction. Package-internal. */
+  getSettingsTx(shopId: string): DeliverySettingsRow {
     return (
       this.db.select().from(t.shopDeliverySettings).where(eq(t.shopDeliverySettings.shopId, shopId)).get() ?? {
         shopId,
@@ -93,25 +99,43 @@ export class DeliveryRepository {
   }
 
   private write(shopId: string, patch: Partial<Omit<DeliverySettingsRow, 'shopId'>>): DeliverySettingsRow {
-    const row = { ...this.getSettings(shopId), ...patch, shopId, updatedAt: this.now() };
+    const row = { ...this.getSettingsTx(shopId), ...patch, shopId, updatedAt: this.now() };
     const { shopId: _s, ...set } = row;
     this.db.insert(t.shopDeliverySettings).values(row).onConflictDoUpdate({ target: t.shopDeliverySettings.shopId, set }).run();
     return row;
   }
 
-  updateSettings(shopId: string, input: z.input<typeof settingsInput>): DeliverySettingsRow {
+  async updateSettings(shopId: string, input: z.input<typeof settingsInput>): Promise<DeliverySettingsRow> {
     const r = settingsInput.safeParse(input);
     if (!r.success) throw new DeliveryValidationError(issues(r.error));
     const patch = Object.fromEntries(Object.entries(r.data).filter(([, v]) => v !== undefined));
     return this.write(shopId, patch);
   }
 
+  /** Stores the Nova Poshta key and the sender refs as one atomic step. */
+  async connect(
+    shopId: string,
+    s: { senderRef: string | null; senderContactRef: string | null; senderPhone: string | null },
+    vault: CredentialVault,
+    apiKey: string,
+  ): Promise<void> {
+    this.handle.transaction(() => {
+      vault.saveTx(shopId, 'nova_poshta', apiKey);
+      this.setSenderTx(shopId, s);
+    });
+  }
+
   /** Sender identity read from Nova Poshta when the owner saves the key. */
-  setSender(shopId: string, s: { senderRef: string | null; senderContactRef: string | null; senderPhone: string | null }): DeliverySettingsRow {
+  async setSender(shopId: string, s: { senderRef: string | null; senderContactRef: string | null; senderPhone: string | null }): Promise<DeliverySettingsRow> {
+    return this.setSenderTx(shopId, s);
+  }
+
+  /** Sync body of `setSender`: runs inside the caller's transaction. Package-internal. */
+  setSenderTx(shopId: string, s: { senderRef: string | null; senderContactRef: string | null; senderPhone: string | null }): DeliverySettingsRow {
     return this.write(shopId, { ...s, lastError: null });
   }
 
-  setLastError(shopId: string, code: string | null): void {
+  async setLastError(shopId: string, code: string | null): Promise<void> {
     this.write(shopId, { lastError: code });
   }
 
@@ -129,12 +153,23 @@ export class DeliveryRepository {
     return byCustomer && and(eq(t.customerRefusals.shopId, shopId), byCustomer);
   }
 
-  countRefusals(shopId: string, who: { phone?: string | null; customerId?: string | null }): number {
-    const where = this.refusalWhere(shopId, who);
-    return where ? this.db.select({ n: sql<number>`count(*)` }).from(t.customerRefusals).where(where).get()!.n : 0;
+  async countRefusals(shopId: string, who: { phone?: string | null; customerId?: string | null }): Promise<number> {
+    return this.countRefusalsTx(shopId, who);
   }
 
-  listRefusals(shopId: string, who: { phone?: string | null; customerId?: string | null }): RefusalRow[] {
+  /** Sync body of `countRefusals`: runs inside the caller's transaction. Package-internal. */
+  countRefusalsTx(shopId: string, who: { phone?: string | null; customerId?: string | null }): number {
+    const where = this.refusalWhere(shopId, who);
+    return where
+      ? this.db
+          .select({ n: sql<number>`count(*)` })
+          .from(t.customerRefusals)
+          .where(where)
+          .get()!.n
+      : 0;
+  }
+
+  async listRefusals(shopId: string, who: { phone?: string | null; customerId?: string | null }): Promise<RefusalRow[]> {
     const where = this.refusalWhere(shopId, who);
     return where ? this.db.select().from(t.customerRefusals).where(where).orderBy(desc(t.customerRefusals.createdAt)).all() : [];
   }
@@ -143,18 +178,28 @@ export class DeliveryRepository {
    * Payment methods this customer may use now. COD disappears at the shop's refusal limit (0 = rule off). Prepaid needs
    * the owner's switch and an active payment provider credential (P5): without one no link could ever be sent.
    */
-  paymentMethods(shopId: string, who: { phone?: string | null; customerId?: string | null }): { methods: PaymentMethod[]; refusals: number; codBlocked: boolean } {
-    const s = this.getSettings(shopId);
-    const refusals = this.countRefusals(shopId, who);
+  async paymentMethods(shopId: string, who: { phone?: string | null; customerId?: string | null }): Promise<{ methods: PaymentMethod[]; refusals: number; codBlocked: boolean }> {
+    return this.paymentMethodsTx(shopId, who);
+  }
+
+  /** Sync body of `paymentMethods`: runs inside the caller's transaction. Package-internal. */
+  paymentMethodsTx(shopId: string, who: { phone?: string | null; customerId?: string | null }): { methods: PaymentMethod[]; refusals: number; codBlocked: boolean } {
+    const s = this.getSettingsTx(shopId);
+    const refusals = this.countRefusalsTx(shopId, who);
     const codBlocked = s.refusalLimit > 0 && refusals >= s.refusalLimit;
     const methods: PaymentMethod[] = [];
     if (s.codEnabled && !codBlocked) methods.push('cod');
-    if (s.prepaidEnabled && this.paymentProviderReady(shopId)) methods.push('prepaid');
+    if (s.prepaidEnabled && this.paymentProviderReadyTx(shopId)) methods.push('prepaid');
     return { methods, refusals, codBlocked };
   }
 
   /** An active payment provider credential exists (checked by row status only; the secret is never read here). */
-  paymentProviderReady(shopId: string): boolean {
+  async paymentProviderReady(shopId: string): Promise<boolean> {
+    return this.paymentProviderReadyTx(shopId);
+  }
+
+  /** Sync body of `paymentProviderReady`: runs inside the caller's transaction. Package-internal. */
+  paymentProviderReadyTx(shopId: string): boolean {
     return !!this.db
       .select({ id: t.shopCredentials.id })
       .from(t.shopCredentials)
@@ -163,17 +208,32 @@ export class DeliveryRepository {
   }
 
   /** One refusal per order from Nova Poshta tracking; returns false when that order was already counted. */
-  recordProviderRefusal(shopId: string, r: { draftId: string; customerId: string; phone: string | null }): boolean {
+  async recordProviderRefusal(shopId: string, r: { draftId: string; customerId: string; phone: string | null }): Promise<boolean> {
+    return this.recordProviderRefusalTx(shopId, r);
+  }
+
+  /** Sync body of `recordProviderRefusal`: runs inside the caller's transaction. Package-internal. */
+  recordProviderRefusalTx(shopId: string, r: { draftId: string; customerId: string; phone: string | null }): boolean {
     const res = this.db
       .insert(t.customerRefusals)
-      .values({ id: randomUUID(), shopId, customerId: r.customerId, phone: r.phone, draftId: r.draftId, source: 'nova_poshta', createdByUserId: null, note: null, createdAt: this.now() })
+      .values({
+        id: randomUUID(),
+        shopId,
+        customerId: r.customerId,
+        phone: r.phone,
+        draftId: r.draftId,
+        source: 'nova_poshta',
+        createdByUserId: null,
+        note: null,
+        createdAt: this.now(),
+      })
       .onConflictDoNothing()
       .run();
     return res.changes > 0;
   }
 
   /** A member records a refusal by hand (the customer's latest known phone is attached when the caller passes it). */
-  addMemberRefusal(shopId: string, input: z.input<typeof refusalInput>, userId: string, phone: string | null): RefusalRow {
+  async addMemberRefusal(shopId: string, input: z.input<typeof refusalInput>, userId: string, phone: string | null): Promise<RefusalRow> {
     const r = refusalInput.safeParse(input);
     if (!r.success) throw new DeliveryValidationError(issues(r.error));
     const customer = this.db
@@ -182,12 +242,22 @@ export class DeliveryRepository {
       .where(and(eq(t.customers.shopId, shopId), eq(t.customers.id, r.data.customerId)))
       .get();
     if (!customer) throw new DeliveryValidationError(['customerId: not found']);
-    const row: RefusalRow = { id: randomUUID(), shopId, customerId: customer.id, phone, draftId: null, source: 'member', createdByUserId: userId, note: r.data.note ?? null, createdAt: this.now() };
+    const row: RefusalRow = {
+      id: randomUUID(),
+      shopId,
+      customerId: customer.id,
+      phone,
+      draftId: null,
+      source: 'member',
+      createdByUserId: userId,
+      note: r.data.note ?? null,
+      createdAt: this.now(),
+    };
     this.db.insert(t.customerRefusals).values(row).run();
     return row;
   }
 
-  removeRefusal(shopId: string, refusalId: string): void {
+  async removeRefusal(shopId: string, refusalId: string): Promise<void> {
     const r = this.db
       .delete(t.customerRefusals)
       .where(and(eq(t.customerRefusals.shopId, shopId), eq(t.customerRefusals.id, refusalId)))
