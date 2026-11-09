@@ -1,5 +1,5 @@
 import { useShop } from '../App';
-import { ago, api, customerName, moneyShort, orderNo, preview, revenue, statsUrl, useLoad, type Conv, type StatsData } from '../api';
+import { ago, api, customerName, dayText, moneyShort, orderNo, preview, revenue, statsUrl, useLoad, type Conv, type StatsData } from '../api';
 import { Avatar, Button, FunnelRows, Icon, Panel, Spark, type IconName } from '../ui';
 import { channelLabel } from './Inbox';
 
@@ -74,6 +74,16 @@ export function Overview() {
         <p>Ось що відбувається в «{shop.name}» сьогодні.</p>
       </div>
       {cur.error && <div className="err">{cur.error}</div>}
+      {s?.usage.paidUntil && s.usage.paidDaysLeft !== null && s.usage.paidDaysLeft <= 7 && (
+        <div className="notice warning">
+          <Icon name="circle-alert" size={20} />
+          <div>
+            {s.usage.planExpired
+              ? `Оплачений період закінчився ${dayText(s.usage.paidUntil)}: ШІ не відповідає, нові розмови передаються людям. Щоб продовжити, зверніться до Hepson.`
+              : `Сервіс оплачено до ${dayText(s.usage.paidUntil)} включно. Після цієї дати ШІ перестане відповідати клієнтам. Щоб продовжити, зверніться до Hepson.`}
+          </div>
+        </div>
+      )}
       {s?.usage.capReached && (
         <div className="notice warning">
           <Icon name="circle-alert" size={20} />

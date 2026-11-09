@@ -1,0 +1,1 @@
+ALTER TABLE `shop_plans` ADD `expiry_reminder_for` text;

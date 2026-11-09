@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { useShop } from '../App';
-import { api, monthName, useLoad, when, type AiSettings } from '../api';
+import { api, dayText, monthName, useLoad, when, type AiSettings } from '../api';
 import { Alert, Avatar, Badge, Button, Icon, Input, Panel, Select, Switch, Textarea, UsageMeter, useRun, type IconName, type Tone } from '../ui';
 
 type Policy = { topic: 'delivery' | 'returns' | 'payment' | 'hours'; text: string; version: number; updatedAt: string | null };
@@ -512,7 +512,8 @@ function AiTab({ base, owner }: { base: string; owner: boolean }) {
             valueLabel={usage.aiReplyCap === null ? String(usage.aiReplies) : `${usage.aiReplies} / ${usage.aiReplyCap}`}
           />
           <div style={{ fontSize: 13 }} className="subtle">
-            План {usage.plan} · {usage.aiReplyCap === null ? 'без ліміту' : `ліміт оновиться ${resets}`}.
+            План {usage.plan} · {usage.aiReplyCap === null ? 'без ліміту' : `ліміт оновиться ${resets}`}
+            {usage.paidUntil && ` · ${usage.planExpired ? 'оплата закінчилась' : 'оплачено до'} ${dayText(usage.paidUntil)}`}.
           </div>
         </div>
       )}

@@ -1,7 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ApiError } from '../errors';
-import { AgentNotFoundError, AgentValidationError, type AgentRepository, type AiRunRow, type AuthRepository, type EscalationRow, type ShopRepository } from '@hepson/database';
+import {
+  AgentNotFoundError,
+  AgentValidationError,
+  type AgentRepository,
+  type AiRunRow,
+  type AuthRepository,
+  type EscalationRow,
+  type PlanRepository,
+  type ShopRepository,
+} from '@hepson/database';
 import { LlmError } from '../agent/llm';
 import type { SalesAgent } from '../agent/sales-agent';
 import { RateLimitedError } from '../services/web-chat';
@@ -67,9 +76,17 @@ function translate(e: unknown): never {
 /** AI settings (owner writes, any member reads), the agent's run audit trail and escalations (any member). */
 export function registerAiRoutes(
   app: FastifyInstance,
-  deps: { shops: ShopRepository; auth: AuthRepository; agent: AgentRepository; salesAgent: SalesAgent | null; telegramAvailable: boolean; maxMessageLength: number },
+  deps: {
+    shops: ShopRepository;
+    auth: AuthRepository;
+    agent: AgentRepository;
+    plans: PlanRepository;
+    salesAgent: SalesAgent | null;
+    telegramAvailable: boolean;
+    maxMessageLength: number;
+  },
 ) {
-  const { shops, auth, agent, salesAgent, telegramAvailable } = deps;
+  const { shops, auth, agent, plans, salesAgent, telegramAvailable } = deps;
   const aiAvailable = salesAgent !== null;
   const playgroundLimit = new RateLimiter(PLAYGROUND_TURNS_PER_HOUR, 3_600_000);
   const playgroundBody = z.strictObject({
@@ -136,6 +153,7 @@ export function registerAiRoutes(
     handler: async ({ req, params, body }) => {
       await requireRole(req, params.shopId, 'manager');
       if (!salesAgent) throw new ApiError('NOT_CONFIGURED', 'No AI model is configured on this server');
+      if ((await plans.usage(params.shopId)).planExpired) throw new ApiError('FORBIDDEN', 'The paid period has ended: contact Hepson to renew');
       const wait = playgroundLimit.hit(params.shopId);
       if (wait) throw new RateLimitedError(wait);
       try {

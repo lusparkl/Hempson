@@ -409,3 +409,14 @@ Every repository method that touches the database returns a Promise, because Pos
 Dialect-specific SQL and driver behaviour sit in `db.ts`, `dialect.ts` and `schema.ts`; `tests/unit/db-portability.test.ts` fails if they spread. Append-only tables break `created_at` ties by a time-ordered id (`orderedId`) instead of `rowid`; rows written before this change keep random ids, so only their same-millisecond order is arbitrary.
 
 One behaviour changed: inbound dispatch no longer runs inside the insert transaction. If dispatch fails, `discardIngested` removes the message so a redelivery still triggers the agent once; an empty conversation can remain until that redelivery.
+
+## D48 (2026-11-09): Paid-until date with an automatic pause
+Manual billing needs a stop that does not depend on someone remembering. `shop_plans.paid_until` is the last paid day, a Kyiv calendar date, inclusive; null means no expiry, so existing shops are unaffected. The state is computed when the agent runs, with no scheduled job, so a renewal takes effect at once.
+
+The operator sets it on the existing `PUT /v1/shops/:shopId/plan`, keeping D41's single operator route. `{paidUntil}` alone renews without restating the plan or custom cap.
+
+After the date the agent does what it does at the reply cap (D34): no model call, an escalation, one holding text, run detail `PLAN_EXPIRED`, and one owner notice per `paidUntil` (compare-and-set on `expiry_notice_for`). The test chat is refused because it spends the operator's tokens.
+
+Before the date the owner gets one Telegram reminder (`plan_expiring`) once 3 days or fewer remain, so a one-week renewal does not trigger it immediately. The 6-hour server timer and server start claim due reminders atomically (`expiry_reminder_for`), once per `paidUntil`, so a new date gets its own reminder and several instances cannot both send it. With no bot configured nothing is claimed.
+
+Only the AI stops. Customers' messages, the dashboard, human replies, payment webhooks, TTNs and customer order notices keep working, so paying customers and orders in flight are not stranded by a late invoice. Chats escalated during a pause stay escalated after renewal until a person resolves them, as at the cap.

@@ -367,7 +367,7 @@ export async function buildApp(
   registerPhotoSearchRoutes(app, { shops, auth, photos });
   registerStorefrontRoutes(app, { shops, auth, catalog, webChat, tgRepo, igRepo, publicUrl: cfg.publicUrl });
   registerConversationRoutes(app, { shops, auth, conversations, maxMessageLength: cfg.maxMessageLength, ig, tg });
-  registerAiRoutes(app, { shops, auth, agent: agentRepo, salesAgent, telegramAvailable: notifier !== null, maxMessageLength: cfg.maxMessageLength });
+  registerAiRoutes(app, { shops, auth, agent: agentRepo, plans, salesAgent, telegramAvailable: notifier !== null, maxMessageLength: cfg.maxMessageLength });
   registerStatsRoutes(app, { shops, auth, stats, plans });
   registerNotificationFeedRoutes(app, { shops, auth, feed });
   registerPlanRoutes(app, { shops, auth, plans });
@@ -386,6 +386,15 @@ export async function buildApp(
 
   await notices.start();
   await agentRepo.failInterruptedRuns();
+  // Without a bot nothing is claimed, so the reminder waits until one is configured.
+  const remindExpiring = async () => {
+    if (!notifier) return;
+    try {
+      for (const r of await plans.claimExpiryReminders(3)) notifier.notify({ kind: 'plan_expiring', ...r });
+    } catch (e) {
+      app.log.error({ err: (e as Error).message }, 'expiry reminders failed');
+    }
+  };
   const timer = setInterval(async () => {
     try {
       await webChat.purgeExpiredSessions();
@@ -396,9 +405,11 @@ export async function buildApp(
       app.log.error({ err: (e as Error).message }, 'periodic purge failed');
     }
     void ig.expireDue().catch(() => undefined);
+    void remindExpiring();
   }, 6 * 3600_000);
   timer.unref();
   void ig.expireDue().catch(() => undefined);
+  await remindExpiring();
   const pollTimer = cfg.instagramPollSeconds > 0 ? setInterval(() => void ig.pollOnce().catch(() => undefined), cfg.instagramPollSeconds * 1000) : null;
   pollTimer?.unref();
   const npTimer = cfg.novaPoshtaPollMinutes > 0 ? setInterval(() => void delivery.pollOnce().catch(() => undefined), cfg.novaPoshtaPollMinutes * 60_000) : null;

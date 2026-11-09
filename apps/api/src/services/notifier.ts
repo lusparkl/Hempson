@@ -9,6 +9,10 @@ export type Notification =
   | { kind: 'channel_issue'; shopId: string; channel: 'instagram' | 'telegram' | 'nova_poshta' | 'monobank'; issue: 'needs_reconnect' }
   /** The shop used up this UTC month's AI replies (P7): new conversations go to people until the month ends. Once per month. */
   | { kind: 'ai_quota'; shopId: string; month: string; cap: number }
+  /** The shop's paid period ended: new conversations go to people until the operator renews it. Once per `paidUntil`. */
+  | { kind: 'plan_expired'; shopId: string; paidUntil: string }
+  /** The shop's paid period ends soon. Once per `paidUntil`. */
+  | { kind: 'plan_expiring'; shopId: string; paidUntil: string }
   /**
    * An order needs a person or moved on its own (P4, P5): the parcel is coming back, the TTN could not be created (or may
    * exist), the order was paid, a payment link failed or could not reach the customer (`link` is the page to pass on),
@@ -76,6 +80,18 @@ export function renderNotification(n: Notification, ctx: { shopName: string; lan
     return uk
       ? `[${ctx.shopName}] Ліміт відповідей ШІ на ${n.month} вичерпано (${n.cap}). До кінця місяця ШІ не відповідає: нові розмови передаються людям (розділ «Потрібна людина»). Щоб збільшити ліміт, зверніться до Hepson.`
       : `[${ctx.shopName}] The AI reply limit for ${n.month} is used up (${n.cap}). Until the month ends the AI does not answer: new conversations go to people ("Needs a human"). Contact Hepson to raise the limit.`;
+  }
+  if (n.kind === 'plan_expiring') {
+    const day = n.paidUntil.split('-').reverse().join('.');
+    return uk
+      ? `[${ctx.shopName}] Сервіс Hepson оплачено до ${day} включно. Після цієї дати ШІ перестане відповідати клієнтам, а нові розмови передаватимуться людям. Щоб продовжити, зверніться до Hepson.`
+      : `[${ctx.shopName}] Hepson is paid through ${day}. After that date the AI stops answering customers and new conversations go to people. Contact Hepson to renew.`;
+  }
+  if (n.kind === 'plan_expired') {
+    const day = n.paidUntil.split('-').reverse().join('.');
+    return uk
+      ? `[${ctx.shopName}] Оплачений період Hepson закінчився ${day}. ШІ не відповідає: нові розмови передаються людям (розділ «Потрібна людина»). Щоб продовжити, зверніться до Hepson.`
+      : `[${ctx.shopName}] The paid Hepson period ended on ${day}. The AI does not answer: new conversations go to people ("Needs a human"). Contact Hepson to renew.`;
   }
   if (n.kind === 'order_update') {
     const id = ctx.order ?? n.draftId.slice(0, 8);

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ApiError } from '../errors';
-import { PLAN_NAMES, PlanValidationError, type AuthRepository, type PlanRepository, type ShopRepository } from '@hepson/database';
+import { PlanValidationError, planInput, type AuthRepository, type PlanRepository, type ShopRepository } from '@hepson/database';
 import { route } from './define';
 import { makeRequireRole } from './shops';
 
@@ -28,11 +28,11 @@ export function registerPlanRoutes(app: FastifyInstance, deps: { shops: ShopRepo
   route(app, {
     method: 'PUT',
     url: '/v1/shops/:shopId/plan',
-    summary: "Assign the shop's plan, optionally with a custom monthly AI-reply cap (admin key)",
+    summary: "Assign the shop's plan (optionally with a custom monthly AI-reply cap) and/or its last paid day (admin key)",
     tag: 'stats',
     auth: 'admin',
     params: shopP,
-    body: z.strictObject({ plan: z.enum(PLAN_NAMES), customCap: z.number().int().min(0).max(1_000_000).nullable().optional() }),
+    body: planInput,
     handler: async ({ params, body }) => {
       if (!(await shops.get(params.shopId))) throw new ApiError('NOT_FOUND', 'Shop not found');
       try {

@@ -28,7 +28,7 @@ public:  POST /public/web-chat/:widgetKey/session, POST|GET /public/web-chat/:wi
 ```
 
 ## Operator API key
-`PUT /v1/shops/:shopId/plan {plan, customCap?}` takes `Authorization: Bearer hep_…`, an operator key from `pnpm bootstrap-key [name]` (shown once; only its SHA-256 hash is stored). It is a fallback for setting a shop's plan by hand (D41). Every other `/v1/shops/...` route rejects these keys, and this route rejects user sessions.
+`PUT /v1/shops/:shopId/plan {plan?, customCap?, paidUntil?}` takes `Authorization: Bearer hep_…`, an operator key from `pnpm bootstrap-key [name]` (shown once; only its SHA-256 hash is stored). It is a fallback for setting a shop's plan by hand (D41). `paidUntil` is the last paid day as `YYYY-MM-DD` (Kyiv, inclusive); `null` removes the expiry. `{paidUntil}` alone renews and keeps the plan and custom cap (D48). Every other `/v1/shops/...` route rejects these keys, and this route rejects user sessions.
 
 ## Errors
 Always `{ "error": { "code", "message", "retryable" } }` (`apps/api/src/errors.ts`).

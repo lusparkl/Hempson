@@ -88,6 +88,8 @@ export const hhmm = (iso: string) => {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 export const dateOnly = (iso: string) => new Date(iso).toLocaleDateString('uk-UA');
+/** A plain `YYYY-MM-DD` day as `dd.mm.yyyy`, with no time zone shift. */
+export const dayText = (day: string) => day.split('-').reverse().join('.');
 /** Relative time like the design: `5 хв`, `3 год`, `вчора`, otherwise `dd.mm`. */
 export const ago = (iso: string | null) => {
   if (!iso) return '';
@@ -107,7 +109,18 @@ export const errText = (e: unknown) => (e instanceof Error ? e.message : String(
 export type Role = 'owner' | 'manager';
 export type Shop = { shopId: string; name: string; slug: string; role: Role; defaultCurrency: string };
 export type Me = { user: { userId: string; email: string; displayName: string } };
-export type Usage = { plan: string; aiReplyCap: number | null; month: string; periodEnd: string; aiReplies: number; remaining: number | null; capReached: boolean };
+export type Usage = {
+  plan: string;
+  aiReplyCap: number | null;
+  paidUntil: string | null;
+  paidDaysLeft: number | null;
+  planExpired: boolean;
+  month: string;
+  periodEnd: string;
+  aiReplies: number;
+  remaining: number | null;
+  capReached: boolean;
+};
 const MONTH_IN = ['січні', 'лютому', 'березні', 'квітні', 'травні', 'червні', 'липні', 'серпні', 'вересні', 'жовтні', 'листопаді', 'грудні'];
 const MONTH = ['січень', 'лютий', 'березень', 'квітень', 'травень', 'червень', 'липень', 'серпень', 'вересень', 'жовтень', 'листопад', 'грудень'];
 /** `2026-11` → `листопад` (or `листопаді` with `inside`). */

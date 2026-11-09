@@ -820,6 +820,8 @@ export const customerNotices = sqliteTable(
 /**
  * A shop's Hepson plan (P7), set by the operator. No row means the server's default plan. `customCap` overrides the
  * plan's cap. `capNoticeMonth` is the UTC month (`YYYY-MM`) whose cap notice the owner already got (once per month).
+ * `paidUntil` is the last paid day (Kyiv date `YYYY-MM-DD`, inclusive), null = no expiry; `expiryNoticeFor` is the
+ * `paidUntil` whose pause the owner was already told about, `expiryReminderFor` the one they were reminded of beforehand.
  */
 export const shopPlans = sqliteTable('shop_plans', {
   shopId: text('shop_id')
@@ -828,6 +830,9 @@ export const shopPlans = sqliteTable('shop_plans', {
   plan: text('plan', { enum: PLAN_NAMES as [string, ...string[]] }).notNull(),
   customCap: integer('custom_cap'),
   capNoticeMonth: text('cap_notice_month'),
+  paidUntil: text('paid_until'),
+  expiryNoticeFor: text('expiry_notice_for'),
+  expiryReminderFor: text('expiry_reminder_for'),
   updatedAt: text('updated_at').notNull(),
 });
 

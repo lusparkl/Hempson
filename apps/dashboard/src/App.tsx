@@ -516,6 +516,8 @@ function aiState(ai: AiSettings | null, u: Usage | null) {
   if (!ai) return { label: '…', title: '', color: 'var(--ink-300)', ring: 'var(--ink-100)' };
   if (!ai.available) return { label: 'ШІ недоступний', title: 'На сервері не налаштовано модель', color: 'var(--danger-fg)', ring: 'var(--danger-bg)' };
   if (!ai.enabled) return { label: 'ШІ вимкнено', title: 'Увімкніть у Налаштування → ШІ-асистент', color: 'var(--ink-400)', ring: 'var(--ink-100)' };
+  if (u?.planExpired)
+    return { label: 'Оплата закінчилась', title: 'Оплачений період закінчився: ШІ не відповідає клієнтам', color: 'var(--warning-fg)', ring: 'var(--warning-bg)' };
   if (u?.capReached) return { label: 'Ліміт вичерпано', title: 'Ліміт відповідей ШІ на місяць вичерпано', color: 'var(--warning-fg)', ring: 'var(--warning-bg)' };
   return { label: 'ШІ працює', title: 'Асистент відповідає клієнтам', color: 'var(--success-fg)', ring: 'var(--success-bg)' };
 }

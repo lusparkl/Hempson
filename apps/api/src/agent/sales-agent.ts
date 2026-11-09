@@ -133,6 +133,7 @@ export class SalesAgent {
       if (newest?.id !== t.trigger.id)
         return void finish(newest?.direction === 'incoming' ? 'superseded' : 'skipped', newest?.direction === 'incoming' ? 'NEWER_MESSAGE' : 'ALREADY_ANSWERED');
       const quota = await this.d.plans.usage(t.shopId, run.id);
+      if (quota.planExpired) return void (await this.afterExpiry(t, run.id, quota.paidUntil!, shop.defaultLanguage));
       if (quota.capReached) return void (await this.atCap(t, run.id, quota, shop.defaultLanguage));
 
       const conv = (await conversations.getConversation(t.shopId, t.shopConversationId))!;
@@ -283,18 +284,35 @@ export class SalesAgent {
    * fixed holding text (never silence), and the owner gets one notice per shop and month instead of one per escalation.
    */
   private async atCap(t: Target, runId: string, u: AiUsage, language: string): Promise<void> {
-    const { agent, conversations } = this.d;
     const uk = language.toLowerCase().startsWith('uk');
-    const reason = uk ? 'Ліміт відповідей ШІ на цей місяць вичерпано: дайте відповідь клієнту.' : 'The monthly AI reply limit is reached: please answer the customer.';
-    const e = await agent.escalate(t.shopId, t.shopConversationId, reason, runId);
-    if (e.created) {
-      const text = uk ? 'Дякуємо за повідомлення! Менеджер відповість вам найближчим часом.' : 'Thank you for your message! A manager will reply to you shortly.';
-      await sendSystemMessage({ conversations, ig: this.d.instagram, tg: this.d.telegram }, t.shopId, t.shopConversationId, text);
-    }
+    await this.handToPerson(
+      t,
+      runId,
+      uk,
+      uk ? 'Ліміт відповідей ШІ на цей місяць вичерпано: дайте відповідь клієнту.' : 'The monthly AI reply limit is reached: please answer the customer.',
+    );
     if (u.aiReplyCap !== null && (await this.d.plans.claimCapNotice(t.shopId, u.month)))
       this.d.notifier?.notify({ kind: 'ai_quota', shopId: t.shopId, month: u.month, cap: u.aiReplyCap });
     this.d.log.info({ shopId: t.shopId, runId, month: u.month, cap: u.aiReplyCap }, 'ai reply cap reached');
-    await agent.updateRun(t.shopId, runId, { status: 'escalated', detail: 'AI_REPLY_CAP' });
+    await this.d.agent.updateRun(t.shopId, runId, { status: 'escalated', detail: 'AI_REPLY_CAP' });
+  }
+
+  /** The shop's paid period ended: the same handover as at the cap, with one owner notice per `paidUntil`. Renewing brings the AI back at once. */
+  private async afterExpiry(t: Target, runId: string, paidUntil: string, language: string): Promise<void> {
+    const uk = language.toLowerCase().startsWith('uk');
+    await this.handToPerson(t, runId, uk, uk ? 'Оплачений період Hepson закінчився: дайте відповідь клієнту.' : 'The paid Hepson period has ended: please answer the customer.');
+    if (await this.d.plans.claimExpiryNotice(t.shopId, paidUntil)) this.d.notifier?.notify({ kind: 'plan_expired', shopId: t.shopId, paidUntil });
+    this.d.log.info({ shopId: t.shopId, runId, paidUntil }, 'plan expired');
+    await this.d.agent.updateRun(t.shopId, runId, { status: 'escalated', detail: 'PLAN_EXPIRED' });
+  }
+
+  /** Escalates without a model call; a newly opened escalation also gets one fixed holding text. */
+  private async handToPerson(t: Target, runId: string, uk: boolean, reason: string): Promise<void> {
+    const e = await this.d.agent.escalate(t.shopId, t.shopConversationId, reason, runId);
+    if (e.created) {
+      const text = uk ? 'Дякуємо за повідомлення! Менеджер відповість вам найближчим часом.' : 'Thank you for your message! A manager will reply to you shortly.';
+      await sendSystemMessage({ conversations: this.d.conversations, ig: this.d.instagram, tg: this.d.telegram }, t.shopId, t.shopConversationId, text);
+    }
   }
 
   private async send(t: Target, runId: string, text: string, escalated: boolean, usage: RunUsage): Promise<void> {

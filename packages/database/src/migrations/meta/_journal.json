@@ -141,6 +141,20 @@
       "when": 1794162112810,
       "tag": "0019_password_resets",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1794211207848,
+      "tag": "0020_plan_paid_until",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1794213729500,
+      "tag": "0021_plan_expiry_reminder",
+      "breakpoints": true
     }
   ]
 }
